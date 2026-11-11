@@ -1,0 +1,32 @@
+# API + PostgreSQL + one worker. Development defaults; the password is not a secret.
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: leaseq
+      POSTGRES_PASSWORD: leaseq
+      POSTGRES_DB: leaseq
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U leaseq -d leaseq"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  app:
+    build: .
+    environment:
+      LEASEQ_DATABASE_URL: postgresql://leaseq:leaseq@postgres:5432/leaseq
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  worker:
+    build: .
+    command: ["python", "-m", "leaseq.worker", "--api", "http://app:8000", "--worker-id", "compose-worker"]
+    environment:
+      LEASEQ_DATABASE_URL: postgresql://leaseq:leaseq@postgres:5432/leaseq
+    depends_on:
+      - app
+    restart: on-failure

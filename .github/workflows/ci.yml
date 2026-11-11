@@ -1,0 +1,43 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: leaseq
+          POSTGRES_PASSWORD: leaseq
+          POSTGRES_DB: leaseq
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U leaseq -d leaseq"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+    env:
+      LEASEQ_DATABASE_URL: postgresql://leaseq:leaseq@localhost:5432/leaseq
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install -r requirements.txt
+      - run: python -m pytest -v
+
+  compose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker compose up --build -d
+      - run: scripts/smoke.sh http://127.0.0.1:8000
+      - if: failure()
+        run: docker compose logs
+      - if: always()
+        run: docker compose down -v
