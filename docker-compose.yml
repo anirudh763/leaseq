@@ -14,6 +14,8 @@ x-leaseq-env: &leaseq-env
 services:
   postgres:
     image: postgres:16
+    volumes:
+      - pgdata:/var/lib/postgresql/data
     environment:
       POSTGRES_USER: leaseq
       POSTGRES_PASSWORD: leaseq      # not a secret: the database is not published to the host
@@ -57,3 +59,6 @@ services:
       app:
         condition: service_healthy
     restart: "no"
+
+volumes:
+  pgdata:
