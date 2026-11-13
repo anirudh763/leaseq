@@ -144,7 +144,17 @@ SABOTAGE = [
     ("OS dark preference switches the theme", [("leaseq/dashboard/assets/theme.js", '  var theme = "light";',
         '  var theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";')], E2E),
     ("route change leaves focus behind", [(JS, "    window.scrollTo(0, 0);\n    focusH1();", "    window.scrollTo(0, 0);")], E2E),
-    ("Menu sheet does not return focus", [(JS, '    if (window.getComputedStyle(button).display !== "none") button.focus();\n', "")], E2E),
+    # Removing the focus() call alone is not a real break: a native <dialog> restores
+    # focus to the Menu button by itself. This sabotage moves focus away on close.
+    ("Menu sheet does not return focus", [(JS, '    if (window.getComputedStyle(button).display !== "none") button.focus();\n',
+                                           '    window.setTimeout(() => { if (document.activeElement) document.activeElement.blur(); }, 0);\n')], E2E),
+    ("focus skipped on #/connection", [(JS, "  if (moveFocus) {\n", '  if (moveFocus && app.route.name !== "connection") {\n')], E2E),
+    ("cancel confirm does not name the job", [(JS, "? `Job ${job.id} (${job.kind}) becomes dead now. Worker", "? `It becomes dead now. Worker")], E2E),
+    ("limit hint blanked", [(JS, '"Up to 10,000 characters, the handler\'s limit. The text is stored " +', '"The text is stored " +')], E2E),
+    ("limit counter blanked", [(JS, '`${n.toLocaleString("en-US")} of 10,000 characters` +', '`${n.toLocaleString("en-US")}` +')], E2E),
+    ("over-limit error blanked", [(JS, 'return `The text has ${n.toLocaleString("en-US")} characters; the limit is 10,000. Shorten it to submit.`;', 'return "";')], E2E),
+    ("buttons shrink to 32px", [("leaseq/dashboard/assets/app.css", ".btn{min-height:44px;padding:8px 16px;", ".btn{min-height:32px;padding:2px 8px;")], E2E),
+    ("inputs shrink to 32px", [("leaseq/dashboard/assets/app.css", ".input,select,textarea{min-height:44px;padding:8px 12px;", ".input,select,textarea{min-height:32px;padding:2px 8px;")], E2E),
     ("old ?job= links not migrated", [(JS, "  migrateOldLink();\n  initMenu();", "  initMenu();")], E2E),
     ("state lanes show a guessed 0", [(JS, 'b.querySelector(".count").textContent = counts ? String(l.count(counts)) : NO_COUNT;',
                                        'b.querySelector(".count").textContent = counts ? String(l.count(counts)) : "0";')], E2E),

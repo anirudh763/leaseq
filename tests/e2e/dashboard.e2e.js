@@ -177,15 +177,23 @@ async function enterToken(page, token) {
     {
       const page = await newPage(browser);
       const answers = [];
-      page.on("response", async (r) => {
-        if (/\/jobs\?/.test(r.url()) && r.status() === 200) answers.push(await r.json());
+      // Body reads are collected as promises and settled before use. The old
+      // listener awaited r.json() itself, which raced the page closing at the end
+      // of this block ("response.json: Target page ... closed") and could also
+      // compare against an answer that was not parsed yet.
+      page.on("response", (r) => {
+        if (/\/jobs\?/.test(r.url()) && r.status() === 200) answers.push(r.json().catch(() => null));
       });
       await openDashboard(page);
       await page.waitForFunction(() => /^Counts as of \d\d:\d\d:\d\d$/.test(document.getElementById("updated").textContent));
-      const asOf = answers.at(-1).counts_as_of;
-      assert.ok(asOf, "GET /jobs has no counts_as_of");
-      const shown = await page.evaluate((iso) => new Date(iso).toLocaleTimeString(undefined, { hour12: false }), asOf);
-      assert.equal(await page.locator("#updated").innerText(), `Counts as of ${shown}`);
+      await page.getByRole("button", { name: "Pause updates" }).click();     // freeze while comparing
+      const bodies = (await Promise.all(answers.splice(0))).filter(Boolean);
+      assert.ok(bodies.length && bodies.every((b) => b.counts_as_of), "GET /jobs has no counts_as_of");
+      const shownTimes = await page.evaluate((isos) => isos.map((iso) => new Date(iso).toLocaleTimeString(undefined, { hour12: false })),
+                                             bodies.map((b) => b.counts_as_of));
+      const text = await page.locator("#updated").innerText();
+      assert.ok(shownTimes.some((t) => text === `Counts as of ${t}`), `${text} matches no counts_as_of in ${shownTimes}`);
+      await page.getByRole("button", { name: "Resume updates" }).click();
 
       const setHidden = (hidden) => page.evaluate((h) => {
         Object.defineProperty(document, "hidden", { configurable: true, get: () => h });
@@ -293,7 +301,9 @@ async function enterToken(page, token) {
       await page.locator("h1").filter({ hasText: `Job ${EXP.running}` }).waitFor();
       await page.getByRole("button", { name: "Cancel job" }).click();
       await page.locator("#confirm-dialog").waitFor({ state: "visible" });
-      assert.match(await page.locator("#confirm-text").innerText(), /refused by the fence/);
+      assert.match(await page.locator("#confirm-title").innerText(), new RegExp(`^Cancel job ${EXP.running}\\?$`));
+      assert.match(await page.locator("#confirm-text").innerText(),
+                   new RegExp(`^Job ${EXP.running} \\(sleep\\) becomes dead now\\. Worker w-e2e is still running it; .*refused by the fence`));
       const cancelYes = await confirmButtonStyle(page);
       assert.equal(cancelYes.focused, "confirm-no");
       assert.ok(cancelYes.classes.includes("danger"), `confirm button classes: ${cancelYes.classes}`);

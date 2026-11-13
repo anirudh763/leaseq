@@ -130,6 +130,7 @@ async function axeViolations(page) {
                 "focus is not inside the open sheet");
       await page.keyboard.press("Escape");
       await sheet.waitFor({ state: "hidden" });
+      await page.waitForTimeout(200);             // focus must still be there after any deferred work
       assert.equal(await page.evaluate(() => document.activeElement.getAttribute("aria-label") ||
                                              document.activeElement.textContent.trim()), "Menu");
       // A link in the sheet navigates and closes the sheet.
@@ -168,6 +169,26 @@ async function axeViolations(page) {
       assert.equal(await page.evaluate(() => document.activeElement.tagName), "H1");
       assert.equal(await page.title(), `Job ${EXP.dead} – LeaseQ`);
       assert.deepEqual(page.errors, []);
+      await page.context().close();
+    });
+
+    await check("focus lands on the H1 on every route (Jobs, Job details, Submit, Connection, Not found)", async () => {
+      const page = await newPage(browser);
+      await connect(page);                                  // starts on #/connection
+      const focused = () => page.evaluate(() => ({ tag: document.activeElement.tagName,
+                                                   text: document.activeElement.textContent.trim() }));
+      // Each step arrives from a different screen than the one before.
+      const tour = [["#/jobs", "Jobs"], [`#/jobs/${EXP.dead}`, `Job ${EXP.dead}`], ["#/submit", "Submit test job"],
+                    ["#/nope", "Not found"], ["#/connection", "Connection & API"], [`#/jobs/${EXP.dead}`, `Job ${EXP.dead}`],
+                    ["#/connection", "Connection & API"], ["#/jobs", "Jobs"]];
+      const misses = [];
+      for (const [route, title] of tour) {
+        await go(page, route, new RegExp(`^${title.replace(/[&]/g, "\\$&")}$`));
+        await page.waitForTimeout(150);
+        const f = await focused();
+        if (f.tag !== "H1" || f.text !== title) misses.push(`${route}: focus on ${f.tag} "${f.text.slice(0, 30)}"`);
+      }
+      assert.deepEqual(misses, []);
       await page.context().close();
     });
 
@@ -475,6 +496,9 @@ async function axeViolations(page) {
       const page = await newPage(browser);
       await connect(page);
       await go(page, "#/submit", /^Submit test job$/);
+      // The 10,000-character limit is visible before anyone types.
+      assert.match(await page.locator("#wc-hint").innerText(), /^Up to 10,000 characters, the handler's limit\./);
+      assert.equal(await page.locator("#wc-count").innerText(), "0 of 10,000 characters");
       await page.getByRole("button", { name: "Submit job" }).click();
       await page.getByText(/Enter some text/).waitFor();
       assert.equal(await page.getByLabel("Text to count").getAttribute("aria-invalid"), "true");
