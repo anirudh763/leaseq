@@ -50,7 +50,10 @@ c=$(code -H "$AUTH" "$API/jobs"); [ "$c" = 200 ] || fail "auth: right token gave
 pass "auth: anonymous POST /jobs, GET /jobs, GET /stats and a wrong token -> 401; the token -> 200"
 
 # --- dashboard files ---------------------------------------------------------
-curl -fsS "$API/dashboard/" | grep -q '<title>leaseq operations</title>' || fail "dash: index.html"
+# Read the whole page first: `curl | grep -q` fails under pipefail when grep
+# stops early and curl gets SIGPIPE.
+page=$(curl -fsS "$API/dashboard/") || fail "dash: GET /dashboard/"
+case "$page" in *'<title>leaseq operations</title>'*) ;; *) fail "dash: index.html has no title";; esac
 for f in app.js app.css ui.css; do
   c=$(code "$API/dashboard/assets/$f"); [ "$c" = 200 ] || fail "dash: assets/$f gave $c"
 done

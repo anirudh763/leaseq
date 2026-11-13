@@ -85,7 +85,9 @@ SABOTAGE = [
                                  (JS, '    saveToken(null);\n    $("token-input").value = "";', "    saveToken(null);")], E2E),
     ("demo-data note never shown", [(JS, '    $("demo-note").hidden = !jobs.some((j) => j.idempotency_key.startsWith("demo-"));',
                                       '    $("demo-note").hidden = true;')], E2E),
-    ("job panel kept after a 401", [(JS, "      clearCounts();\n      clearDetail();", "      clearCounts();")], E2E),
+    ("Forget leaves the table until the next poll", [(JS, '    $("token-input").value = "";\n    clearJobData();', '    $("token-input").value = "";\n    clearDetail();')], E2E),
+    ("in-flight poll repopulates after Forget", [(JS, "    if (gen !== app.authGen) return;     // fetched with a token that has since changed\n", "")], E2E),
+    ("job panel kept after a 401", [(JS, "  $(\"expired-note\").hidden = true;\n  clearDetail();\n}", "  $(\"expired-note\").hidden = true;\n}")], E2E),
 ]
 
 

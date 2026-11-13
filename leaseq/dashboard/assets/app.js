@@ -34,6 +34,7 @@ const app = {
   rows: PAGE,
   paused: false,
   token: null,
+  authGen: 0,          // bumped whenever the token changes; older responses are dropped
   inflight: false,
   lastUpdate: null,
   job: null,
@@ -138,6 +139,7 @@ function announce(msg) {
 
 function saveToken(t) {
   app.token = t || null;
+  app.authGen += 1;
   renderTokenControls();
 }
 
@@ -344,6 +346,19 @@ function clearDetail() {
   $("result").textContent = "";
   $("events-more").hidden = true;
   showPanel(false);
+}
+
+// Remove every piece of job data from the page at once: counts, table rows,
+// the demo note and the details panel. Used on "Forget token" (immediately,
+// not on the next poll) and whenever the server answers 401.
+function clearJobData() {
+  clearCounts();
+  $("rows").replaceChildren();
+  $("shown").textContent = "";
+  $("more").hidden = true;
+  $("demo-note").hidden = true;
+  $("expired-note").hidden = true;
+  clearDetail();
 }
 
 function showPanel(open) {
@@ -555,7 +570,7 @@ function openTokenDialog() {
   if (app.token) {
     saveToken(null);
     $("token-input").value = "";
-    clearDetail();
+    clearJobData();
     announce("API token forgotten. The dashboard is read-only.");
     refresh();
     return;
@@ -656,15 +671,13 @@ async function refresh() {
     if (app.filters.state) p.set("state", app.filters.state);
     if (app.filters.kind) p.set("kind", app.filters.kind);
     if (app.filters.worker) p.set("worker", app.filters.worker);
+    const gen = app.authGen;
     const r = await api(`/jobs?${p}`);
+    if (gen !== app.authGen) return;     // fetched with a token that has since changed
     if (r.status === 401) {
       showBanner("This server requires the API token to read jobs.", true);
       $("updated").textContent = "Token needed";
-      clearCounts();
-      clearDetail();
-      $("demo-note").hidden = true;
-      $("rows").replaceChildren();
-      $("shown").textContent = "";
+      clearJobData();
       return;
     }
     if (r.status !== 200) {
@@ -693,6 +706,7 @@ async function refresh() {
     if (app.jobId) {
       const [jr, er] = await Promise.all([api(`/jobs/${app.jobId}`),
                                           api(`/jobs/${app.jobId}/events?limit=500`)]);
+      if (gen !== app.authGen) return;
       if (jr.status === 200 && er.status === 200) {
         showPanel(true);
         renderJob(jr.body, er.body.events, er.body.next_after_id !== null);

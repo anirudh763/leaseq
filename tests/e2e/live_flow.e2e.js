@@ -148,12 +148,28 @@ async function enterTokenByKeyboard(page) {
     await page.getByLabel("Job ID").press("Enter");
     await page.locator("#payload").filter({ hasText: "upstream returned 503" }).waitFor();
     assert.equal(await inputValue(), "", "input must be empty after the token was accepted");
+    // Hold the next poll (sent with the token) so it is still in flight when the
+    // token is forgotten; its answer must not bring the data back.
+    let held = 0;
+    await page.route("**/jobs?*", async (route) => {
+      held += 1;
+      await new Promise((r) => setTimeout(r, 1500));
+      await route.continue().catch(() => {});
+    });
+    await page.waitForTimeout(2200);                                   // a poll is now held
+    assert.ok(held >= 1, "no poll was in flight");
     await page.getByRole("button", { name: "Forget token" }).click();                // (a) + (c)
     await page.locator("#detail").waitFor({ state: "hidden" });
     assert.equal(await inputValue(), "");
     assert.equal(await page.locator("#payload").textContent(), "");
     assert.equal(await payloadInDom(), false);
+    assert.equal(await page.locator("#rows tr").count(), 0);          // cleared at once
+    await page.waitForTimeout(2000);                                   // the held poll answers
     assert.equal(await page.locator("#rows tr").count(), 0);
+    assert.equal(await payloadInDom(), false);
+    assert.deepEqual(await page.$$eval("[data-count]", (els) => els.map((e) => e.textContent)),
+                     Array(6).fill("\u2013"));
+    await page.unroute("**/jobs?*");
     step("Forget token: input empty; job panel closed and its payload gone from the DOM");
 
     await page.locator("#token-button").click();                                       // (b)
