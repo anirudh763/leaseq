@@ -121,12 +121,61 @@ def test_live_flow_with_real_workers(monkeypatch):
         print(r.stderr)
         assert r.returncode == 0, r.stderr
         report = json.loads(r.stdout.strip().splitlines()[-1])
-        assert report["axe_total"] == 0 and len(report["axe"]) == 7
+        assert report["axe_total"] == 0 and len(report["axe"]) == 8
         with httpx.Client(base_url=base, headers=AUTH) as c:     # the database agrees
             assert c.get("/jobs/16").json()["state"] == "dead"
             assert c.get("/jobs/1").json()["state"] == "done"
             assert c.get("/jobs/13").json()["max_attempts"] == 6
     finally:
         for p in workers + [proc]:
+            p.terminate()
+            p.wait()
+
+
+def _wait_state(c, job_id, state, seconds=30):
+    import time
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        job = c.get(f"/jobs/{job_id}").json()
+        if job["state"] == state:
+            return job
+        time.sleep(0.1)
+    raise AssertionError(f"job {job_id} is {job['state']}, not {state}")
+
+
+def test_root_visual_gate(monkeypatch):
+    """rebuild.md root visual gate: overflow at 320/768/1440, Menu sheet, H1 focus,
+    Back/Forward and deep links, axe light+dark at 1280/320, light default under
+    OS dark, CSP/console/noscript, Forget/401 clearing cached details, and the
+    Submit test job flow through a real worker. Reads need the token."""
+    db_url = harness.scratch_database("leaseq_e2e_gate")
+    monkeypatch.setenv("LEASEQ_API_TOKEN", TOKEN)
+    monkeypatch.delenv("LEASEQ_PUBLIC_READ", raising=False)
+    proc, base = harness.start_api(db_url)
+    worker = harness.start_worker(db_url, base, "gate-1", 10)
+    marker = "gate-payload-marker-7f3a91"
+    try:
+        c = httpx.Client(base_url=base, headers=AUTH, timeout=10)
+        dead = c.post("/jobs", headers={"Idempotency-Key": "gate-dead"},
+                      json={"kind": "fail", "payload": {"error": "boom", "note": marker},
+                            "max_attempts": 1}).json()["id"]
+        done = c.post("/jobs", headers={"Idempotency-Key": "gate-done"},
+                      json={"kind": "word_count", "payload": {"text": "a b c"}}).json()["id"]
+        _wait_state(c, dead, "dead")
+        _wait_state(c, done, "done")
+        r = subprocess.run(["node", str(E2E.with_name("visual_gate.e2e.js"))], capture_output=True,
+                           text=True, timeout=600, check=False,
+                           env={**os.environ, "BASE_URL": base, "API_TOKEN": TOKEN,
+                                "AXE_PATH": _axe_path(),
+                                "EXPECTED": json.dumps({"dead": dead, "done": done, "marker": marker})})
+        print(r.stdout)
+        print(r.stderr)
+        report = json.loads(r.stdout.strip().splitlines()[-1])
+        failed = [x for x in report["results"] if not x["ok"]]
+        assert not failed, json.dumps(failed, indent=1)
+        assert report["axe_scans"] == 20 and report["axe_total"] == 0
+        assert r.returncode == 0
+    finally:
+        for p in (worker, proc):
             p.terminate()
             p.wait()

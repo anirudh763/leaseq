@@ -19,19 +19,22 @@ they were given. It exists to answer one question with evidence instead of a
 claim: if worker processes are killed at random while they hold jobs, is any
 job lost, and is any job's result recorded twice? The repository contains the
 queue, its HTTP API with bearer-token authentication, an operations dashboard
-served by the API (1,078 lines of Python, 89 of SQL, and 1,059 of
-HTML/JavaScript/CSS written for the dashboard, not counting the shared
+served by the API (1,181 lines of Python, 100 of SQL, and 1,657 of
+HTML/JavaScript/CSS written for the dashboard, counted with `wc -l`, not counting the shared
 `ui.css` base stylesheet), a fault-injection test that kills workers with
 SIGKILL and then checks the database, and the measured results below.
 
-![The leaseq dashboard: job table with state tabs, and the details of a job that failed twice, was retried with backoff and then went dead](docs/screenshots/dashboard.png)
+![The LeaseQ operations console: state lanes with counts (16 jobs: 13 done, 3 dead) above the job table](docs/screenshots/jobs-1440.png)
 
-The screenshot was taken from local processes, not Docker: one `uvicorn` API,
-one worker (`worker-1`) and the `leaseq.demo` sample jobs (enqueued through
+![Job 13: why it is not running, and its lease lifecycle timeline: enqueued, claimed, failed and retried twice, then dead](docs/screenshots/job-details-1440.png)
+
+The screenshots were taken from local processes, not Docker: one `uvicorn` API,
+two workers and the `leaseq.demo` sample jobs (enqueued through
 `POST /demo/jobs`) against a local PostgreSQL, captured with
-`tests/e2e/readme_screenshot.js` after entering the token. The dashboard's
-colours, type, components and measured contrast are documented in
-[DESIGN.md](DESIGN.md).
+`tests/e2e/readme_screenshot.js` after entering the token on the Connection
+screen. Narrow-screen versions are in `docs/screenshots/` (`jobs-320.png`,
+`job-details-320.png`). The dashboard's tokens, layout and measured contrast are
+in [DESIGN.md](DESIGN.md).
 
 ## Quick start
 
@@ -156,34 +159,70 @@ into `job_events` in the same transaction.
 
 ## Dashboard
 
-`/dashboard/` is plain HTML, CSS and JavaScript inside the package: no build
-step, no CDN, no third-party code. It shows counts per state as tabs, a job
-table filtered by state, kind and worker (the filters are in the URL, so a view
-can be shared), and a side panel with a job's lease history (one row per
-attempt: worker, lease length, outcome) and its audit events. It refreshes
-every 2 seconds while the browser tab is visible, and not at all while it is
-hidden; "Pause updates" stops it too. The header shows "Counts as of
-hh:mm:ss", the time the server took the counts (at most 5 seconds old per API
-process); the table rows are read fresh on every refresh.
+`/dashboard/` is an operations console for this local queue: plain HTML, CSS
+and JavaScript inside the package, no build step, no CDN, no third-party code.
+It is light by default (also when the operating system prefers dark); "Use dark
+theme" switches it, and that choice is the only thing the page stores. Each
+task is its own screen with its own URL (hash routes, so links can be shared
+and Back/Forward work):
 
-It is read-only until you enter the API token. The token is checked with
-`GET /auth/check`, kept in the page's memory only (not in a cookie, local or
-session storage, or the URL) and sent only in the `Authorization` header, so
+| Route | Screen | Old link that still works |
+|---|---|---|
+| `#/jobs` (default), `#/jobs?state=dead&kind=…&worker=…` | Jobs: state lanes and the job table | `?state=…&kind=…&worker=…` |
+| `#/jobs/<id>` | Job details | `?job=<id>` |
+| `#/submit` | Submit test job | |
+| `#/connection` | Connection & API (token, status, API guide) | |
+
+- **Jobs**: one lane per state (All, Queued, Running, Retrying, Done, Dead)
+  with the server's counts; a lane is a toggle that filters the table. Kind
+  and worker filters and "Open job" by id; the filters are in the URL. The
+  counts are taken at most once per 5 seconds per API process, so the page
+  shows "Counts as of hh:mm:ss"; the rows are read fresh on every refresh.
+  It refreshes every 2 seconds while the browser tab is visible and not at
+  all while it is hidden; "Pause updates" stops it too.
+- **Job details**: why the job is waiting (ready for a worker, retry backoff
+  until a time, running until its lease ends, lease expired, dead after N of
+  M attempts), the lease lifecycle as a timeline built from the audit log
+  (claims with worker and lease length, failures with the retry delay, fence
+  rejections of stale lease tokens, completion, operator actions), the
+  payload and the result. Heartbeats are not in the audit log, and the page
+  says so.
+- **Submit test job**: sends text (up to 10,000 characters, the handler's
+  limit) as a `word_count` job through the real queue; a worker claims it,
+  counts, and completes it, and the page shows the stored result. "Load
+  sample text" fills in chapter 1 of Jane Austen's *Pride and Prejudice*
+  (public domain; from Project Gutenberg eBook #1342, see
+  `leaseq/dashboard/assets/sample/SOURCE.txt`). Its result, measured by a
+  worker in the browser tests and in `scripts/smoke.sh`, is
+  `{"words": 849, "lines": 114}`.
+- **Connection & API**: the token form, the API address and version, the
+  connection state, example `curl` calls, the endpoints and the error
+  answers (401, 404, 409, 413, 422).
+
+Without the token (and without `LEASEQ_PUBLIC_READ=1`) the data screens show
+a "Not connected" state that links to Connection & API. The token is checked
+with `GET /auth/check`, kept in the page's memory only (not in a cookie, local
+or session storage, or the URL) and sent only in the `Authorization` header, so
 another site cannot make the browser send it: there is no CSRF surface. With a
-token, "Requeue job" and "Cancel job" appear, and each asks for confirmation.
-Job payloads are shown as text, never as HTML, and the page is served with a
-`Content-Security-Policy` that allows only its own files. The token field is
-emptied as soon as the dialog closes; after "Forget token", or when the server
-starts answering 401, the counts, the table and any open job panel (payload
-included) are removed from the page.
+token, "Requeue job" and "Cancel job" appear; each asks for confirmation that
+names the job and the effect, and Cancel uses the danger style with "Keep job"
+focused. Job payloads are shown as text, never as HTML, and the page is served
+with a `Content-Security-Policy` that allows only its own files. "Forget token"
+and any 401 remove all job data at once: the list, every job opened before
+(payload, result, events) and the Submit result. A test checks that going Back
+to a job's URL after either one cannot show the old payload.
 
 When the table contains jobs from `python -m leaseq.demo` (keys starting
 `demo-`), the dashboard says so: those jobs do no real work.
 
-Accessibility: passes automated axe-core checks (WCAG 2.2 A/AA and best-practice
-rules) with 0 violations in 17 scanned states, light and dark, including dialogs,
-an API failure, and 375 px and 640 px widths (640 px is a 1280 px window at 200%
-zoom). The Playwright tests also drive the main flows with the keyboard only. A
+Accessibility: passes automated axe-core checks (WCAG 2.2 A/AA and
+best-practice rules) with 0 violations in 38 scanned states across the three
+browser tests: every screen in light (default) and dark at 1280 and 320 px,
+the Not connected state, dialogs, an API failure, and 375 px and 640 px widths
+(640 px is a 1280 px window at 200% zoom). The tests also check that no screen
+scrolls sideways at 320, 768 and 1440 px, that every route change moves focus
+to the screen's H1, that the Menu sheet closes with Escape and returns focus to
+the Menu button, and they drive the main flows with the keyboard only. A
 manual screen-reader check has not been run.
 
 ## The demo worker, and writing your own handler
@@ -346,15 +385,23 @@ run of seed 1 on the same machine gave 63 retried jobs in 29.7 s.
 python -m pytest -q
 ```
 
-117 tests passed in 122 s, none skipped (on this branch, on the same kind of
+131 tests passed in 209 s, none skipped (on this branch, on the same kind of
 2-core container as the results above). This includes a reduced chaos run (300
 jobs, 12 kills), the negative control (40 jobs), the authentication and
 input-limit tests in `tests/test_security.py`, `word_count` run by a real
 worker process (`tests/test_word_count_flow.py`), `scripts/up.sh` with a stub
 `docker` (`tests/test_usability.py`, including the unchanged `smoke.sh`
 passing against a real API and worker with the token read from a copied
-`.env.example`), and two Playwright browser tests
-in `tests/test_dashboard_e2e.py`. The browser tests need Node, the `playwright`
+`.env.example`), and three Playwright browser tests
+in `tests/test_dashboard_e2e.py`. The third, `tests/e2e/visual_gate.e2e.js`,
+is the dashboard's layout and routing gate: 34 named checks (page width at
+320/768/1440 px, Menu sheet, H1 focus, Back/Forward and deep links, old
+links, axe light and dark, light default under an OS dark preference, CSP,
+noscript, the state lanes against the API's counts, the lifecycle timeline,
+the confirmation text, the Submit flow with a real worker, and that Back to a
+job URL after "Forget token" or a 401 cannot show its old payload). Against
+the dashboard before this rebuild, 33 of the 34 fail (only the noscript check
+passes). The browser tests need Node, the `playwright`
 package and axe-core (`AXE_PATH`); without them they are skipped. One of them
 runs real worker processes: the dashboard enqueues jobs, a worker completes
 them, a failing job retries with backoff until it is dead, one job is
@@ -414,15 +461,16 @@ that `.env` is byte-identical, and then runs:
 
 1. `tests/e2e/live_flow.e2e.js` in Chromium against `http://127.0.0.1:8000`:
    reads refused without the token, token entered by keyboard, sample jobs
-   enqueued from the dashboard, a job completed by the worker with its lease
-   history and events shown, a retry ending dead, cancel, requeue, Forget
-   token, an API failure, 375 px and 640 px layouts, and axe in light and
-   dark.
+   enqueued from the dashboard, a job completed by the worker with its
+   lifecycle timeline shown, a retry ending dead, cancel, requeue, Forget
+   token, an API failure, a 401, the Submit test job screen with the
+   public-domain sample, 375 px and 640 px layouts, and axe in light and dark.
 2. `scripts/smoke.sh` with the token read from `.env`, which prints one
    `PASS` line per check: anonymous writes and reads get 401; the dashboard
    and its JS and CSS are served; idempotency; a finished job's events are
    `enqueued claimed completed`; a `word_count` job ends done with the exact
-   result `{"lines": 2, "words": 6}`; a `fail_first_n` job is retried and
+   result `{"lines": 2, "words": 6}`, and the public-domain sample text with
+   `{"lines": 114, "words": 849}`; a `fail_first_n` job is retried and
    done (`enqueued claimed failed claimed completed`); a job cancelled while
    the worker runs it stays dead and the worker's late result is logged as
    `rejected`; the requeued job then runs to done.
