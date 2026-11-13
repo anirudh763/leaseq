@@ -79,6 +79,9 @@ SABOTAGE = [
     ("token put in a cookie", [(JS, "  if (app.token) headers.Authorization = `Bearer ${app.token}`;",
                                 "  if (app.token) { headers.Authorization = `Bearer ${app.token}`; document.cookie = `t=${app.token}`; }")], E2E),
     ("token left in the input", [(JS, '  $("token-dialog").addEventListener("close", () => { $("token-input").value = ""; });', ""),
+                                 (JS, '  $("token-dialog").addEventListener("cancel", () => { $("token-input").value = ""; });   // Escape\n', ""),
+                                 (JS, '    $("token-input").value = "";\n    $("token-dialog").close();', '    $("token-dialog").close();'),
+                                 (JS, '  saveToken(value);\n  input.value = "";', "  saveToken(value);"),
                                  (JS, '    saveToken(null);\n    $("token-input").value = "";', "    saveToken(null);")], E2E),
     ("job panel kept after a 401", [(JS, "      clearCounts();\n      clearDetail();", "      clearCounts();")], E2E),
 ]

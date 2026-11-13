@@ -585,6 +585,7 @@ async function submitToken(e) {
   if (r.status === 401) return fail("The server rejected this token.");
   if (r.status !== 200) return fail(`Unexpected answer from the server (HTTP ${r.status}).`);
   saveToken(value);
+  input.value = "";
   $("token-dialog").close();
   hideBanner();
   announce("Token accepted. Requeue and cancel are available.");
@@ -738,8 +739,13 @@ function init() {
   $("token-button").addEventListener("click", openTokenDialog);
   $("token-form").addEventListener("submit", submitToken);
   // However the dialog closes (accepted, Cancel, Escape), the secret leaves the input.
+  $("token-dialog").addEventListener("cancel", () => { $("token-input").value = ""; });   // Escape
   $("token-dialog").addEventListener("close", () => { $("token-input").value = ""; });
-  $("token-cancel").addEventListener("click", () => { $("token-dialog").close(); $("token-button").focus(); });
+  $("token-cancel").addEventListener("click", () => {
+    $("token-input").value = "";
+    $("token-dialog").close();
+    $("token-button").focus();
+  });
   $("filters").addEventListener("submit", applyFilters);
   $("clear-filters").addEventListener("click", clearFilters);
   $("goto-button").addEventListener("click", gotoJob);

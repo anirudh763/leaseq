@@ -73,16 +73,33 @@ jobs:
       - run: npx playwright install --with-deps chromium
       - run: python -m pytest -v tests/test_dashboard_e2e.py
 
+  # The real Docker stack (postgres, API, worker) end to end. The demo feeder is
+  # scaled to 0 so the browser test starts from an empty queue.
   compose:
     runs-on: ubuntu-latest
+    env:
+      AXE_PATH: node_modules/axe-core/axe.min.js
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
         with:
           persist-credentials: false
-      # Compose refuses to start without a token; make a throwaway one for this run.
-      - run: echo "LEASEQ_API_TOKEN=$(openssl rand -hex 24)" >> "$GITHUB_ENV"
-      - run: docker compose up --build -d
-      - run: scripts/smoke.sh http://127.0.0.1:8000
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
+        with:
+          node-version: "22"
+      # Compose refuses to start without a token; make a throwaway one, masked in logs.
+      - run: |
+          token=$(openssl rand -hex 24)
+          echo "::add-mask::$token"
+          echo "LEASEQ_API_TOKEN=$token" >> "$GITHUB_ENV"
+      - run: docker compose up --build -d --scale demo=0
+      - run: npm install --no-save playwright@1.63.0 axe-core@4.14.0
+      - run: npx playwright install --with-deps chromium
+      - name: wait for the API
+        run: for i in $(seq 1 60); do curl -fsS http://127.0.0.1:8000/healthz && exit 0; sleep 1; done; exit 1
+      - name: dashboard in a browser against the compose stack
+        run: BASE_URL=http://127.0.0.1:8000 API_TOKEN="$LEASEQ_API_TOKEN" node tests/e2e/live_flow.e2e.js
+      - name: API smoke test against the compose stack
+        run: scripts/smoke.sh http://127.0.0.1:8000
       - if: failure()
         run: docker compose logs
       - if: always()
