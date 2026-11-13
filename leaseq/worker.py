@@ -29,11 +29,15 @@ def handle(job: dict, api: httpx.Client, lease_seconds: float) -> dict:
            WITHOUT heartbeating; this simulates a paused or partitioned worker
            and is how the chaos test produces zombie workers.
     fail   always raises (exercises retry and dead-lettering).
+    fail_first_n  payload {"n": k}: raises on attempts 1..k, succeeds after that
+           (a deterministic retry for the compose smoke test).
     other  no work.
     """
     payload = job["payload"]
     if job["kind"] == "fail":
         raise RuntimeError(payload.get("error", "job kind 'fail' always fails"))
+    if job["kind"] == "fail_first_n" and job["attempts"] <= int(payload.get("n", 1)):
+        raise RuntimeError(f"fail_first_n: attempt {job['attempts']} fails on purpose")
     if job["kind"] == "sleep":
         if job["attempts"] == 1 and payload.get("stall_ms"):
             time.sleep(payload["stall_ms"] / 1000)

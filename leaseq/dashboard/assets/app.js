@@ -330,6 +330,22 @@ function closeJob() {
   else $("jobs-panel").focus();
 }
 
+// Drop everything the details panel shows and close it: used when the token is
+// forgotten or the server stops accepting it, so no job data stays on screen.
+// The selected job id (also in the URL) is kept, so the panel comes back once
+// reads succeed again.
+function clearDetail() {
+  app.job = null;
+  for (const id of ["detail-fields", "detail-actions", "detail-state", "lease-rows", "events"]) {
+    $(id).replaceChildren();
+  }
+  $("detail-title").textContent = "Job";
+  $("payload").textContent = "";
+  $("result").textContent = "";
+  $("events-more").hidden = true;
+  showPanel(false);
+}
+
 function showPanel(open) {
   $("detail").hidden = !open;
   document.querySelector(".split").classList.toggle("open", open);
@@ -538,6 +554,8 @@ function renderTokenControls() {
 function openTokenDialog() {
   if (app.token) {
     saveToken(null);
+    $("token-input").value = "";
+    clearDetail();
     announce("API token forgotten. The dashboard is read-only.");
     refresh();
     return;
@@ -642,6 +660,7 @@ async function refresh() {
       showBanner("This server requires the API token to read jobs.", true);
       $("updated").textContent = "Token needed";
       clearCounts();
+      clearDetail();
       $("rows").replaceChildren();
       $("shown").textContent = "";
       return;
@@ -718,6 +737,8 @@ function init() {
   $("pause").addEventListener("click", togglePause);
   $("token-button").addEventListener("click", openTokenDialog);
   $("token-form").addEventListener("submit", submitToken);
+  // However the dialog closes (accepted, Cancel, Escape), the secret leaves the input.
+  $("token-dialog").addEventListener("close", () => { $("token-input").value = ""; });
   $("token-cancel").addEventListener("click", () => { $("token-dialog").close(); $("token-button").focus(); });
   $("filters").addEventListener("submit", applyFilters);
   $("clear-filters").addEventListener("click", clearFilters);

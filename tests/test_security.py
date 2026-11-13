@@ -1,7 +1,9 @@
 """Access control, input limits and operator actions. Each test fails if the
 protection it names is removed. Runs against real PostgreSQL like test_api.py."""
+import asyncio
 import re
 import time
+import types
 from pathlib import Path
 
 import httpx
@@ -214,6 +216,46 @@ def test_oversized_chunked_body_without_content_length_is_rejected(make_client, 
     assert rows(conn) == (0, 0)
 
 
+def _drive_body_limit(headers, chunks):
+    """Run security.BodyLimit alone with a receive() that counts its calls.
+    -> (receive calls, response status). The wrapped app must never run."""
+    calls = 0
+    sent = []
+
+    async def receive():
+        nonlocal calls
+        calls += 1
+        chunk = next(chunks, None)
+        if chunk is None:
+            return {"type": "http.request", "body": b"", "more_body": False}
+        return {"type": "http.request", "body": chunk, "more_body": True}
+
+    async def send(message):
+        sent.append(message)
+
+    async def app(scope, receive, send):
+        raise AssertionError("the app was called with an oversized body")
+
+    state = types.SimpleNamespace(settings=None)          # default 64 KiB limit
+    scope = {"type": "http", "method": "POST", "path": "/jobs", "headers": headers,
+             "app": types.SimpleNamespace(state=state)}
+    asyncio.run(security.BodyLimit(app)(scope, receive, send))
+    return calls, sent[0]["status"]
+
+
+def test_declared_oversized_body_is_refused_without_reading_it():
+    ten_mb = iter([b"x" * 1024] * 10 * 1024)
+    calls, status = _drive_body_limit([(b"content-length", b"10485760")], ten_mb)
+    assert (calls, status) == (0, 413)
+
+
+def test_chunked_oversized_body_is_refused_as_soon_as_it_passes_the_limit():
+    ten_mb = (b"x" * 1024 for _ in range(10 * 1024))       # 1 KiB chunks, no Content-Length
+    calls, status = _drive_body_limit([], ten_mb)
+    assert status == 413
+    assert calls <= 65                                    # 64 KiB limit / 1 KiB chunks, plus one
+
+
 def test_body_limit_is_configurable_and_small_bodies_pass(make_client):
     client = make_client(LEASEQ_MAX_BODY_BYTES="200")
     ok = client.post("/jobs", headers={"Idempotency-Key": "s"}, json={"kind": "noop"})
@@ -360,6 +402,11 @@ def test_requeue_gives_a_dead_job_more_attempts(make_client, conn):
     r = client.post(f"/jobs/{job_id}/requeue", headers=AUTH, json={"extra_attempts": 2})
     assert r.status_code == 200
     assert (r.json()["state"], r.json()["attempts"], r.json()["max_attempts"]) == ("queued", 1, 3)
+    # Before anyone claims it again, the lease from the dead attempt is already void.
+    old = {"lease_token": job["lease_token"]}
+    assert client.post(f"/jobs/{job_id}/heartbeat", headers=AUTH, json=old).status_code == 409
+    assert client.post(f"/jobs/{job_id}/complete", headers=AUTH, json=old).status_code == 409
+    assert client.get(f"/jobs/{job_id}", headers=AUTH).json()["state"] == "queued"
     again = queue.claim(conn, "w2", 30)
     assert again["id"] == job_id and again["attempts"] == 2
     # The lease from the attempt that died is stale: its holder cannot report back.
@@ -369,8 +416,8 @@ def test_requeue_gives_a_dead_job_more_attempts(make_client, conn):
     assert worker.finish(conn, again, {}, "w2") is True
     events = [e["event"] for e in client.get(f"/jobs/{job_id}/events", headers=AUTH)
               .json()["events"]]
-    assert events == ["enqueued", "claimed", "dead", "requeued", "claimed", "rejected",
-                      "rejected", "completed"]
+    assert events == ["enqueued", "claimed", "dead", "requeued", "rejected", "claimed",
+                      "rejected", "rejected", "completed"]
     # The audit invariant the chaos test checks still holds: one claim row per attempt.
     claims = conn.execute("SELECT count(*) AS n FROM job_events WHERE event = 'claimed'"
                           ).fetchone()["n"]

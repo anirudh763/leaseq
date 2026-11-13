@@ -137,6 +137,46 @@ async function enterTokenByKeyboard(page) {
     await page.unroute("**/jobs?*");
     await banner.waitFor({ state: "detached" });
     step("error states: empty job id is flagged; API failure shows a banner and recovers");
+
+    // 9. Privacy: the token never stays in the input; job data goes with the token.
+    const inputValue = () => page.$eval("#token-input", (e) => e.value);
+    const payloadInDom = () => page.evaluate(() => document.body.textContent.includes("upstream returned 503"));
+    await page.getByLabel("Job ID").fill("13");
+    await page.getByLabel("Job ID").press("Enter");
+    await page.locator("#payload").filter({ hasText: "upstream returned 503" }).waitFor();
+    assert.equal(await inputValue(), "", "input must be empty after the token was accepted");
+    await page.getByRole("button", { name: "Forget token" }).click();                // (a) + (c)
+    await page.locator("#detail").waitFor({ state: "hidden" });
+    assert.equal(await inputValue(), "");
+    assert.equal(await page.locator("#payload").textContent(), "");
+    assert.equal(await payloadInDom(), false);
+    assert.equal(await page.locator("#rows tr").count(), 0);
+    step("Forget token: input empty; job panel closed and its payload gone from the DOM");
+
+    await page.locator("#token-button").click();                                       // (b)
+    await page.getByLabel("API token", { exact: true }).fill(TOKEN);
+    await page.getByRole("button", { name: "Cancel", exact: true }).click();
+    assert.equal(await inputValue(), "");
+    await page.locator("#token-button").click();
+    await page.getByLabel("API token", { exact: true }).fill(TOKEN);
+    await page.keyboard.press("Escape");
+    assert.equal(await inputValue(), "");
+    step("token dialog cancelled or escaped: input empty");
+
+    await page.locator("#token-button").click();                                       // (d)
+    await page.getByLabel("API token", { exact: true }).fill(TOKEN);
+    await page.getByRole("button", { name: "Use token" }).click();
+    await page.locator("#payload").filter({ hasText: "upstream returned 503" }).waitFor();
+    await page.route("**/jobs?*", (route) => route.fulfill({
+      status: 401, contentType: "application/json",
+      headers: { "www-authenticate": "Bearer" }, body: '{"detail":"missing or invalid bearer token"}' }));
+    await page.locator("#detail").waitFor({ state: "hidden" });
+    assert.equal(await page.locator("#payload").textContent(), "");
+    assert.equal(await payloadInDom(), false);
+    assert.equal(await page.locator("#rows tr").count(), 0);
+    await page.unroute("**/jobs?*");
+    await page.locator("#payload").filter({ hasText: "upstream returned 503" }).waitFor();
+    step("a 401 on the next poll closes the job panel and removes its payload; it returns once reads work");
     assert.deepEqual(errors, []);
     await ctx.close();
 
