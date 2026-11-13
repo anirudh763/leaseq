@@ -56,7 +56,9 @@ async function enterTokenByKeyboard(page) {
     assert.equal(await page.locator("#demo-note").isVisible(), false);
     const noTokenCounts = await page.$$eval("[data-count]", (els) => els.map((e) => e.textContent));
     assert.deepEqual(noTokenCounts, Array(6).fill("\u2013"));   // unknown, not "0"
-    assert.equal(await page.locator("#rows tr").count(), 0);
+    // No job rows, only the empty-state row that says what to do next.
+    assert.equal(await page.locator("#rows tr").count(), 1);
+    assert.equal(await page.locator("#rows").innerText(), "Jobs appear here after you enter the API token.");
     report.axe["no-token"] = await axeViolations(page);
     step("reads without a token: 401, the page shows 'requires the API token'");
 
@@ -163,9 +165,9 @@ async function enterTokenByKeyboard(page) {
     assert.equal(await inputValue(), "");
     assert.equal(await page.locator("#payload").textContent(), "");
     assert.equal(await payloadInDom(), false);
-    assert.equal(await page.locator("#rows tr").count(), 0);          // cleared at once
+    assert.equal(await page.locator("#rows [data-job]").count(), 0);  // job rows cleared at once
     await page.waitForTimeout(2000);                                   // the held poll answers
-    assert.equal(await page.locator("#rows tr").count(), 0);
+    assert.equal(await page.locator("#rows [data-job]").count(), 0);
     assert.equal(await payloadInDom(), false);
     assert.deepEqual(await page.$$eval("[data-count]", (els) => els.map((e) => e.textContent)),
                      Array(6).fill("\u2013"));
@@ -194,7 +196,7 @@ async function enterTokenByKeyboard(page) {
     await page.locator("#detail").waitFor({ state: "hidden" });
     assert.equal(await page.locator("#payload").textContent(), "");
     assert.equal(await payloadInDom(), false);
-    assert.equal(await page.locator("#rows tr").count(), 0);
+    assert.equal(await page.locator("#rows [data-job]").count(), 0);
     await page.unroute("**/jobs?*");
     await page.locator("#payload").filter({ hasText: "upstream returned 503" }).waitFor();
     step("a 401 on the next poll closes the job panel and removes its payload; it returns once reads work");

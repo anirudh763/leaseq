@@ -1,5 +1,30 @@
 # Changelog
 
+## Unreleased
+
+Dashboard only; no queue or API changes.
+
+- The error banner is updated only when its text changes. Before, it was
+  rebuilt on every 2-second poll, which moved keyboard focus from its
+  "Enter API token" button to the page body and made screen readers announce
+  the alert again on every poll.
+- "Pause updates" changes its label only; it no longer also sets
+  `aria-pressed` (which was announced as "Resume updates, pressed").
+- The "Cancel job" confirm button is filled with the danger colour instead of
+  the accent used by "Requeue job".
+- An HTTP error banner says what to check and that the page retries.
+- Without a token the job table says "Jobs appear here after you enter the
+  API token." instead of showing an empty body.
+- Header: the product name is the page's `h1`, and a "Source on GitHub" link
+  was added. The state tabs stay on one row and scroll sideways on narrow
+  screens. The job heading is no longer monospace; the notes lost their
+  coloured left stripe.
+- `ui.css` is the updated shared copy (root font size in %, so the browser's
+  default size applies; hover and pressed states; a 120 ms button transition
+  only when reduced motion is not requested).
+- New `DESIGN.md` with the dashboard's tokens, light and dark values and
+  measured contrast ratios.
+
 ## 0.1.0 - 2026-11-13
 
 First numbered version. Queue semantics (claim, lease, heartbeat, fenced
