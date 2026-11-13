@@ -87,20 +87,39 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
         with:
           node-version: "22"
-      # Compose refuses to start without a token; make a throwaway one, masked in logs.
-      - run: |
-          token=$(openssl rand -hex 24)
+      # A bare `docker compose` with no .env and no token must refuse to start.
+      - name: compose fails closed without a token
+        run: |
+          test ! -e .env
+          test -z "${LEASEQ_API_TOKEN:-}"
+          if docker compose config >/dev/null 2>err.txt; then
+            echo "docker compose accepted a missing LEASEQ_API_TOKEN"; exit 1
+          fi
+          grep -q LEASEQ_API_TOKEN err.txt
+          cat err.txt
+      # scripts/up.sh with no token set: it writes a random one to .env and starts the stack.
+      - name: scripts/up.sh
+        run: scripts/up.sh --scale demo=0
+      - name: read the token from .env (masked in logs)
+        run: |
+          test "$(stat -c %a .env)" = 600
+          token=$(sed -n 's/^LEASEQ_API_TOKEN=//p' .env)
+          test "${#token}" -ge 32
           echo "::add-mask::$token"
           echo "LEASEQ_API_TOKEN=$token" >> "$GITHUB_ENV"
-      - run: docker compose up --build -d --scale demo=0
+      - name: a second scripts/up.sh keeps the token
+        run: |
+          before=$(sha256sum .env)
+          scripts/up.sh --scale demo=0
+          test "$(sha256sum .env)" = "$before"
       - run: npm install --no-save playwright@1.63.0 axe-core@4.14.0
       - run: npx playwright install --with-deps chromium
       - name: wait for the API
         run: for i in $(seq 1 60); do curl -fsS http://127.0.0.1:8000/healthz && exit 0; sleep 1; done; exit 1
       - name: dashboard in a browser against the compose stack
         run: BASE_URL=http://127.0.0.1:8000 API_TOKEN="$LEASEQ_API_TOKEN" node tests/e2e/live_flow.e2e.js
-      - name: API smoke test against the compose stack
-        run: scripts/smoke.sh http://127.0.0.1:8000
+      - name: API smoke test against the compose stack, with the token from .env
+        run: LEASEQ_API_TOKEN="$(sed -n 's/^LEASEQ_API_TOKEN=//p' .env)" scripts/smoke.sh http://127.0.0.1:8000
       - name: Preserve jobs and audit history across down/up
         run: |
           python3 - <<'PY'

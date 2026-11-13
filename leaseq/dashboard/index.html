@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>leaseq operations</title>
+<link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="assets/ui.css">
 <link rel="stylesheet" href="assets/app.css">
 <script src="assets/app.js" defer></script>
@@ -24,6 +25,9 @@
 
 <main id="main">
   <h1 class="sr-only">Jobs</h1>
+  <noscript><p class="noscript">This dashboard needs JavaScript to load and show jobs.
+    The HTTP API works without it: see the <a href="/docs">API reference</a>, or use
+    <code>curl</code> as in the README.</p></noscript>
   <div id="banner" class="banner" role="alert" hidden></div>
 
   <div class="tabs" role="tablist" aria-label="Job state" id="tabs"></div>
@@ -122,6 +126,7 @@
   kept in this page's memory, never stored. Font: Atkinson Hyperlegible,
   <a href="assets/OFL.txt">SIL Open Font License 1.1</a>.
   <a href="/docs">API reference</a>
+  <span id="version" class="mono">leaseq 0.1.0</span>
 </footer>
 
 <dialog id="token-dialog" aria-labelledby="token-title">

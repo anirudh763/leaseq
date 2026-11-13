@@ -113,3 +113,8 @@ dialog label{display:block;font-weight:700;margin-top:10px}
 .detail table.dense td{white-space:normal;overflow-wrap:anywhere}
 .demo-note{margin:0 0 12px;padding:8px 12px;border:1px solid var(--border);border-left:3px solid var(--warn);
   border-radius:var(--radius);background:var(--bg-subtle);font-size:.9em;max-width:80ch}
+
+/* Shown only when JavaScript is off (<noscript>). */
+.noscript{margin:0 0 12px;padding:10px 14px;border:1px solid var(--border);border-left:3px solid var(--warn);
+  border-radius:var(--radius);background:var(--bg-subtle);max-width:80ch}
+.app-footer #version{margin-left:8px}

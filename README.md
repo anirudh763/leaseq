@@ -2,17 +2,22 @@
 
 [CI status](https://github.com/anirudh763/leaseq/actions)
 
-leaseq is a background job queue stored in PostgreSQL behind a small HTTP API.
-Clients submit jobs; workers claim a job under a time-limited lease, do the
-work, and report the result with the lease token they were given. It exists to
-answer one question with evidence instead of a claim: if worker processes are
-killed at random while they hold jobs, is any job lost, and is any job's result
-recorded twice? The repository contains the queue, its HTTP API with bearer-token
-authentication, an operations dashboard served by the API (1,028 lines of
-Python, 83 of SQL, and 1,048 of HTML/JavaScript/CSS written for the dashboard,
-not counting the shared `ui.css` base stylesheet), a fault-injection
-test that kills workers with SIGKILL and then checks the database, and the
-measured results below.
+leaseq is a reference implementation of a lease-and-fence job queue on
+PostgreSQL, with a kill test. It is built and measured at demo scale (a few
+thousand jobs on one 2-core machine) and is not a production queue; for real
+workloads use a mature PostgreSQL-backed queue such as pgmq (a PostgreSQL
+extension), River (Go) or Procrastinate (Python).
+
+Clients submit jobs over a small HTTP API; workers claim a job under a
+time-limited lease, do the work, and report the result with the lease token
+they were given. It exists to answer one question with evidence instead of a
+claim: if worker processes are killed at random while they hold jobs, is any
+job lost, and is any job's result recorded twice? The repository contains the
+queue, its HTTP API with bearer-token authentication, an operations dashboard
+served by the API (1,060 lines of Python, 89 of SQL, and 1,058 of
+HTML/JavaScript/CSS written for the dashboard, not counting the shared
+`ui.css` base stylesheet), a fault-injection test that kills workers with
+SIGKILL and then checks the database, and the measured results below.
 
 ![The leaseq dashboard: job table with state tabs, and the details of a job that failed twice, was retried with backoff and then went dead](docs/screenshots/dashboard.png)
 
@@ -22,7 +27,46 @@ captured with `tests/e2e/readme_screenshot.js` after entering the token.
 
 ## Quick start
 
-Requires Python 3 and a PostgreSQL server (tested with Python 3.13 and PostgreSQL 16 only).
+With Docker (Docker Compose v2):
+
+```
+scripts/up.sh
+```
+
+It creates `.env` with a random `LEASEQ_API_TOKEN` if there is none (an
+existing `.env` or token is never overwritten; the file is set to mode 600 and
+is in `.gitignore`), runs `docker compose up -d --build`, waits for
+`/healthz`, and prints the dashboard URL (http://127.0.0.1:8000/dashboard/),
+where the token is stored, and how to stop. The stack is PostgreSQL, the API
+on 127.0.0.1:8000, one worker and a `demo` service that enqueues sample jobs
+for 10 minutes (`scripts/up.sh --scale demo=0` starts without it). The
+dashboard asks for the token before it shows any jobs; read it with
+`grep LEASEQ_API_TOKEN .env`. Then check the stack end to end:
+
+```
+LEASEQ_API_TOKEN=$(sed -n 's/^LEASEQ_API_TOKEN=//p' .env) scripts/smoke.sh
+docker compose down          # stop; keeps the data
+```
+
+There is no default token: a bare `docker compose up` with no `.env` and no
+`LEASEQ_API_TOKEN` stops with a message saying so. `.env.example` lists the
+variable if you prefer to write `.env` yourself.
+
+Jobs, results and audit history are stored in the named `pgdata` volume.
+`docker compose down` keeps that data; the next `docker compose up --build`
+reuses it within the same Compose project. Changing the project name (or
+moving to a differently named directory) selects a different volume.
+`docker compose down -v` is a destructive reset: it deletes the database
+volume, including every job, result and audit event. Use it only when that
+data is disposable, such as cleaning up a CI test.
+
+If upgrading from the earlier Compose file without a named volume, export
+your existing database before changing the mount, then restore it into the
+new volume. The old database used an anonymous volume; it is not migrated
+automatically. Keep the old volume until the restored data is verified.
+
+Without Docker: requires Python 3 and a PostgreSQL server (tested with Python
+3.13 and PostgreSQL 16 only).
 
 ```
 pip install -r requirements.txt
@@ -51,32 +95,8 @@ python -m leaseq.demo --api http://127.0.0.1:8000     # 16 sample jobs for the d
 # then open http://127.0.0.1:8000/dashboard/ and enter the token
 ```
 
-With Docker:
-
-```
-export LEASEQ_API_TOKEN=$(openssl rand -hex 24)
-docker compose up --build
-```
-
-starts PostgreSQL, the API on 127.0.0.1:8000, one worker and a `demo` service
-that enqueues sample jobs for 10 minutes. There is no default token: without
-`LEASEQ_API_TOKEN` set, `docker compose` stops with a message saying so. Open
-http://127.0.0.1:8000/dashboard/; it asks for the token before it shows any
-jobs. `scripts/smoke.sh` (with the same `LEASEQ_API_TOKEN` exported) then checks
-the stack end to end.
-
-Jobs, results and audit history are stored in the named `pgdata` volume.
-`docker compose down` keeps that data; the next `docker compose up --build`
-reuses it within the same Compose project. Changing the project name (or
-moving to a differently named directory) selects a different volume.
-`docker compose down -v` is a destructive reset: it deletes the database
-volume, including every job, result and audit event. Use it only when that
-data is disposable, such as cleaning up a CI test.
-
-If upgrading from the earlier Compose file without a named volume, export
-your existing database before changing the mount, then restore it into the
-new volume. The old database used an anonymous volume; it is not migrated
-automatically. Keep the old volume until the restored data is verified.
+`GET /healthz` needs no token and returns `{"ok": true, "version": "0.1.0"}`;
+the version is also in the dashboard footer and in `CHANGELOG.md`.
 
 ### API
 
@@ -318,9 +338,12 @@ setup, not PostgreSQL's ceiling.
 ### Docker
 
 Docker was not run on the machine this was built on (it has no Docker
-daemon). The `compose` job in CI is where the real stack is tested. It starts
-PostgreSQL, the API and one worker with `docker compose up --build`, with a
-random token and the demo feeder scaled to 0, and then runs:
+daemon). The `compose` job in CI is where the real stack is tested. It first
+checks that `docker compose config` refuses to run with no `.env` and no
+token, then starts PostgreSQL, the API and one worker with
+`scripts/up.sh --scale demo=0` (no token set beforehand, so the script writes
+a random one to `.env`), checks that `.env` is mode 600 and that a second
+`scripts/up.sh` leaves it unchanged, and then runs:
 
 1. `tests/e2e/live_flow.e2e.js` in Chromium against `http://127.0.0.1:8000`:
    reads refused without the token, token entered by keyboard, sample jobs
@@ -328,7 +351,7 @@ random token and the demo feeder scaled to 0, and then runs:
    history and events shown, a retry ending dead, cancel, requeue, Forget
    token, an API failure, 375 px and 640 px layouts, and axe in light and
    dark.
-2. `scripts/smoke.sh`, which prints one `PASS` line per check: anonymous
+2. `scripts/smoke.sh` with the token read from `.env`, which prints one `PASS` line per check: anonymous
    writes and reads get 401; the dashboard and its JS and CSS are served;
    idempotency; a finished job's events are `enqueued claimed completed`; a
    `fail_first_n` job is retried and done (`enqueued claimed failed claimed
@@ -433,6 +456,12 @@ repository, recommended in real use: adding the constraint as a second guard.
   jobs per filter; older jobs are reached with the filters or "Open job" by id.
   The token is kept in page memory only, so reloading the page asks for it
   again.
+
+## Contributing and security
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for setup and what a pull request
+needs, and [SECURITY.md](SECURITY.md) for how to report a vulnerability and
+what is in scope. Changes are listed in [CHANGELOG.md](CHANGELOG.md).
 
 ## How this was built
 

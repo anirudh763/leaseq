@@ -11,6 +11,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import harness
+import leaseq
 from leaseq import api, db, queue, security, worker
 from leaseq.api import app
 
@@ -185,7 +186,7 @@ def test_missing_or_blank_token_refuses_to_start(db_url, monkeypatch, value):
 
 def test_healthz_and_dashboard_files_need_no_token(make_client):
     client = make_client(auth=False)
-    assert client.get("/healthz").json() == {"ok": True}
+    assert client.get("/healthz").json() == {"ok": True, "version": leaseq.__version__}
     assert client.get("/dashboard/").status_code == 200
     assert client.get("/dashboard/assets/app.js").status_code == 200
 

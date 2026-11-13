@@ -214,6 +214,29 @@ async function openDashboard(page, query = "") {
       await ctx.close();
     }
 
+    // ---- 4c. JavaScript disabled: the noscript message is shown --------------------
+    {
+      const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 }, javaScriptEnabled: false });
+      const page = await ctx.newPage();
+      await page.goto(`${BASE}/dashboard/`);
+      const msg = page.locator(".noscript");
+      assert.equal(await msg.isVisible(), true, "noscript message is not visible with JavaScript off");
+      assert.match(await msg.innerText(), /needs JavaScript/);
+      assert.equal(await page.locator('.noscript a[href="/docs"]').count(), 1);
+      await ctx.close();
+      // ...and hidden when JavaScript runs.
+      const on = await newPage(browser);
+      await openDashboard(on);
+      assert.equal(await on.locator(".noscript").count(), 0);
+      const icon = await on.locator('link[rel="icon"]').getAttribute("href");
+      const res = await on.request.get(new URL(icon, on.url()).href);
+      assert.equal(res.status(), 200);
+      assert.match(res.headers()["content-type"], /^image\/svg\+xml/);
+      assert.match(await on.locator("#version").innerText(), /^leaseq \d+\.\d+\.\d+$/);
+      await on.context().close();
+      step("JavaScript off: noscript message with a link to /docs; JavaScript on: hidden; SVG favicon and footer version served");
+    }
+
     // ---- 5. narrow screens: no sideways page scroll -------------------------------
     for (const width of [320, 640]) {
       const page = await newPage(browser, { viewport: { width, height: 800 } });
