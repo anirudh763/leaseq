@@ -214,6 +214,40 @@ async function openDashboard(page, query = "") {
       await ctx.close();
     }
 
+    // ---- 4c. JavaScript disabled: the noscript message is shown --------------------
+    {
+      const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 }, javaScriptEnabled: false });
+      const page = await ctx.newPage();
+      await page.goto(`${BASE}/dashboard/`);
+      const msg = page.locator(".noscript");
+      assert.equal(await msg.isVisible(), true, "noscript message is not visible with JavaScript off");
+      assert.match(await msg.innerText(), /needs JavaScript/);
+      // /docs itself needs JavaScript, so the fallback must not point there.
+      assert.equal(await page.locator('.noscript a[href="/docs"]').count(), 0);
+      assert.equal(await page.locator('.noscript a[href$="#quick-start"]').count(), 1);
+      const spec = page.locator('.noscript a[href="/openapi.json"]');
+      assert.equal(await spec.count(), 1);
+      await spec.click();                     // works with JavaScript off, without a token
+      await page.waitForURL(/\/openapi\.json$/);
+      const openapi = JSON.parse(await page.locator("body").innerText());
+      assert.ok(openapi.paths["/jobs/{job_id}/complete"], "OpenAPI document lists the HTTP complete call");
+      await ctx.close();
+      // ...and hidden when JavaScript runs.
+      const on = await newPage(browser);
+      await openDashboard(on);
+      assert.equal(await on.locator(".noscript").count(), 0);
+      const icon = await on.locator('link[rel="icon"]').getAttribute("href");
+      const res = await on.request.get(new URL(icon, on.url()).href);
+      assert.equal(res.status(), 200);
+      assert.match(res.headers()["content-type"], /^image\/svg\+xml/);
+      // The footer must show the version the running server reports.
+      const health = await (await on.request.get(`${BASE}/healthz`)).json();
+      assert.equal(await on.locator("#version").innerText(), `leaseq ${health.version}`);
+      assert.deepEqual(on.errors, []);
+      await on.context().close();
+      step("JavaScript off: noscript message links to the README curl steps and /openapi.json (no /docs); JavaScript on: hidden; favicon 200 with no console errors; footer version = /healthz version");
+    }
+
     // ---- 5. narrow screens: no sideways page scroll -------------------------------
     for (const width of [320, 640]) {
       const page = await newPage(browser, { viewport: { width, height: 800 } });

@@ -7,6 +7,7 @@
 #   dash     /dashboard/ and its JS and CSS are served without a token
 #   idem     the same Idempotency-Key twice gives the same job
 #   events   a job reaches done; its audit log is enqueued, claimed, completed
+#   words    a word_count job is done with the exact counts as its result
 #   retry    a job that fails once is retried with backoff and ends done
 #   cancel   a running job is cancelled; the worker's late result is rejected
 #   requeue  the cancelled job is requeued and runs to done
@@ -70,6 +71,15 @@ wait_state "$id1" done
 ev=$(events "$id1")
 [ "$ev" = "enqueued claimed completed" ] || fail "events: job $id1 events are '$ev'"
 pass "events: job $id1 done; audit log = '$ev'"
+
+# --- word_count: the bundled handler that does real work ------------------------
+wid=$(submit "smoke-$RUN-words" '{"kind": "word_count", "payload": {"text": "to be or\nnot to be"}}')
+wait_state "$wid" done
+res=$(api "$API/jobs/$wid" | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["result"], sort_keys=True))')
+[ "$res" = '{"lines": 2, "words": 6}' ] || fail "words: job $wid result is $res"
+ev=$(events "$wid")
+[ "$ev" = "enqueued claimed completed" ] || fail "words: job $wid events are '$ev'"
+pass "words: word_count job $wid done; result $res; audit log = '$ev'"
 
 # --- (b) retry: fails on attempt 1, succeeds on attempt 2 ----------------------
 rid=$(submit "smoke-$RUN-retry" '{"kind": "fail_first_n", "payload": {"n": 1}, "max_attempts": 3}')

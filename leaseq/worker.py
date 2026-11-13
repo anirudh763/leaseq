@@ -31,9 +31,15 @@ def handle(job: dict, api: httpx.Client, lease_seconds: float) -> dict:
     fail   always raises (exercises retry and dead-lettering).
     fail_first_n  payload {"n": k}: raises on attempts 1..k, succeeds after that
            (a deterministic retry for the compose smoke test).
+    word_count  payload {"text": s}: returns {"words": N, "lines": M}. A small
+           demo handler that does real, deterministic work on bounded input:
+           text over WORD_COUNT_MAX_CHARS characters, or not a string, raises,
+           which reports a failed attempt with the reason.
     other  no work.
     """
     payload = job["payload"]
+    if job["kind"] == "word_count":
+        return word_count(payload.get("text"))
     if job["kind"] == "fail":
         raise RuntimeError(payload.get("error", "job kind 'fail' always fails"))
     if job["kind"] == "fail_first_n" and job["attempts"] <= int(payload.get("n", 1)):
@@ -52,6 +58,18 @@ def handle(job: dict, api: httpx.Client, lease_seconds: float) -> dict:
                 if r.status_code == 409:
                     raise LeaseLost()
     return {"worker": job["leased_by"]}
+
+
+WORD_COUNT_MAX_CHARS = 10_000
+
+
+def word_count(text) -> dict:
+    if not isinstance(text, str):
+        raise ValueError("word_count: payload.text must be a string")
+    if len(text) > WORD_COUNT_MAX_CHARS:
+        raise ValueError(f"word_count: payload.text has {len(text):,} characters; "
+                         f"the limit is {WORD_COUNT_MAX_CHARS:,}")
+    return {"words": len(text.split()), "lines": len(text.splitlines())}
 
 
 def finish(conn: psycopg.Connection, job: dict, result: dict, worker_id: str,

@@ -1,6 +1,8 @@
 # PostgreSQL + API + one worker + a demo feeder.
 #
-# Every request to the API needs a bearer token, and there is no default one:
+# Every request to the API needs a bearer token, and there is no default one.
+# Easiest: scripts/up.sh, which puts a random token in .env (chmod 600) and
+# starts this file. By hand:
 #     export LEASEQ_API_TOKEN=$(openssl rand -hex 24)
 #     docker compose up --build
 # Then open http://127.0.0.1:8000/dashboard/ and paste the token when asked.

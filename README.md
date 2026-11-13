@@ -2,17 +2,27 @@
 
 [CI status](https://github.com/anirudh763/leaseq/actions)
 
-leaseq is a background job queue stored in PostgreSQL behind a small HTTP API.
-Clients submit jobs; workers claim a job under a time-limited lease, do the
-work, and report the result with the lease token they were given. It exists to
-answer one question with evidence instead of a claim: if worker processes are
-killed at random while they hold jobs, is any job lost, and is any job's result
-recorded twice? The repository contains the queue, its HTTP API with bearer-token
-authentication, an operations dashboard served by the API (1,028 lines of
-Python, 83 of SQL, and 1,048 of HTML/JavaScript/CSS written for the dashboard,
-not counting the shared `ui.css` base stylesheet), a fault-injection
-test that kills workers with SIGKILL and then checks the database, and the
-measured results below.
+leaseq is a reference implementation of a lease-and-fence job queue on
+PostgreSQL, with a kill test. It is built and measured at demo scale (a few
+thousand jobs on one 2-core machine) and is not a production queue; for real
+workloads use a mature PostgreSQL-backed queue such as pgmq (a PostgreSQL
+extension), River (Go) or Procrastinate (Python).
+
+Status: public beta, maintained by one student on a best-effort basis. It has
+no known users and has not been validated with any. Supported scope, and how
+to report a security problem (GitHub private vulnerability reporting, no
+personal email), are in [SECURITY.md](SECURITY.md).
+
+Clients submit jobs over a small HTTP API; workers claim a job under a
+time-limited lease, do the work, and report the result with the lease token
+they were given. It exists to answer one question with evidence instead of a
+claim: if worker processes are killed at random while they hold jobs, is any
+job lost, and is any job's result recorded twice? The repository contains the
+queue, its HTTP API with bearer-token authentication, an operations dashboard
+served by the API (1,078 lines of Python, 89 of SQL, and 1,059 of
+HTML/JavaScript/CSS written for the dashboard, not counting the shared
+`ui.css` base stylesheet), a fault-injection test that kills workers with
+SIGKILL and then checks the database, and the measured results below.
 
 ![The leaseq dashboard: job table with state tabs, and the details of a job that failed twice, was retried with backoff and then went dead](docs/screenshots/dashboard.png)
 
@@ -22,7 +32,66 @@ captured with `tests/e2e/readme_screenshot.js` after entering the token.
 
 ## Quick start
 
-Requires Python 3 and a PostgreSQL server (tested with Python 3.13 and PostgreSQL 16 only).
+With Docker (Docker Compose v2):
+
+```
+scripts/up.sh
+```
+
+It writes a random `LEASEQ_API_TOKEN` to `.env` if there is none, or if the
+line is blank (as after `cp .env.example .env`; the blank line is filled in
+place). An existing token is never overwritten, `.env` is set to mode 600 and
+is in `.gitignore`. If `LEASEQ_API_TOKEN` is exported in your shell, Compose
+uses that value ahead of `.env`, so `scripts/up.sh` uses it too, leaves `.env`
+alone and says so. It then runs `docker compose up -d --build`, waits for
+`/healthz` (at most `LEASEQ_UP_TIMEOUT` seconds, default 120), and prints the
+dashboard URL (http://127.0.0.1:8000/dashboard/), where the token is, and how
+to stop. The stack is PostgreSQL, the API on 127.0.0.1:8000, one worker and a
+`demo` service that enqueues sample jobs for 10 minutes
+(`scripts/up.sh --scale demo=0` starts without it). The dashboard asks for
+the token before it shows any jobs.
+
+Run one job that does real work. `word_count` is a small demo handler in the
+bundled worker (not a production feature): it counts the words and lines of
+`payload.text`, up to 10,000 characters.
+
+```
+TOKEN=$(sed -n 's/^LEASEQ_API_TOKEN=//p' .env)
+curl -s -X POST localhost:8000/jobs -H "Authorization: Bearer $TOKEN" \
+     -H 'Content-Type: application/json' -H 'Idempotency-Key: wc-1' \
+     -d '{"kind": "word_count", "payload": {"text": "to be or\nnot to be"}}'
+# -> {"id": 17, "kind": "word_count", "state": "queued", ...}
+curl -s localhost:8000/jobs/17 -H "Authorization: Bearer $TOKEN"
+# -> {..., "state": "done", ..., "result": {"lines": 2, "words": 6}, ...}
+```
+
+Use the `id` the first call returns. Then check the whole stack end to end,
+and stop it:
+
+```
+LEASEQ_API_TOKEN=$(sed -n 's/^LEASEQ_API_TOKEN=//p' .env) scripts/smoke.sh
+docker compose down          # stop; keeps the data
+```
+
+There is no default token: a bare `docker compose up` with no `.env` and no
+`LEASEQ_API_TOKEN` stops with a message saying so. `.env.example` lists the
+variable if you prefer to write `.env` yourself.
+
+Jobs, results and audit history are stored in the named `pgdata` volume.
+`docker compose down` keeps that data; the next `docker compose up --build`
+reuses it within the same Compose project. Changing the project name (or
+moving to a differently named directory) selects a different volume.
+`docker compose down -v` is a destructive reset: it deletes the database
+volume, including every job, result and audit event. Use it only when that
+data is disposable, such as cleaning up a CI test.
+
+If upgrading from the earlier Compose file without a named volume, export
+your existing database before changing the mount, then restore it into the
+new volume. The old database used an anonymous volume; it is not migrated
+automatically. Keep the old volume until the restored data is verified.
+
+Without Docker: requires Python 3 and a PostgreSQL server (tested with Python
+3.13 and PostgreSQL 16 only).
 
 ```
 pip install -r requirements.txt
@@ -51,32 +120,8 @@ python -m leaseq.demo --api http://127.0.0.1:8000     # 16 sample jobs for the d
 # then open http://127.0.0.1:8000/dashboard/ and enter the token
 ```
 
-With Docker:
-
-```
-export LEASEQ_API_TOKEN=$(openssl rand -hex 24)
-docker compose up --build
-```
-
-starts PostgreSQL, the API on 127.0.0.1:8000, one worker and a `demo` service
-that enqueues sample jobs for 10 minutes. There is no default token: without
-`LEASEQ_API_TOKEN` set, `docker compose` stops with a message saying so. Open
-http://127.0.0.1:8000/dashboard/; it asks for the token before it shows any
-jobs. `scripts/smoke.sh` (with the same `LEASEQ_API_TOKEN` exported) then checks
-the stack end to end.
-
-Jobs, results and audit history are stored in the named `pgdata` volume.
-`docker compose down` keeps that data; the next `docker compose up --build`
-reuses it within the same Compose project. Changing the project name (or
-moving to a differently named directory) selects a different volume.
-`docker compose down -v` is a destructive reset: it deletes the database
-volume, including every job, result and audit event. Use it only when that
-data is disposable, such as cleaning up a CI test.
-
-If upgrading from the earlier Compose file without a named volume, export
-your existing database before changing the mount, then restore it into the
-new volume. The old database used an anonymous volume; it is not migrated
-automatically. Keep the old volume until the restored data is verified.
+`GET /healthz` needs no token and returns `{"ok": true, "version": "0.1.0"}`;
+the version is also in the dashboard footer and in `CHANGELOG.md`.
 
 ### API
 
@@ -138,32 +183,52 @@ manual screen-reader check has not been run.
 ## The demo worker, and writing your own handler
 
 The bundled worker (`leaseq/worker.py`) is a test harness for the queue, not an
-email sender or report renderer. It knows three kinds: `sleep` waits (and
-heartbeats), `fail` raises, `fail_first_n` raises on its first n attempts. Any
-other kind, including the demo's `email.send`, `report.render`,
+email sender or report renderer. It knows four kinds: `sleep` waits (and
+heartbeats), `fail` raises, `fail_first_n` raises on its first n attempts, and
+`word_count`, a small demo handler that does real, deterministic work on
+bounded input: it returns `{"words": N, "lines": M}` for `payload.text`, and
+text over 10,000 characters (or not a string) is a failed attempt with that
+reason. Any other kind, including the demo's `email.send`, `report.render`,
 `thumbnail.resize` and `index.rebuild`, is a no-op that is marked done at once:
 no email is sent and nothing is rendered. What is real is the queue contract
 around it: claim with a lease, heartbeat, complete or fail with the lease
 token, retry with backoff, dead-lettering, and the audit log.
 
-To do real work, add a branch to `handle()` that returns the job's result. The
-example below is pure computation with its input bounded, so running it twice
-is harmless:
+How a job is completed depends on who runs it:
 
-```python
-# in leaseq/worker.py, inside handle(job, api, lease_seconds), before the final return
-if job["kind"] == "word_count":
-    text = payload.get("text")
-    if not isinstance(text, str) or len(text) > 10_000:
-        raise ValueError("payload.text must be a string of at most 10,000 characters")
-    return {"words": len(text.split())}
+- **The bundled worker** claims and heartbeats over HTTP, but completes a job
+  through a direct database transaction (`finish()` in `leaseq/worker.py`,
+  which needs `LEASEQ_DATABASE_URL`): the fenced `complete` and the job's
+  side effect (a row in `effects`) commit together or not at all. That is how
+  the chaos test can check "one effect per job".
+- **An independent client** (any language, no database access) uses the HTTP
+  API with the lease token from its claim. It gets the same fencing on the
+  job's state and result, but a side effect it makes elsewhere is not part of
+  that transaction (see below).
+
+```
+AUTH="Authorization: Bearer $TOKEN"
+curl -s -X POST localhost:8000/jobs/claim -H "$AUTH" -H 'Content-Type: application/json' \
+     -d '{"worker_id": "my-client", "lease_seconds": 30}'
+# -> {"id": 18, "kind": "word_count", "lease_token": "Xq...", "payload": {...}, ...}  (204 if nothing is runnable)
+curl -s -X POST localhost:8000/jobs/18/complete -H "$AUTH" -H 'Content-Type: application/json' \
+     -d '{"lease_token": "Xq...", "result": {"words": 6, "lines": 2}}'
+# -> the job, now "done"; 409 if the lease was re-issued or the job was cancelled
 ```
 
-`run()` then passes that result to `finish()`, which stores it with the fenced
-`complete` in one transaction. Keep that path: it is what stops a worker whose
-lease was re-issued or cancelled from recording a result. Work that can outlast the lease
-must heartbeat, as the `sleep` branch does. Raising an exception reports a
-failed attempt, which is retried with backoff.
+Report a failure instead with `POST /jobs/{id}/fail` and
+`{"lease_token": ..., "error": "..."}`, and extend a long lease with
+`POST /jobs/{id}/heartbeat`. Stop the bundled worker first if you try this
+against the Docker stack, or it will claim the job before you do
+(`docker compose stop worker`).
+
+To add a kind to the bundled worker, add a branch to `handle()` that returns
+the job's result, as `word_count` does. `run()` then passes that result to
+`finish()`, which stores it with the fenced `complete` in one transaction.
+Keep that path: it is what stops a worker whose lease was re-issued or
+cancelled from recording a result. Work that can outlast the lease must
+heartbeat, as the `sleep` branch does. Raising an exception reports a failed
+attempt, which is retried with backoff.
 
 Side effects outside the database are different. If the handler sends an email
 or calls another service and the worker then dies or loses its lease before
@@ -268,9 +333,14 @@ run of seed 1 on the same machine gave 63 retried jobs in 29.7 s.
 python -m pytest -q
 ```
 
-99 tests passed in 86 s, none skipped. This includes a reduced chaos run (300
+117 tests passed in 122 s, none skipped (on this branch, on the same kind of
+2-core container as the results above). This includes a reduced chaos run (300
 jobs, 12 kills), the negative control (40 jobs), the authentication and
-input-limit tests in `tests/test_security.py`, and two Playwright browser tests
+input-limit tests in `tests/test_security.py`, `word_count` run by a real
+worker process (`tests/test_word_count_flow.py`), `scripts/up.sh` with a stub
+`docker` (`tests/test_usability.py`, including the unchanged `smoke.sh`
+passing against a real API and worker with the token read from a copied
+`.env.example`), and two Playwright browser tests
 in `tests/test_dashboard_e2e.py`. The browser tests need Node, the `playwright`
 package and axe-core (`AXE_PATH`); without them they are skipped. One of them
 runs real worker processes: the dashboard enqueues jobs, a worker completes
@@ -284,8 +354,11 @@ and checks that no script ran and no CSP violation was reported.
 
 `python tools/sabotage.py` breaks one protection at a time (auth, body limits,
 input checks, paging caps, lease fencing on cancel and requeue, CSP, the
-dashboard's text-only rendering and token handling), runs the tests and
-restores the code. On commit a162539: 42 of 42 sabotages were caught by a failing test, none skipped.
+dashboard's text-only rendering and token handling, the `word_count` bounds,
+`scripts/up.sh` token handling and health wait, the noscript message and the
+footer version), runs the tests and restores the code. On this branch: 54 of
+54 sabotages were caught by a failing test, none skipped (before it, on commit
+a162539: 42 of 42).
 
 ### Benchmark
 
@@ -318,9 +391,13 @@ setup, not PostgreSQL's ceiling.
 ### Docker
 
 Docker was not run on the machine this was built on (it has no Docker
-daemon). The `compose` job in CI is where the real stack is tested. It starts
-PostgreSQL, the API and one worker with `docker compose up --build`, with a
-random token and the demo feeder scaled to 0, and then runs:
+daemon). The `compose` job in CI is where the real stack is tested. It first
+checks that a bare `docker compose up` with no `.env` and no token fails and
+leaves no containers, then starts PostgreSQL, the API and one worker with
+`scripts/up.sh --scale demo=0` (no token set beforehand, so the script writes
+a random one to `.env`), checks that `.env` is mode 600 and that the API
+accepts its token and refuses a wrong one, re-runs `scripts/up.sh` and checks
+that `.env` is byte-identical, and then runs:
 
 1. `tests/e2e/live_flow.e2e.js` in Chromium against `http://127.0.0.1:8000`:
    reads refused without the token, token entered by keyboard, sample jobs
@@ -328,17 +405,25 @@ random token and the demo feeder scaled to 0, and then runs:
    history and events shown, a retry ending dead, cancel, requeue, Forget
    token, an API failure, 375 px and 640 px layouts, and axe in light and
    dark.
-2. `scripts/smoke.sh`, which prints one `PASS` line per check: anonymous
-   writes and reads get 401; the dashboard and its JS and CSS are served;
-   idempotency; a finished job's events are `enqueued claimed completed`; a
-   `fail_first_n` job is retried and done (`enqueued claimed failed claimed
-   completed`); a job cancelled while the worker runs it stays dead and the
-   worker's late result is logged as `rejected`; the requeued job then
-   runs to done.
-3. A retention check: a finished job and its audit events are unchanged
+2. `scripts/smoke.sh` with the token read from `.env`, which prints one
+   `PASS` line per check: anonymous writes and reads get 401; the dashboard
+   and its JS and CSS are served; idempotency; a finished job's events are
+   `enqueued claimed completed`; a `word_count` job ends done with the exact
+   result `{"lines": 2, "words": 6}`; a `fail_first_n` job is retried and
+   done (`enqueued claimed failed claimed completed`); a job cancelled while
+   the worker runs it stays dead and the worker's late result is logged as
+   `rejected`; the requeued job then runs to done.
+3. A worker restart check: a `word_count` job finishes; the worker container
+   is killed with SIGKILL while it runs a `sleep` job and started again; the
+   `sleep` job is re-claimed and done, a second `word_count` job gets the same
+   exact counts, the first job's result and audit events are unchanged, and
+   each of the three jobs has exactly one `completed` event and one `effects`
+   row.
+4. A retention check: a finished job and its audit events are unchanged
    after `docker compose down` and `up`.
 
-All three passed in CI on commit f23f63f
+Before this branch, steps 1, 2 (without `word_count`) and 4 passed in CI on
+commit f23f63f
 ([run 43372726090](https://github.com/anirudh763/leaseq/actions/runs/43372726090)):
 12 browser steps with 0 axe violations, 7 `PASS` lines from the smoke script,
 and the retention check.
@@ -433,6 +518,12 @@ repository, recommended in real use: adding the constraint as a second guard.
   jobs per filter; older jobs are reached with the filters or "Open job" by id.
   The token is kept in page memory only, so reloading the page asks for it
   again.
+
+## Contributing and security
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for setup and what a pull request
+needs, and [SECURITY.md](SECURITY.md) for how to report a vulnerability and
+what is in scope. Changes are listed in [CHANGELOG.md](CHANGELOG.md).
 
 ## How this was built
 

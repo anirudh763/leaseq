@@ -20,7 +20,7 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 
-from . import db, demo, queue, security
+from . import __version__, db, demo, queue, security
 
 log = logging.getLogger("leaseq.api")
 
@@ -44,7 +44,7 @@ async def lifespan(app: FastAPI):
     app.state.pool.close()
 
 
-app = FastAPI(title="leaseq", lifespan=lifespan)
+app = FastAPI(title="leaseq", version=__version__, lifespan=lifespan)
 # The last one added runs first: SecurityHeaders wraps everything (401 and 413
 # included), then Auth, then BodyLimit, and only then FastAPI parses the body.
 app.add_middleware(security.BodyLimit)
@@ -230,10 +230,11 @@ def sample_jobs(request: Request):
 
 @app.get("/healthz")
 def healthz(request: Request):
-    """Liveness for compose and the test harness. Reveals nothing about jobs."""
+    """Liveness for compose and the test harness, and the running version.
+    Reveals nothing about jobs."""
     with request.app.state.pool.connection() as conn:
         conn.execute("SELECT 1")
-    return {"ok": True}
+    return {"ok": True, "version": __version__}
 
 
 @app.get("/stats")

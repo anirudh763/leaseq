@@ -18,7 +18,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 FAST = ["tests/test_api.py", "tests/test_security.py", "tests/test_worker_kinds.py",
-        "tests/test_audit_round2.py"]
+        "tests/test_audit_round2.py", "tests/test_usability.py"]
 E2E = ["tests/test_dashboard_e2e.py"]
 SEC, API, QUEUE, JS = ("leaseq/security.py", "leaseq/api.py", "leaseq/queue.py",
                        "leaseq/dashboard/assets/app.js")
@@ -77,7 +77,22 @@ SABOTAGE = [
     ("result depth unchecked", [(API, '    _result_depth = field_validator("result")(check_json_depth)\n', "")], FAST),
     ("triggers recreated on every start", [("leaseq/schema.sql", "DO $$\nBEGIN\n    IF NOT EXISTS (SELECT 1 FROM pg_trigger",
         "DROP TRIGGER IF EXISTS job_events_no_update_delete ON job_events;\nDO $$\nBEGIN\n    IF NOT EXISTS (SELECT 1 FROM pg_trigger")], FAST),
+    ("word_count input unbounded", [("leaseq/worker.py", "    if len(text) > WORD_COUNT_MAX_CHARS:\n", "    if False:\n")], FAST),
+    ("word_count returns no counts", [("leaseq/worker.py", '        return word_count(payload.get("text"))\n', "        pass\n")], FAST),
     ("backoff exponent unclamped", [(QUEUE, "BACKOFF_BASE * 2 ** min(attempts - 1, 30))", "BACKOFF_BASE * 2 ** (attempts - 1))")], FAST),
+    # Install and release hygiene (tests/test_usability.py)
+    ("version missing from /healthz", [(API, 'return {"ok": True, "version": __version__}', 'return {"ok": True}')], FAST),
+    # Not listed: dropping FastAPI(version=...) cannot be caught while the
+    # version is 0.1.0, because that is FastAPI's own default version.
+    ("up.sh overwrites an existing token", [("scripts/up.sh", 'if [ "$count" = 1 ] && ! blank "$current"; then', "if false; then")], FAST),
+    ("up.sh leaves .env readable by others", [("scripts/up.sh", '  chmod 600 "$ENV_FILE"\n', ""),
+                                               ("scripts/up.sh", "        umask 077                              # a new .env is never world-readable\n", "")], FAST),
+    ("up.sh appends instead of filling a blank token", [("scripts/up.sh", 'if [ "$count" = 1 ]; then\n      # Fill', 'if false; then\n      # Fill')], FAST),
+    ("up.sh ignores the shell token", [("scripts/up.sh", 'if [ -n "${LEASEQ_API_TOKEN+set}" ]; then', "if false; then")], FAST),
+    ("up.sh health check without a per-request timeout", [("scripts/up.sh", '--connect-timeout "$left" --max-time "$left" ', "")], FAST),
+    ("up.sh does not wait for /healthz", [("scripts/up.sh", 'echo "The API did not answer $URL/healthz within ${TIMEOUT}s. See: docker compose logs app" >&2\nexit 1',
+                                           'exit 0')], FAST),
+    (".env not ignored by git", [(".gitignore", "\n.env\n", "\n")], FAST),
     # Browser tests (dashboard)
     ("operator buttons without a token", [(JS, "  if (!app.token) return;                 // read-only: no operator buttons at all\n", "")], E2E),
     ("payload rendered as HTML", [(JS, '  $("payload").textContent = JSON.stringify(job.payload, null, 2);',
@@ -95,6 +110,9 @@ SABOTAGE = [
                                       '    $("demo-note").hidden = true;')], E2E),
     ("Forget leaves the table until the next poll", [(JS, '    $("token-input").value = "";\n    clearJobData();', '    $("token-input").value = "";\n    clearDetail();')], E2E),
     ("in-flight poll repopulates after Forget", [(JS, "    if (gen !== app.authGen) return;     // fetched with a token that has since changed\n", "")], E2E),
+    ("footer version drifts from /healthz", [("leaseq/dashboard/index.html", '<span id="version" class="mono">leaseq 0.1.0</span>',
+                                             '<span id="version" class="mono">leaseq 0.0.9</span>')], E2E),
+    ("noscript message removed", [("leaseq/dashboard/index.html", '<noscript><p class="noscript">', '<noscript><p class="nojs">')], E2E),
     ("job panel kept after a 401", [(JS, "  $(\"expired-note\").hidden = true;\n  clearDetail();\n}", "  $(\"expired-note\").hidden = true;\n}")], E2E),
 ]
 
