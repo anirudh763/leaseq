@@ -8,8 +8,8 @@ work, and report the result with the lease token they were given. It exists to
 answer one question with evidence instead of a claim: if worker processes are
 killed at random while they hold jobs, is any job lost, and is any job's result
 recorded twice? The repository contains the queue, its HTTP API with bearer-token
-authentication, an operations dashboard served by the API (1,024 lines of
-Python, 83 of SQL, and 996 of HTML/JavaScript/CSS written for the dashboard,
+authentication, an operations dashboard served by the API (1,028 lines of
+Python, 83 of SQL, and 1,048 of HTML/JavaScript/CSS written for the dashboard,
 not counting the shared `ui.css` base stylesheet), a fault-injection
 test that kills workers with SIGKILL and then checks the database, and the
 measured results below.
@@ -161,7 +161,7 @@ if job["kind"] == "word_count":
 
 `run()` then passes that result to `finish()`, which stores it with the fenced
 `complete` in one transaction. Keep that path: it is what stops a worker whose
-lease has expired from recording a result. Work that can outlast the lease
+lease was re-issued or cancelled from recording a result. Work that can outlast the lease
 must heartbeat, as the `sleep` branch does. Raising an exception reports a
 failed attempt, which is retried with backoff.
 
@@ -268,7 +268,7 @@ token and job data are checked to be gone after "Forget token".
 `python tools/sabotage.py` breaks one protection at a time (auth, body limits,
 input checks, paging caps, lease fencing on cancel and requeue, CSP, the
 dashboard's text-only rendering and token handling), runs the tests and
-restores the code. On commit 4669121: 37 of 37 sabotages were caught by a failing test, none skipped.
+restores the code. On commit f23f63f: 37 of 37 sabotages were caught by a failing test, none skipped.
 
 ### Benchmark
 
@@ -321,8 +321,8 @@ random token and the demo feeder scaled to 0, and then runs:
 3. A retention check: a finished job and its audit events are unchanged
    after `docker compose down` and `up`.
 
-All three passed in CI on commit 4669121
-([run 43371631073](https://github.com/anirudh763/leaseq/actions/runs/43371631073)):
+All three passed in CI on commit f23f63f
+([run 43372726090](https://github.com/anirudh763/leaseq/actions/runs/43372726090)):
 12 browser steps with 0 axe violations, 7 `PASS` lines from the smoke script,
 and the retention check.
 
