@@ -241,7 +241,7 @@ API and the workers a random token for the run.
 
 | Command | Jobs | SIGKILLs | Jobs needing >1 attempt | Late completions rejected | Time | Result |
 |---|---|---|---|---|---|---|
-| `python scripts/chaos.py` (seed 1) | 2000 | 50 | 46 | 33 | 46.9 s | PASS |
+| `python scripts/chaos.py --seed 1` | 2000 | 50 | 56 | 29 | 40.3 s | PASS |
 | negative control (`--unfenced`, 60 jobs) | 60 | 0 | | | | FAIL: 68 effect rows, 8 jobs completed twice |
 
 The seed fixes the job payloads, the victim of each kill and the gaps between
@@ -255,14 +255,20 @@ run of seed 1 on the same machine gave 63 retried jobs in 29.7 s.
 python -m pytest -q
 ```
 
-83 tests passed in 107 s (load average 3.5 to 4.9 from other jobs on the machine). This includes a reduced chaos run (300 jobs, 12
-kills), the negative control (40 jobs), the authentication and input-limit
-tests in `tests/test_security.py`, and two Playwright browser tests in
-`tests/test_dashboard_e2e.py`. The browser tests need Node, the `playwright`
+92 tests passed in 64 s, none skipped. This includes a reduced chaos run (300
+jobs, 12 kills), the negative control (40 jobs), the authentication and
+input-limit tests in `tests/test_security.py`, and two Playwright browser tests
+in `tests/test_dashboard_e2e.py`. The browser tests need Node, the `playwright`
 package and axe-core (`AXE_PATH`); without them they are skipped. One of them
 runs real worker processes: the dashboard enqueues jobs, a worker completes
 them, a failing job retries with backoff until it is dead, one job is
-cancelled and one requeued, and an API failure is simulated.
+cancelled and one requeued, an API failure and a 401 are simulated, and the
+token and job data are checked to be gone after "Forget token".
+
+`python tools/sabotage.py` breaks one protection at a time (auth, body limits,
+input checks, paging caps, lease fencing on cancel and requeue, CSP, the
+dashboard's text-only rendering and token handling), runs the tests and
+restores the code. On commit 4669121: 37 of 37 sabotages were caught by a failing test, none skipped.
 
 ### Benchmark
 
@@ -294,15 +300,35 @@ setup, not PostgreSQL's ceiling.
 
 ### Docker
 
-`Dockerfile` and `docker-compose.yml`: not run here. The container this was
-built in has the docker CLI but no Docker daemon (`docker info` fails to
-connect to `/var/run/docker.sock`). The CI workflow builds the compose file
-and runs `scripts/smoke.sh` against it, so GitHub Actions is where that gets
-verified; until the first CI run it is untested. `scripts/smoke.sh` was run
-here against the same setup started as local processes instead of containers
-(API with a token and no public reads, one worker, the demo feeder) and passed:
-an anonymous write and an anonymous read both got 401, the dashboard was served,
-and the job finished.
+Docker was not run on the machine this was built on (it has no Docker
+daemon). The `compose` job in CI is where the real stack is tested. It starts
+PostgreSQL, the API and one worker with `docker compose up --build`, with a
+random token and the demo feeder scaled to 0, and then runs:
+
+1. `tests/e2e/live_flow.e2e.js` in Chromium against `http://127.0.0.1:8000`:
+   reads refused without the token, token entered by keyboard, sample jobs
+   enqueued from the dashboard, a job completed by the worker with its lease
+   history and events shown, a retry ending dead, cancel, requeue, Forget
+   token, an API failure, 375 px and 640 px layouts, and axe in light and
+   dark.
+2. `scripts/smoke.sh`, which prints one `PASS` line per check: anonymous
+   writes and reads get 401; the dashboard and its JS and CSS are served;
+   idempotency; a finished job's events are `enqueued claimed completed`; a
+   `fail_first_n` job is retried and done (`enqueued claimed failed claimed
+   completed`); a job cancelled while the worker runs it stays dead and the
+   worker's late result is logged as `rejected`; the requeued job then
+   runs to done.
+3. A retention check: a finished job and its audit events are unchanged
+   after `docker compose down` and `up`.
+
+All three passed in CI on commit 4669121
+([run 43371631073](https://github.com/anirudh763/leaseq/actions/runs/43371631073)):
+12 browser steps with 0 axe violations, 7 `PASS` lines from the smoke script,
+and the retention check.
+
+The same browser flow and smoke script were also run here against the same
+setup started as local processes (API, one worker, local PostgreSQL) and
+passed.
 
 ## Design decisions
 
