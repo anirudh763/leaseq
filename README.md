@@ -414,11 +414,13 @@ and checks that no script ran and no CSP violation was reported.
 
 `python tools/sabotage.py` breaks one protection at a time (auth, body limits,
 input checks, paging caps, lease fencing on cancel and requeue, CSP, the
-dashboard's text-only rendering and token handling, the `word_count` bounds,
-`scripts/up.sh` token handling and health wait, the noscript message and the
-footer version), runs the tests and restores the code. On this branch: 54 of
-54 sabotages were caught by a failing test, none skipped (before it, on commit
-a162539: 42 of 42).
+dashboard's text-only rendering and token handling, clearing of cached job data
+on Forget and 401, the light default, H1 focus, the Menu sheet, old-link
+redirects, the state lanes, the lifecycle timeline, the confirmation text, the
+Submit bound and result, the `word_count` bounds, `scripts/up.sh` token handling
+and health wait, the noscript message and the footer version), runs the tests
+and restores the code. On this branch: 83 of 83 sabotages were caught by a
+failing test, none skipped.
 
 ### Benchmark
 
