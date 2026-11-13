@@ -18,12 +18,11 @@ shows the running version.
 
 ## Security contact: reporting a vulnerability
 
-Please do not put details of a vulnerability in a public issue. GitHub's
-private vulnerability reporting is not switched on for this repository yet
-(checked 2026-11-13). Until it is, open an issue titled "Security report,
-please contact me" with no details, and I will reply with a private way to
-send them. If the repository page shows **Security > Report a vulnerability**,
-use that instead.
+Please report privately: on the repository page, open the **Security** tab
+and choose **Report a vulnerability** (GitHub private vulnerability
+reporting). Do not put details of a vulnerability in a public issue. Only if
+that button is missing, open an issue titled "Security report, please contact
+me" with no details, and I will reply with a private way to send them.
 
 Include the commit or version (`GET /healthz` shows it), the request or
 steps that show the problem, and what you expected to happen. Fixes get a

@@ -488,6 +488,9 @@ def test_dashboard_has_a_strict_csp_and_loads_nothing_external(make_client):
     for p in files:
         text = p.read_text()
         text = text.replace("http://www.w3.org/2000/svg", "")      # SVG namespace name
+        # The one allowed external URL: a plain link (navigation, not a load) to
+        # the README's curl steps in the <noscript> fallback.
+        text = text.replace('<a href="https://github.com/anirudh763/leaseq#quick-start">', "")
         assert not re.search(r"https?://|//cdn", text), f"external URL in {p.name}"
         assert "innerHTML" not in text and "insertAdjacentHTML" not in text, p.name
         assert "<script>" not in text and " on" + "click=" not in text, p.name

@@ -4,7 +4,7 @@
 
 First numbered version. Queue semantics (claim, lease, heartbeat, fenced
 complete, retry with backoff, cancel, requeue, the audit log) are unchanged
-from the earlier commits on `main`.
+from the earlier commits on `main`; the one new job kind is `word_count`.
 
 ### Easier to try and install
 
@@ -23,7 +23,23 @@ from the earlier commits on `main`.
 - Version 0.1.0 in `leaseq.__version__`, the OpenAPI document, `GET /healthz`
   (`{"ok": true, "version": "0.1.0"}`) and the dashboard footer; a test
   checks they match this file.
-- Dashboard: a `<noscript>` message pointing to the API reference, and an SVG
+- `word_count`, a small demo handler in the bundled worker that does real,
+  deterministic work: `{"words": N, "lines": M}` for `payload.text`, at most
+  10,000 characters (longer text is a failed attempt with that reason). It
+  completes through the same fenced `finish()` transaction as every kind.
+  The quick start submits one with curl and reads the result; `smoke.sh`
+  checks the exact result, and CI kills and restarts the worker container
+  and checks the result survives and nothing completes twice.
+- README: the bundled worker completes jobs through a direct database
+  transaction; independent clients complete over HTTP with their lease token
+  (curl example for claim and complete).
+- `scripts/up.sh` fills a blank `LEASEQ_API_TOKEN=` line (as in a copy of
+  `.env.example`) in place instead of appending a second one, refuses two
+  token lines, uses a token exported in the shell as the only source (and
+  says so), and caps each `/healthz` request so a stalled API cannot outlast
+  `LEASEQ_UP_TIMEOUT`.
+- Dashboard: a `<noscript>` message pointing to the README's curl steps and
+  `/openapi.json` (the `/docs` page itself needs JavaScript), and an SVG
   favicon.
 - `SECURITY.md` (maintenance status: public beta, one student, best effort;
   security contact; supported versions and scope), `CONTRIBUTING.md` and two

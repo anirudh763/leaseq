@@ -131,6 +131,59 @@ jobs:
         run: BASE_URL=http://127.0.0.1:8000 API_TOKEN="$LEASEQ_API_TOKEN" node tests/e2e/live_flow.e2e.js
       - name: API smoke test against the compose stack, with the token from .env
         run: LEASEQ_API_TOKEN="$(sed -n 's/^LEASEQ_API_TOKEN=//p' .env)" scripts/smoke.sh http://127.0.0.1:8000
+      - name: word_count result survives a worker kill and restart; nothing completes twice
+        run: |
+          python3 - <<'PY'
+          import json, os, subprocess, time, uuid, urllib.request
+
+          def request(path, body=None, key=None):
+              headers = {"Authorization": "Bearer " + os.environ["LEASEQ_API_TOKEN"]}
+              if key is not None:
+                  headers["Idempotency-Key"] = key
+              data = None if body is None else json.dumps(body).encode()
+              if data is not None:
+                  headers["Content-Type"] = "application/json"
+              req = urllib.request.Request("http://127.0.0.1:8000" + path, data=data, headers=headers)
+              with urllib.request.urlopen(req, timeout=10) as response:
+                  return json.load(response)
+
+          def wait(job_id, state, seconds=180):
+              for _ in range(seconds * 2):
+                  job = request(f"/jobs/{job_id}")
+                  if job["state"] == state:
+                      return job
+                  time.sleep(0.5)
+              raise AssertionError(f"job {job_id} stuck in {job['state']}")
+
+          run = uuid.uuid4().hex
+          text = "the quick brown fox\njumps over\nthe lazy dog"
+          a = wait(request("/jobs", {"kind": "word_count", "payload": {"text": text}}, f"wc-a-{run}")["id"], "done")
+          assert a["result"] == {"words": 9, "lines": 3}, a["result"]
+          a_events = request(f"/jobs/{a['id']}/events")
+
+          # A job the worker is running when it is killed (SIGKILL, no cleanup).
+          b_id = request("/jobs", {"kind": "sleep", "payload": {"ms": 4000}}, f"sleep-b-{run}")["id"]
+          wait(b_id, "leased", 60)
+          subprocess.run(["docker", "compose", "kill", "-s", "SIGKILL", "worker"], check=True)
+          subprocess.run(["docker", "compose", "start", "worker"], check=True)
+          b = wait(b_id, "done")             # re-claimed after the 30 s lease expires
+          c = wait(request("/jobs", {"kind": "word_count", "payload": {"text": text}}, f"wc-c-{run}")["id"], "done")
+          assert c["result"] == {"words": 9, "lines": 3}, c["result"]
+
+          assert request(f"/jobs/{a['id']}") == a, "word_count result changed after the restart"
+          assert request(f"/jobs/{a['id']}/events") == a_events, "audit log changed after the restart"
+          for j in (a, b, c):
+              ev = [e["event"] for e in request(f"/jobs/{j['id']}/events")["events"]]
+              assert ev.count("completed") == 1, (j["id"], ev)
+          ids = ",".join(str(j["id"]) for j in (a, b, c))
+          rows = subprocess.run(["docker", "compose", "exec", "-T", "postgres", "psql", "-U", "leaseq",
+                                 "-d", "leaseq", "-Atc",
+                                 f"SELECT job_id, count(*) FROM effects WHERE job_id IN ({ids}) GROUP BY 1 ORDER BY 1"],
+                                check=True, capture_output=True, text=True).stdout.split()
+          assert rows == [f"{j['id']}|1" for j in (a, b, c)], rows
+          print(f"word_count {a['result']} kept across a worker SIGKILL+restart; job {b_id} attempts={b['attempts']}; "
+                f"one completed event and one effect row each for jobs {ids}")
+          PY
       - name: Preserve jobs and audit history across down/up
         run: |
           python3 - <<'PY'

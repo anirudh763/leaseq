@@ -77,6 +77,8 @@ SABOTAGE = [
     ("result depth unchecked", [(API, '    _result_depth = field_validator("result")(check_json_depth)\n', "")], FAST),
     ("triggers recreated on every start", [("leaseq/schema.sql", "DO $$\nBEGIN\n    IF NOT EXISTS (SELECT 1 FROM pg_trigger",
         "DROP TRIGGER IF EXISTS job_events_no_update_delete ON job_events;\nDO $$\nBEGIN\n    IF NOT EXISTS (SELECT 1 FROM pg_trigger")], FAST),
+    ("word_count input unbounded", [("leaseq/worker.py", "    if len(text) > WORD_COUNT_MAX_CHARS:\n", "    if False:\n")], FAST),
+    ("word_count returns no counts", [("leaseq/worker.py", '        return word_count(payload.get("text"))\n', "        pass\n")], FAST),
     ("backoff exponent unclamped", [(QUEUE, "BACKOFF_BASE * 2 ** min(attempts - 1, 30))", "BACKOFF_BASE * 2 ** (attempts - 1))")], FAST),
     # Install and release hygiene (tests/test_usability.py)
     ("version missing from /healthz", [(API, 'return {"ok": True, "version": __version__}', 'return {"ok": True}')], FAST),
