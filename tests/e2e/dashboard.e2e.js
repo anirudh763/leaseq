@@ -53,6 +53,7 @@ async function openDashboard(page, query = "") {
       await openDashboard(page);
       assert.deepEqual(await counts(page), EXP.counts);
       assert.equal(await page.locator("#rows tr").count(), EXP.counts.all);
+      assert.equal(await page.locator("#demo-note").isVisible(), false);   // no demo- keys here
       step(`${scheme}: counts match the database`);
       report.axe[`${scheme}-list`] = await axeViolations(page);
 

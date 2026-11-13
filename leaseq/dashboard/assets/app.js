@@ -662,6 +662,7 @@ async function refresh() {
       $("updated").textContent = "Token needed";
       clearCounts();
       clearDetail();
+      $("demo-note").hidden = true;
       $("rows").replaceChildren();
       $("shown").textContent = "";
       return;
@@ -681,6 +682,8 @@ async function refresh() {
       ? `Showing ${jobs.length} matching job${jobs.length === 1 ? "" : "s"}, newest first`
       : `Showing ${jobs.length} of ${total}, newest first`;
     $("more").hidden = !more || app.rows >= MAX_ROWS;
+    // Say plainly when the table shows seeded demo jobs, which do no real work.
+    $("demo-note").hidden = !jobs.some((j) => j.idempotency_key.startsWith("demo-"));
     const note = $("expired-note");
     note.hidden = !counts.expired_leases;
     note.textContent = counts.expired_leases

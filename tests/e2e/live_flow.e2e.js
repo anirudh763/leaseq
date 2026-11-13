@@ -53,6 +53,7 @@ async function enterTokenByKeyboard(page) {
     await page.goto(`${BASE}/dashboard/`);
     const banner = page.getByRole("alert");
     await banner.filter({ hasText: "requires the API token to read jobs" }).waitFor();
+    assert.equal(await page.locator("#demo-note").isVisible(), false);
     const noTokenCounts = await page.$$eval("[data-count]", (els) => els.map((e) => e.textContent));
     assert.deepEqual(noTokenCounts, Array(6).fill("\u2013"));   // unknown, not "0"
     assert.equal(await page.locator("#rows tr").count(), 0);
@@ -77,7 +78,9 @@ async function enterTokenByKeyboard(page) {
     await tabTo(page, (a) => a.id === "load-sample");
     await page.keyboard.press("Enter");
     await page.waitForFunction(() => document.querySelector('[data-count="all"]').textContent === "16");
-    step("'Load sample jobs' enqueued 16 jobs through POST /demo/jobs");
+    await page.locator("#demo-note").waitFor({ state: "visible" });
+    assert.match(await page.locator("#demo-note").innerText(), /no email is sent and nothing is\s+rendered/);
+    step("'Load sample jobs' enqueued 16 jobs through POST /demo/jobs; the sample-data note says demo jobs do no real work");
 
     // 4. Cancel the last job while it is still queued (job 16 of 16).
     await page.getByLabel("Job ID").fill("16");

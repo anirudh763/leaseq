@@ -121,13 +121,56 @@ session storage, or the URL) and sent only in the `Authorization` header, so
 another site cannot make the browser send it: there is no CSRF surface. With a
 token, "Requeue job" and "Cancel job" appear, and each asks for confirmation.
 Job payloads are shown as text, never as HTML, and the page is served with a
-`Content-Security-Policy` that allows only its own files.
+`Content-Security-Policy` that allows only its own files. The token field is
+emptied as soon as the dialog closes; after "Forget token", or when the server
+starts answering 401, the counts, the table and any open job panel (payload
+included) are removed from the page.
+
+When the table contains jobs from `python -m leaseq.demo` (keys starting
+`demo-`), the dashboard says so: those jobs do no real work.
 
 Accessibility: passes automated axe-core checks (WCAG 2.2 A/AA and best-practice
 rules) with 0 violations in 17 scanned states, light and dark, including dialogs,
 an API failure, and 375 px and 640 px widths (640 px is a 1280 px window at 200%
 zoom). The Playwright tests also drive the main flows with the keyboard only. A
 manual screen-reader check has not been run.
+
+## The demo worker, and writing your own handler
+
+The bundled worker (`leaseq/worker.py`) is a test harness for the queue, not an
+email sender or report renderer. It knows three kinds: `sleep` waits (and
+heartbeats), `fail` raises, `fail_first_n` raises on its first n attempts. Any
+other kind, including the demo's `email.send`, `report.render`,
+`thumbnail.resize` and `index.rebuild`, is a no-op that is marked done at once:
+no email is sent and nothing is rendered. What is real is the queue contract
+around it: claim with a lease, heartbeat, complete or fail with the lease
+token, retry with backoff, dead-lettering, and the audit log.
+
+To do real work, add a branch to `handle()` that returns the job's result. The
+example below is pure computation with its input bounded, so running it twice
+is harmless:
+
+```python
+# in leaseq/worker.py, inside handle(job, api, lease_seconds), before the final return
+if job["kind"] == "word_count":
+    text = payload.get("text")
+    if not isinstance(text, str) or len(text) > 10_000:
+        raise ValueError("payload.text must be a string of at most 10,000 characters")
+    return {"words": len(text.split())}
+```
+
+`run()` then passes that result to `finish()`, which stores it with the fenced
+`complete` in one transaction. Keep that path: it is what stops a worker whose
+lease has expired from recording a result. Work that can outlast the lease
+must heartbeat, as the `sleep` branch does. Raising an exception reports a
+failed attempt, which is retried with backoff.
+
+Side effects outside the database are different. If the handler sends an email
+or calls another service and the worker then dies or loses its lease before
+`complete`, the job is handed out again and the email is sent again. Only an
+idempotent handler avoids that, for example by passing the job's
+`idempotency_key` to a provider that de-duplicates on it, or by recording what
+was sent in the same database transaction as the completion.
 
 ## Security
 

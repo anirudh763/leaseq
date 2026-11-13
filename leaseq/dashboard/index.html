@@ -28,6 +28,12 @@
 
   <div class="tabs" role="tablist" aria-label="Job state" id="tabs"></div>
   <p id="expired-note" class="muted note" hidden></p>
+  <p id="demo-note" class="demo-note" hidden>
+    Sample data. Jobs with keys starting <code>demo-</code> come from <code>leaseq.demo</code>,
+    and the bundled worker does no real work for them: no email is sent and nothing is
+    rendered. <code>sleep</code> jobs only wait and <code>fail</code> jobs only fail. The queue
+    itself (claim, heartbeat, complete, retry, audit log) is real.
+  </p>
 
   <form id="filters" class="filters" role="search" aria-label="Filter jobs">
     <div class="field">

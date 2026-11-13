@@ -83,6 +83,8 @@ SABOTAGE = [
                                  (JS, '    $("token-input").value = "";\n    $("token-dialog").close();', '    $("token-dialog").close();'),
                                  (JS, '  saveToken(value);\n  input.value = "";', "  saveToken(value);"),
                                  (JS, '    saveToken(null);\n    $("token-input").value = "";', "    saveToken(null);")], E2E),
+    ("demo-data note never shown", [(JS, '    $("demo-note").hidden = !jobs.some((j) => j.idempotency_key.startsWith("demo-"));',
+                                      '    $("demo-note").hidden = true;')], E2E),
     ("job panel kept after a 401", [(JS, "      clearCounts();\n      clearDetail();", "      clearCounts();")], E2E),
 ]
 
