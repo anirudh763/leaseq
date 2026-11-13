@@ -28,13 +28,31 @@ CREATE TABLE IF NOT EXISTS job_events (
     id         BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     job_id     BIGINT      NOT NULL REFERENCES jobs (id),
     event      TEXT        NOT NULL
-               CHECK (event IN ('enqueued', 'claimed', 'completed', 'failed', 'dead', 'rejected')),
+               CHECK (event IN ('enqueued', 'claimed', 'completed', 'failed', 'dead', 'rejected',
+                                'requeued', 'cancelled')),
     attempt    INT         NOT NULL,
     worker_id  TEXT,
     detail     JSONB       NOT NULL DEFAULT '{}',
     created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
 );
 CREATE INDEX IF NOT EXISTS job_events_job ON job_events (job_id, id);
+
+-- Databases created before operator actions existed have the shorter list of
+-- events. Widen the check once; when it already allows 'requeued' this does nothing
+-- (no table rewrite, no lock on later starts).
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'job_events'::regclass AND conname = 'job_events_event_check'
+          AND position('requeued' IN pg_get_constraintdef(oid)) > 0
+    ) THEN
+        ALTER TABLE job_events DROP CONSTRAINT IF EXISTS job_events_event_check;
+        ALTER TABLE job_events ADD CONSTRAINT job_events_event_check
+            CHECK (event IN ('enqueued', 'claimed', 'completed', 'failed', 'dead', 'rejected',
+                             'requeued', 'cancelled'));
+    END IF;
+END $$;
 
 CREATE OR REPLACE FUNCTION job_events_append_only() RETURNS trigger AS $$
 BEGIN

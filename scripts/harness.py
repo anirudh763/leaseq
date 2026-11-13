@@ -1,6 +1,7 @@
 """Shared helpers for the tests, the chaos run and the benchmark: a scratch
 database that is safe to wipe, and an API server in a subprocess."""
 import os
+import secrets
 import socket
 import subprocess
 import sys
@@ -38,12 +39,25 @@ def free_port() -> int:
         return s.getsockname()[1]
 
 
+def ensure_token() -> str:
+    """The API refuses to start without LEASEQ_API_TOKEN. Use the caller's, or make a
+    random one for this process; child processes (API, workers) inherit it."""
+    if not os.environ.get("LEASEQ_API_TOKEN", "").strip():
+        os.environ["LEASEQ_API_TOKEN"] = secrets.token_urlsafe(32)
+    return os.environ["LEASEQ_API_TOKEN"]
+
+
+def auth_headers() -> dict:
+    return {"Authorization": f"Bearer {ensure_token()}"}
+
+
 def child_env(db_url: str) -> dict:
     return {**os.environ, "LEASEQ_DATABASE_URL": db_url, "PYTHONPATH": str(ROOT)}
 
 
 def start_api(db_url: str) -> tuple[subprocess.Popen, str]:
     """Run `uvicorn leaseq.api:app` in a subprocess and wait until it answers."""
+    ensure_token()
     port = free_port()
     proc = subprocess.Popen(
         [sys.executable, "-m", "uvicorn", "leaseq.api:app", "--host", "127.0.0.1",
@@ -52,7 +66,7 @@ def start_api(db_url: str) -> tuple[subprocess.Popen, str]:
     deadline = time.monotonic() + 20
     while time.monotonic() < deadline:
         try:
-            if httpx.get(base + "/stats", timeout=1).status_code == 200:
+            if httpx.get(base + "/healthz", timeout=1).status_code == 200:
                 return proc, base
         except httpx.HTTPError:
             time.sleep(0.1)

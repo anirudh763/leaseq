@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>leaseq operations</title>
+<link rel="stylesheet" href="assets/ui.css">
+<link rel="stylesheet" href="assets/app.css">
+<script src="assets/app.js" defer></script>
+</head>
+<body>
+<a class="skip" href="#jobs-panel">Skip to jobs</a>
+
+<header class="app-header">
+  <span class="name">leaseq</span>
+  <span class="muted">Operations</span>
+  <div class="header-right">
+    <span id="updated" class="muted mono">Connecting</span>
+    <button type="button" class="btn" id="pause" aria-pressed="false">Pause updates</button>
+    <span id="operator-label" class="label ok" hidden>Operator mode</span>
+    <button type="button" class="btn" id="token-button">Enter API token</button>
+  </div>
+</header>
+
+<main id="main">
+  <h1 class="sr-only">Jobs</h1>
+  <div id="banner" class="banner" role="alert" hidden></div>
+
+  <div class="tabs" role="tablist" aria-label="Job state" id="tabs"></div>
+  <p id="expired-note" class="muted note" hidden></p>
+  <p id="demo-note" class="demo-note" hidden>
+    Sample data. Jobs with keys starting <code>demo-</code> come from <code>leaseq.demo</code>,
+    and the bundled worker does no real work for them: no email is sent and nothing is
+    rendered. <code>sleep</code> jobs only wait and <code>fail</code> jobs only fail. The queue
+    itself (claim, heartbeat, complete, retry, audit log) is real.
+  </p>
+
+  <form id="filters" class="filters" role="search" aria-label="Filter jobs">
+    <div class="field">
+      <label for="f-kind">Kind</label>
+      <input class="input" id="f-kind" name="kind" maxlength="100"
+             autocomplete="off" spellcheck="false" aria-describedby="f-kind-error">
+      <span class="field-error" id="f-kind-error"></span>
+    </div>
+    <div class="field">
+      <label for="f-worker">Worker</label>
+      <input class="input" id="f-worker" name="worker" maxlength="200"
+             autocomplete="off" spellcheck="false" aria-describedby="f-worker-error">
+      <span class="field-error" id="f-worker-error"></span>
+    </div>
+    <button type="submit" class="btn">Apply filters</button>
+    <button type="button" class="btn" id="clear-filters">Clear filters</button>
+    <span class="filters-gap"></span>
+    <div class="field">
+      <label for="goto-id">Job ID</label>
+      <input class="input goto" id="goto-id" inputmode="numeric" maxlength="19"
+             autocomplete="off" aria-describedby="goto-error">
+      <span class="field-error" id="goto-error"></span>
+    </div>
+    <button type="button" class="btn" id="goto-button">Open job</button>
+  </form>
+
+  <div class="split">
+    <section id="jobs-panel" role="tabpanel" aria-labelledby="tab-all" tabindex="-1" class="box jobs">
+      <div class="table-wrap" tabindex="0" role="region" aria-label="Job table, scrolls sideways">
+        <table>
+          <caption class="sr-only" id="table-caption">Jobs, newest first</caption>
+          <thead>
+            <tr>
+              <th scope="col">ID</th><th scope="col">Kind</th><th scope="col">State</th>
+              <th scope="col">Attempts</th><th scope="col">Worker</th><th scope="col">Updated</th>
+              <th scope="col">Idempotency key</th>
+            </tr>
+          </thead>
+          <tbody id="rows"></tbody>
+        </table>
+      </div>
+      <div class="table-foot">
+        <span id="shown" class="muted"></span>
+        <button type="button" class="btn" id="more" hidden>Show more jobs</button>
+      </div>
+    </section>
+
+    <aside id="detail" class="box detail" aria-labelledby="detail-title" hidden>
+      <div class="detail-head">
+        <h2 id="detail-title" tabindex="-1">Job</h2>
+        <span id="detail-state"></span>
+        <button type="button" class="btn close" id="detail-close">Close details</button>
+      </div>
+      <div id="detail-actions" class="detail-actions"></div>
+      <dl id="detail-fields" class="fields"></dl>
+
+      <h3>Lease history</h3>
+      <p class="muted small">One row per attempt. A lease ends when the worker reports back,
+        when an operator cancels the job, or when it expires and another worker takes the job.</p>
+      <div class="table-wrap" tabindex="0" role="region" aria-label="Lease history, scrolls sideways">
+        <table class="dense">
+          <thead><tr><th scope="col">Attempt</th><th scope="col">Worker</th>
+            <th scope="col">Claimed</th><th scope="col">Lease</th><th scope="col">Outcome</th></tr></thead>
+          <tbody id="lease-rows"></tbody>
+        </table>
+      </div>
+
+      <h3>Audit events</h3>
+      <p class="muted small">From <code>job_events</code>, which the database keeps append-only.</p>
+      <ol id="events" class="events"></ol>
+      <p id="events-more" class="muted small" hidden></p>
+
+      <h3>Payload</h3>
+      <pre id="payload" class="json" tabindex="0" aria-label="Payload JSON"></pre>
+      <h3>Result</h3>
+      <pre id="result" class="json" tabindex="0" aria-label="Result JSON"></pre>
+    </aside>
+  </div>
+
+  <div id="status" class="sr-only" aria-live="polite"></div>
+</main>
+
+<footer class="app-footer muted">
+  Job data needs the API token unless the server allows public reads; requeue and
+  cancel always need it. The token is sent only in the Authorization header and
+  kept in this page's memory, never stored. Font: Atkinson Hyperlegible,
+  <a href="assets/OFL.txt">SIL Open Font License 1.1</a>.
+  <a href="/docs">API reference</a>
+</footer>
+
+<dialog id="token-dialog" aria-labelledby="token-title">
+  <form id="token-form" method="dialog" novalidate>
+    <h2 id="token-title">Enter API token</h2>
+    <p class="muted">The value of <code>LEASEQ_API_TOKEN</code> on the server. It is kept in this
+      page's memory only; reloading the page forgets it.</p>
+    <label for="token-input">API token</label>
+    <input class="input wide" id="token-input" type="password" autocomplete="off"
+           spellcheck="false" aria-describedby="token-error" required>
+    <p class="field-error" id="token-error"></p>
+    <div class="dialog-buttons">
+      <button type="submit" class="btn primary" id="token-save">Use token</button>
+      <button type="button" class="btn" id="token-cancel">Cancel</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="confirm-dialog" aria-labelledby="confirm-title" aria-describedby="confirm-text">
+  <form method="dialog">
+    <h2 id="confirm-title">Confirm</h2>
+    <p id="confirm-text"></p>
+    <div class="dialog-buttons">
+      <button type="submit" class="btn primary" id="confirm-yes" value="yes">Confirm</button>
+      <button type="submit" class="btn" id="confirm-no" value="no">Keep as is</button>
+    </div>
+  </form>
+</dialog>
+</body>
+</html>

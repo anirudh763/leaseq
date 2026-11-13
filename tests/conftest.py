@@ -26,9 +26,15 @@ def conn(db_url):
         yield c
 
 
+TEST_TOKEN = "conftest-token-0123456789abcdef"
+
+
 @pytest.fixture
-def client(db_url):
-    with TestClient(app) as c:
+def client(db_url, monkeypatch):
+    """An authenticated client: the API refuses to start without a token."""
+    monkeypatch.setenv("LEASEQ_API_TOKEN", TEST_TOKEN)
+    monkeypatch.delenv("LEASEQ_PUBLIC_READ", raising=False)
+    with TestClient(app, headers={"Authorization": f"Bearer {TEST_TOKEN}"}) as c:
         yield c
 
 
