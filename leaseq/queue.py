@@ -26,7 +26,9 @@ class JobNotFound(Exception):
 
 def backoff_seconds(attempts: int) -> float:
     """Delay before retry number `attempts`+1: base, 2*base, 4*base ... capped."""
-    return min(BACKOFF_CAP, BACKOFF_BASE * 2 ** (attempts - 1))
+    # The exponent is clamped: 2.0 ** 1024 overflows a float. 2 ** 30 is already
+    # far beyond any cap, so the result is unchanged for every realistic value.
+    return min(BACKOFF_CAP, BACKOFF_BASE * 2 ** min(attempts - 1, 30))
 
 
 def _event(conn, job_id, event, attempt, worker_id=None, detail=None):

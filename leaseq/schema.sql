@@ -37,11 +37,34 @@ CREATE TABLE IF NOT EXISTS job_events (
 );
 CREATE INDEX IF NOT EXISTS job_events_job ON job_events (job_id, id);
 
--- Databases created before operator actions existed have the shorter list of
--- events. Widen the check once; when it already allows 'requeued' this does nothing
--- (no table rewrite, no lock on later starts).
+CREATE OR REPLACE FUNCTION job_events_append_only() RETURNS trigger AS $$
+BEGIN
+    RAISE EXCEPTION 'job_events is append-only: % is not allowed', TG_OP
+        USING ERRCODE = 'insufficient_privilege';
+END;
+$$ LANGUAGE plpgsql;
+
+-- Everything in this block changes job_events only when something is missing,
+-- because ALTER TABLE and CREATE/DROP TRIGGER take an ACCESS EXCLUSIVE lock on
+-- it. Running them on every start made each API start queue behind any open
+-- reader and stall every queue write meanwhile.
+--   * The append-only triggers are created once, when absent.
+--   * Databases created before operator actions existed have the shorter list
+--     of events; the check is widened once.
 DO $$
 BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid = 'job_events'::regclass
+                   AND tgname = 'job_events_no_update_delete') THEN
+        CREATE TRIGGER job_events_no_update_delete
+            BEFORE UPDATE OR DELETE ON job_events
+            FOR EACH ROW EXECUTE FUNCTION job_events_append_only();
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid = 'job_events'::regclass
+                   AND tgname = 'job_events_no_truncate') THEN
+        CREATE TRIGGER job_events_no_truncate
+            BEFORE TRUNCATE ON job_events
+            FOR EACH STATEMENT EXECUTE FUNCTION job_events_append_only();
+    END IF;
     IF NOT EXISTS (
         SELECT 1 FROM pg_constraint
         WHERE conrelid = 'job_events'::regclass AND conname = 'job_events_event_check'
@@ -53,23 +76,6 @@ BEGIN
                              'requeued', 'cancelled'));
     END IF;
 END $$;
-
-CREATE OR REPLACE FUNCTION job_events_append_only() RETURNS trigger AS $$
-BEGIN
-    RAISE EXCEPTION 'job_events is append-only: % is not allowed', TG_OP
-        USING ERRCODE = 'insufficient_privilege';
-END;
-$$ LANGUAGE plpgsql;
-
-DROP TRIGGER IF EXISTS job_events_no_update_delete ON job_events;
-CREATE TRIGGER job_events_no_update_delete
-    BEFORE UPDATE OR DELETE ON job_events
-    FOR EACH ROW EXECUTE FUNCTION job_events_append_only();
-
-DROP TRIGGER IF EXISTS job_events_no_truncate ON job_events;
-CREATE TRIGGER job_events_no_truncate
-    BEFORE TRUNCATE ON job_events
-    FOR EACH STATEMENT EXECUTE FUNCTION job_events_append_only();
 
 -- The worker's side effect. Deliberately NOT unique on job_id: nothing in this
 -- table prevents a duplicate, so the chaos test measures whether the fenced
