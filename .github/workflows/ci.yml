@@ -75,6 +75,8 @@ jobs:
 
   compose:
     runs-on: ubuntu-latest
+    env:
+      COMPOSE_PROJECT_NAME: leaseq-ci-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
         with:
@@ -83,7 +85,53 @@ jobs:
       - run: echo "LEASEQ_API_TOKEN=$(openssl rand -hex 24)" >> "$GITHUB_ENV"
       - run: docker compose up --build -d
       - run: scripts/smoke.sh http://127.0.0.1:8000
+      - name: Preserve jobs and audit history across down/up
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import subprocess
+          import time
+          import uuid
+          import urllib.request
+
+          def request(path, body=None, key=None):
+              headers = {"Authorization": "Bearer " + os.environ["LEASEQ_API_TOKEN"]}
+              if key is not None:
+                  headers["Idempotency-Key"] = key
+              data = None if body is None else json.dumps(body).encode()
+              if data is not None:
+                  headers["Content-Type"] = "application/json"
+              req = urllib.request.Request("http://127.0.0.1:8000" + path,
+                                           data=data, headers=headers)
+              with urllib.request.urlopen(req, timeout=10) as response:
+                  return json.load(response)
+
+          marker = "retention-" + uuid.uuid4().hex
+          submitted = request("/jobs", {"kind": "noop", "payload": {"marker": marker}}, marker)
+          path = "/jobs/" + str(submitted["id"])
+          for _ in range(120):
+              job = request(path)
+              if job["state"] == "done":
+                  break
+              time.sleep(1)
+          else:
+              raise AssertionError("retention job did not finish before shutdown")
+          assert job["payload"]["marker"] == marker
+          assert job["result"] is not None
+          events = request(path + "/events")
+          assert any(e["event"] == "completed" for e in events["events"])
+
+          subprocess.run(["docker", "compose", "down"], check=True)
+          subprocess.run(["docker", "compose", "up", "-d", "--wait", "--wait-timeout", "90"],
+                         check=True)
+          # Read the original job before submitting anything after recreation.
+          assert request(path) == job, "job or result did not survive down/up"
+          assert request(path + "/events") == events, "audit history did not survive down/up"
+          print("retention check passed: existing job, result and audit events survived down/up")
+          PY
       - if: failure()
         run: docker compose logs
       - if: always()
+        # This project's CI data is disposable; ordinary local shutdown omits -v.
         run: docker compose down -v

@@ -65,6 +65,19 @@ http://127.0.0.1:8000/dashboard/; it asks for the token before it shows any
 jobs. `scripts/smoke.sh` (with the same `LEASEQ_API_TOKEN` exported) then checks
 the stack end to end.
 
+Jobs, results and audit history are stored in the named `pgdata` volume.
+`docker compose down` keeps that data; the next `docker compose up --build`
+reuses it within the same Compose project. Changing the project name (or
+moving to a differently named directory) selects a different volume.
+`docker compose down -v` is a destructive reset: it deletes the database
+volume, including every job, result and audit event. Use it only when that
+data is disposable, such as cleaning up a CI test.
+
+If upgrading from the earlier Compose file without a named volume, export
+your existing database before changing the mount, then restore it into the
+new volume. The old database used an anonymous volume; it is not migrated
+automatically. Keep the old volume until the restored data is verified.
+
 ### API
 
 Every request needs `Authorization: Bearer <token>` except `/healthz`, the
