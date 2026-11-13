@@ -2,7 +2,30 @@
 
 ## Unreleased
 
-Dashboard only; no queue or API changes.
+- API start no longer stalls queue writes. `CREATE INDEX IF NOT EXISTS` takes
+  a SHARE lock on the table before it checks whether the index exists, so
+  every start queued behind any open write transaction on `jobs`, and every
+  later writer queued behind the start (an unrelated single-row UPDATE waited
+  4.07 s at 520k jobs). The three indexes are now created inside the schema's
+  `DO` block only when `to_regclass` finds them missing, and the startup DDL
+  runs with `lock_timeout = 2s`: DDL that has to wait fails the start with an
+  error naming the cause instead of stalling writers.
+- `GET /jobs` takes its per-state counts (a full scan of `jobs`) at most once
+  per 5 s per API process (`LEASEQ_COUNTS_MAX_AGE`); concurrent requests share
+  one computation. The response adds `counts_as_of` and
+  `counts_max_age_seconds`; job rows are still read fresh on every call.
+- Dashboard: no polling while the browser tab is hidden, one refresh as soon
+  as it is visible again; the header shows "Counts as of hh:mm:ss" (the
+  server's `counts_as_of`) instead of "Updated hh:mm:ss".
+- `worker.PermanentJobError`: a handler raises it when retrying cannot help.
+  The worker sends `"permanent": true` with `POST /jobs/{id}/fail` (an
+  optional field, default false), and the job goes to `dead` at once with a
+  `dead` audit row recording the error and `permanent: true`. The lease-token
+  check is unchanged. `word_count` raises it for text over 10,000 characters or
+  a non-string, which before was retried up to `max_attempts`. Every other
+  exception still retries with backoff.
+
+The dashboard changes below are also unreleased:
 
 - The error banner is updated only when its text changes. Before, it was
   rebuilt on every 2-second poll, which moved keyboard focus from its

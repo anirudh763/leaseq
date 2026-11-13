@@ -35,7 +35,7 @@ def test_word_count_counts_words_and_lines():
 def test_word_count_rejects_oversize_or_missing_text():
     big = "a " * (worker.WORD_COUNT_MAX_CHARS // 2) + "x"
     assert len(big) > worker.WORD_COUNT_MAX_CHARS
-    with pytest.raises(ValueError, match="10,000"):
+    with pytest.raises(worker.PermanentJobError, match="10,000"):
         worker.handle(job("word_count", 1, text=big), api=None, lease_seconds=30)
-    with pytest.raises(ValueError, match="payload.text must be a string"):
+    with pytest.raises(worker.PermanentJobError, match="payload.text must be a string"):
         worker.handle(job("word_count", 1), api=None, lease_seconds=30)

@@ -18,7 +18,7 @@ from fastapi import FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, StrictBool, field_validator
 
 from . import __version__, db, demo, queue, security
 
@@ -38,6 +38,7 @@ TOKEN_PATTERN = r"^[A-Za-z0-9_-]+$"      # secrets.token_urlsafe alphabet
 async def lifespan(app: FastAPI):
     app.state.settings = security.load_settings()      # raises without a token
     app.state.pool = db.make_pool()
+    app.state.counts_cache = queue.CountsCache(queue.COUNTS_MAX_AGE)
     with app.state.pool.connection() as conn:
         db.apply_schema(conn)
     yield
@@ -101,6 +102,9 @@ class CompleteIn(BaseModel):
 class FailIn(BaseModel):
     lease_token: str = Field(min_length=1, max_length=64, pattern=TOKEN_PATTERN)
     error: str = Field(default="", max_length=4000)
+    # True: retrying cannot help (the handler raised PermanentJobError); the job
+    # goes to 'dead' now. Optional, so existing workers are unaffected.
+    permanent: StrictBool = False
 
 
 class RequeueIn(BaseModel):
@@ -182,7 +186,7 @@ def complete(job_id: int, body: CompleteIn, request: Request):
 @app.post("/jobs/{job_id}/fail")
 def fail(job_id: int, body: FailIn, request: Request):
     with request.app.state.pool.connection() as conn:
-        job = queue.fail(conn, job_id, body.lease_token, body.error)
+        job = queue.fail(conn, job_id, body.lease_token, body.error, permanent=body.permanent)
     if job is None:
         raise LEASE_LOST
     return job
@@ -251,11 +255,18 @@ def list_jobs(request: Request,
                                          pattern=WORKER_PATTERN),
               before_id: int | None = Query(None, ge=1, le=BIGINT_MAX),
               limit: int = Query(50, ge=1, le=queue.MAX_PAGE)):
-    """Newest first, `limit` at a time; pass `next_before_id` back to page."""
+    """Newest first, `limit` at a time; pass `next_before_id` back to page.
+
+    `jobs` is read fresh on every call. `counts` (a full scan) is taken at most
+    once per `counts_max_age_seconds` per API process; `counts_as_of` is the
+    database time it was taken."""
+    cache = request.app.state.counts_cache
     with request.app.state.pool.connection() as conn:
         jobs, next_before = queue.list_jobs(conn, state, kind, worker, before_id, limit)
-        counts = queue.counts(conn)
-    return {"jobs": jobs, "next_before_id": next_before, "counts": counts}
+        counts = dict(cache.get(lambda: queue.counts(conn)))
+    as_of = counts.pop("as_of")
+    return {"jobs": jobs, "next_before_id": next_before, "counts": counts,
+            "counts_as_of": as_of, "counts_max_age_seconds": cache.max_age}
 
 
 @app.get("/jobs/{job_id}/events")

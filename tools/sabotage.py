@@ -18,7 +18,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 FAST = ["tests/test_api.py", "tests/test_security.py", "tests/test_worker_kinds.py",
-        "tests/test_audit_round2.py", "tests/test_usability.py"]
+        "tests/test_audit_round2.py", "tests/test_usability.py", "tests/test_schema_startup.py",
+        "tests/test_counts_cache.py", "tests/test_permanent_error.py"]
 E2E = ["tests/test_dashboard_e2e.py"]
 SEC, API, QUEUE, JS = ("leaseq/security.py", "leaseq/api.py", "leaseq/queue.py",
                        "leaseq/dashboard/assets/app.js")
@@ -75,11 +76,28 @@ SABOTAGE = [
                                    'if job["kind"] == "fail_first_n" and False:')], FAST),
     ("payload depth unchecked", [(API, '    _payload_depth = field_validator("payload")(check_json_depth)\n', "")], FAST),
     ("result depth unchecked", [(API, '    _result_depth = field_validator("result")(check_json_depth)\n', "")], FAST),
-    ("triggers recreated on every start", [("leaseq/schema.sql", "DO $$\nBEGIN\n    IF NOT EXISTS (SELECT 1 FROM pg_trigger",
-        "DROP TRIGGER IF EXISTS job_events_no_update_delete ON job_events;\nDO $$\nBEGIN\n    IF NOT EXISTS (SELECT 1 FROM pg_trigger")], FAST),
+    ("triggers recreated on every start", [("leaseq/schema.sql", "DO $$\nBEGIN\n    -- Only unfinished",
+        "DROP TRIGGER IF EXISTS job_events_no_update_delete ON job_events;\nDO $$\nBEGIN\n    -- Only unfinished")], FAST),
     ("word_count input unbounded", [("leaseq/worker.py", "    if len(text) > WORD_COUNT_MAX_CHARS:\n", "    if False:\n")], FAST),
     ("word_count returns no counts", [("leaseq/worker.py", '        return word_count(payload.get("text"))\n', "        pass\n")], FAST),
     ("backoff exponent unclamped", [(QUEUE, "BACKOFF_BASE * 2 ** min(attempts - 1, 30))", "BACKOFF_BASE * 2 ** (attempts - 1))")], FAST),
+    # Startup DDL takes no table lock when up to date, and is bounded when it must (test_schema_startup.py)
+    ("index created unguarded on every start", [("leaseq/schema.sql", "    IF to_regclass('jobs_unfinished') IS NULL THEN\n        CREATE INDEX jobs_unfinished",
+                                                 "    IF true THEN\n        CREATE INDEX IF NOT EXISTS jobs_unfinished")], FAST),
+    ("startup DDL without lock_timeout", [("leaseq/db.py", '            conn.execute("SELECT set_config(\'lock_timeout\', %s, true)", (SCHEMA_LOCK_TIMEOUT,))\n', "")], FAST),
+    # Dashboard counts: bounded staleness, declared age (test_counts_cache.py)
+    ("counts computed on every poll", [(QUEUE, "return self._value is not None and self.clock() - self._taken < self.max_age", "return False")], FAST),
+    ("counts recomputed by every waiting request", [(QUEUE, "            if not self._fresh():                 # another request may have refreshed it\n",
+                                                     "            if True:\n")], FAST),
+    ("counts age not reported", [(API, '"counts_as_of": as_of, ', "")], FAST),
+    # PermanentJobError: ends the job now; everything else still retries (test_permanent_error.py)
+    ("permanent errors retried (worker)", [("leaseq/worker.py", '        body["permanent"] = True\n', "        pass\n")], FAST),
+    ("permanent flag ignored (queue)", [(QUEUE, "        if permanent:\n", "        if False:\n")], FAST),
+    ("permanent flag dropped (API)", [(API, "body.error, permanent=body.permanent)", "body.error)")], FAST),
+    ("every error treated as permanent", [("leaseq/worker.py", "    if isinstance(exc, PermanentJobError):", "    if True:")], FAST),
+    ("word_count oversize retried", [("leaseq/worker.py", 'raise PermanentJobError(f"word_count: payload.text has', 'raise ValueError(f"word_count: payload.text has')], FAST),
+    ("permanent flag not a strict boolean", [(API, "    permanent: StrictBool = False", "    permanent: bool = False")], FAST),
+    ("permanent dead row without reason", [(QUEUE, '{"error": error, "permanent": True, "reason": "permanent error: not retried"}', '{"error": error}')], FAST),
     # Install and release hygiene (tests/test_usability.py)
     ("version missing from /healthz", [(API, 'return {"ok": True, "version": __version__}', 'return {"ok": True}')], FAST),
     # Not listed: dropping FastAPI(version=...) cannot be caught while the
@@ -119,6 +137,13 @@ SABOTAGE = [
     ("cancel confirm styled like requeue", [(JS, 'yes.className = "btn primary danger";', 'yes.className = "btn primary";')], E2E),
     ("HTTP error banner without next step", [(JS, '"served by the leaseq API; it retries every 2 seconds."', '""')], E2E),
     ("no empty-state row without a token", [(JS, '    el("p", { text: "Jobs appear here after you enter the API token." }))));', "    ));")], E2E),
+    # Polling: none while hidden, refresh on return, counts age shown (dashboard.e2e.js 3a)
+    ("hidden tab keeps polling", [(JS, "  if (!app.paused && !document.hidden) refresh();\n}\n\n// No polling", "  if (!app.paused) refresh();\n}\n\n// No polling"),
+                                  (JS, "  if (document.hidden) {\n    stopPolling();\n    return;\n  }\n", "")], E2E),
+    ("no refresh when the tab is visible again", [(JS, "  startPolling();\n  tick();\n}", "  startPolling();\n}")], E2E),
+    ("counts age not shown", [(JS, "`Counts as of ${asOf.toLocaleTimeString(undefined, { hour12: false })}`",
+                               "`Updated ${app.lastUpdate.toLocaleTimeString(undefined, { hour12: false })}`")], E2E),
+    ("pause does not stop polling", [(JS, "  if (!app.paused && !document.hidden) refresh();\n}\n\n// No polling", "  if (!document.hidden) refresh();\n}\n\n// No polling")], E2E),
     ("job panel kept after a 401", [(JS, "  $(\"expired-note\").hidden = true;\n  clearDetail();\n}", "  $(\"expired-note\").hidden = true;\n}")], E2E),
 ]
 

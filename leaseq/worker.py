@@ -21,6 +21,16 @@ class LeaseLost(Exception):
     pass
 
 
+class PermanentJobError(Exception):
+    """Raise from a handler when retrying cannot help (for example, invalid input).
+
+    The worker reports the attempt as failed with `permanent: true`, and the
+    queue ends the job in 'dead' with a 'dead' audit row that records the
+    reason, without using its remaining attempts. Any other exception is a
+    normal failure: retried with backoff until max_attempts.
+    """
+
+
 def handle(job: dict, api: httpx.Client, lease_seconds: float) -> dict:
     """Do the job's work. Job kinds are deliberately trivial:
 
@@ -33,8 +43,9 @@ def handle(job: dict, api: httpx.Client, lease_seconds: float) -> dict:
            (a deterministic retry for the compose smoke test).
     word_count  payload {"text": s}: returns {"words": N, "lines": M}. A small
            demo handler that does real, deterministic work on bounded input:
-           text over WORD_COUNT_MAX_CHARS characters, or not a string, raises,
-           which reports a failed attempt with the reason.
+           text over WORD_COUNT_MAX_CHARS characters, or not a string, raises
+           PermanentJobError: the job is dead after that one attempt, with the
+           reason in its audit log, since the same input would fail again.
     other  no work.
     """
     payload = job["payload"]
@@ -65,9 +76,9 @@ WORD_COUNT_MAX_CHARS = 10_000
 
 def word_count(text) -> dict:
     if not isinstance(text, str):
-        raise ValueError("word_count: payload.text must be a string")
+        raise PermanentJobError("word_count: payload.text must be a string")
     if len(text) > WORD_COUNT_MAX_CHARS:
-        raise ValueError(f"word_count: payload.text has {len(text):,} characters; "
+        raise PermanentJobError(f"word_count: payload.text has {len(text):,} characters; "
                          f"the limit is {WORD_COUNT_MAX_CHARS:,}")
     return {"words": len(text.split()), "lines": len(text.splitlines())}
 
@@ -96,6 +107,15 @@ def _complete_without_token_check(conn, job, worker_id):
 MAX_ERROR_CHARS = 4000      # the API rejects longer error strings
 
 
+def report_failure(api: httpx.Client, job: dict, exc: Exception) -> httpx.Response:
+    """Tell the API this attempt failed. Only PermanentJobError asks for no retry;
+    for anything else the request is exactly what it always was."""
+    body = {"lease_token": job["lease_token"], "error": repr(exc)[:MAX_ERROR_CHARS]}
+    if isinstance(exc, PermanentJobError):
+        body["permanent"] = True
+    return api.post(f"/jobs/{job['id']}/fail", json=body)
+
+
 def api_client(api_url: str, token: str | None = None) -> httpx.Client:
     """HTTP client for the API, sending the bearer token when there is one."""
     headers = {"Authorization": f"Bearer {token}"} if token else {}
@@ -122,9 +142,7 @@ def run(api_url: str, worker_id: str, lease_seconds: float, poll_seconds: float,
             except LeaseLost:
                 continue
             except Exception as exc:    # the job failed, not the worker: report it
-                api.post(f"/jobs/{job['id']}/fail",
-                         json={"lease_token": job["lease_token"],
-                               "error": repr(exc)[:MAX_ERROR_CHARS]})
+                report_failure(api, job, exc)
                 continue
             finish(conn, job, result, worker_id, unfenced)
         except httpx.HTTPError:
