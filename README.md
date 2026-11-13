@@ -140,10 +140,10 @@ well. A missing or wrong token gets `401` with a JSON body and
 | `POST /jobs/claim` `{worker_id, lease_seconds}` | 200 with the oldest runnable job and a fresh random `lease_token`, or 204 if nothing is runnable. |
 | `POST /jobs/{id}/heartbeat` `{lease_token, lease_seconds}` | Extends the lease. 409 if the token is not the current one. |
 | `POST /jobs/{id}/complete` `{lease_token, result}` | Marks the job done. 409 if the token is not the current one. |
-| `POST /jobs/{id}/fail` `{lease_token, error}` | Requeues with exponential backoff (2 s, 4 s, 8 s ... capped at 300 s), or marks the job `dead` once `attempts` reaches `max_attempts`. 409 on a stale token. |
+| `POST /jobs/{id}/fail` `{lease_token, error, permanent}` | Requeues with exponential backoff (2 s, 4 s, 8 s ... capped at 300 s), or marks the job `dead` once `attempts` reaches `max_attempts`. With `"permanent": true` (optional, default false) the job is marked `dead` at once, whatever attempts are left, and its `dead` audit row records `permanent: true` and the error. 409 on a stale token. |
 | `GET /jobs/{id}` | The job, without its lease token. |
 | `GET /stats` | Counts by state. |
-| `GET /jobs?state=&kind=&worker=&before_id=&limit=` | Newest first, at most 200 per page (default 50), without payloads; `next_before_id` pages back. Also returns counts, including `retrying` (queued jobs already attempted). |
+| `GET /jobs?state=&kind=&worker=&before_id=&limit=` | Newest first, at most 200 per page (default 50), without payloads; `next_before_id` pages back. Also returns counts, including `retrying` (queued jobs already attempted). The rows are read fresh on every call; the counts are taken at most once per `counts_max_age_seconds` (5 s, `LEASEQ_COUNTS_MAX_AGE`) per API process, and `counts_as_of` is when. |
 | `GET /jobs/{id}/events?after_id=&limit=` | The job's audit rows, oldest first, at most 500 per page. |
 | `POST /jobs/{id}/requeue` `{extra_attempts}` | Dead job back to `queued` with more attempts (default 3). `attempts` is kept; `max_attempts` is raised. 409 if the job is not dead. |
 | `POST /jobs/{id}/cancel` `{reason}` | Queued or leased job to `dead` and its lease token cleared, so a worker still running it gets 409: its result is refused (logged as `rejected`) and no effect is written. 409 otherwise. |
@@ -161,7 +161,10 @@ step, no CDN, no third-party code. It shows counts per state as tabs, a job
 table filtered by state, kind and worker (the filters are in the URL, so a view
 can be shared), and a side panel with a job's lease history (one row per
 attempt: worker, lease length, outcome) and its audit events. It refreshes
-every 2 seconds; "Pause updates" stops that.
+every 2 seconds while the browser tab is visible, and not at all while it is
+hidden; "Pause updates" stops it too. The header shows "Counts as of
+hh:mm:ss", the time the server took the counts (at most 5 seconds old per API
+process); the table rows are read fresh on every refresh.
 
 It is read-only until you enter the API token. The token is checked with
 `GET /auth/check`, kept in the page's memory only (not in a cookie, local or
@@ -189,9 +192,11 @@ The bundled worker (`leaseq/worker.py`) is a test harness for the queue, not an
 email sender or report renderer. It knows four kinds: `sleep` waits (and
 heartbeats), `fail` raises, `fail_first_n` raises on its first n attempts, and
 `word_count`, a small demo handler that does real, deterministic work on
-bounded input: it returns `{"words": N, "lines": M}` for `payload.text`, and
-text over 10,000 characters (or not a string) is a failed attempt with that
-reason. Any other kind, including the demo's `email.send`, `report.render`,
+bounded input: it returns `{"words": N, "lines": M}` for `payload.text`.
+Text over 10,000 characters (or not a string) raises `PermanentJobError`: the
+same input would fail again, so the job is `dead` after that one attempt, and
+its audit log records the reason. Any other exception from a handler is a
+normal failed attempt and is retried with backoff until `max_attempts`. Any other kind, including the demo's `email.send`, `report.render`,
 `thumbnail.resize` and `index.rebuild`, is a no-op that is marked done at once:
 no email is sent and nothing is rendered. What is real is the queue contract
 around it: claim with a lease, heartbeat, complete or fail with the lease
@@ -220,7 +225,8 @@ curl -s -X POST localhost:8000/jobs/18/complete -H "$AUTH" -H 'Content-Type: app
 ```
 
 Report a failure instead with `POST /jobs/{id}/fail` and
-`{"lease_token": ..., "error": "..."}`, and extend a long lease with
+`{"lease_token": ..., "error": "..."}` (add `"permanent": true` if a retry
+cannot succeed), and extend a long lease with
 `POST /jobs/{id}/heartbeat`. Stop the bundled worker first if you try this
 against the Docker stack, or it will claim the job before you do
 (`docker compose stop worker`).
@@ -231,7 +237,11 @@ the job's result, as `word_count` does. `run()` then passes that result to
 Keep that path: it is what stops a worker whose lease was re-issued or
 cancelled from recording a result. Work that can outlast the lease must
 heartbeat, as the `sleep` branch does. Raising an exception reports a failed
-attempt, which is retried with backoff.
+attempt, which is retried with backoff. Raise `worker.PermanentJobError`
+instead when retrying cannot help (invalid input, as in `word_count`): the
+worker sends `"permanent": true` and the job goes to `dead` with the reason in
+its audit log, keeping its remaining attempts unused; an operator can still
+requeue it.
 
 Side effects outside the database are different. If the handler sends an email
 or calls another service and the worker then dies or loses its lease before
@@ -514,10 +524,13 @@ repository, recommended in real use: adding the constraint as a second guard.
   next claim notices the expired lease; there is no background sweeper.
 - Benchmarks are from a 2-core shared container with client, API and database
   competing for the same cores.
-- The dashboard is built for demo-scale queues. Every 2 seconds it runs a
-  `count(*)` over all jobs and, with a job open, fetches up to 500 of that
-  job's events; on a large table those queries would need to be cheaper (for
-  example a maintained counter). The job table shows at most the newest 200
+- The dashboard is built for demo-scale queues. Its counts are still a
+  `count(*)` over all jobs (95-145 ms at 520,010 jobs in four local EXPLAIN
+  ANALYZE runs). The API runs it at most once per 5 seconds per API process
+  however many tabs poll, but each run grows with history (a maintained
+  counter would not). Filtered lists (`kind=`, `worker=`, `state=dead`) still
+  scan the table; they are not indexed yet. With
+  a job open, each refresh fetches up to 500 of that job's events. The job table shows at most the newest 200
   jobs per filter; older jobs are reached with the filters or "Open job" by id.
   The token is kept in page memory only, so reloading the page asks for it
   again.

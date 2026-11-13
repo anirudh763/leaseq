@@ -62,7 +62,7 @@ motion:
   allowed:
     - { name: ".btn background/border", duration: 120ms, easing: ease, iterations: 1, reduce: off, src: "ui.css:40-41" }
 components:
-  header:            { base: "ui.css:35-38 + app.css:3-5", parts: "h1.name 'leaseq operations', Updated hh:mm:ss, Pause updates, Operator mode label, token button, Source on GitHub link" }
+  header:            { base: "ui.css:35-38 + app.css:3-5", parts: "h1.name 'leaseq operations', Counts as of hh:mm:ss (server counts_as_of), Pause updates, Operator mode label, token button, Source on GitHub link" }
   btn:               { base: "ui.css:23-24", radius: md, minTarget: "32px high", states: [hover, active, focus-visible, disabled] }
   btn.primary:       { base: "ui.css:24-25", use: "Use token, Requeue job (confirm), Load sample jobs", states: [hover, active, focus-visible] }
   btn.danger:        { base: "ui.css:27", use: "'Cancel job' in the details panel (opens the confirmation)", states: [hover, active, focus-visible] }

@@ -148,10 +148,46 @@ async function openDashboard(page, query = "") {
       await pause.click();
       const resume = page.getByRole("button", { name: "Resume updates" });
       assert.equal(await resume.getAttribute("aria-pressed"), null);
-      const before = await page.locator("#updated").innerText();
+      // Counts are cached server-side, so an unchanged "as of" proves nothing:
+      // count the list requests instead.
+      let pausedPolls = 0;
+      page.on("request", (r) => { if (/\/jobs\?/.test(r.url())) pausedPolls += 1; });
       await page.waitForTimeout(2600);
-      assert.equal(await page.locator("#updated").innerText(), before);
+      assert.equal(pausedPolls, 0, `${pausedPolls} list requests while paused`);
       step("pause stops automatic updates; the button changes its label and has no aria-pressed");
+      await page.context().close();
+    }
+
+    // ---- 3a. hidden tab: no polling; counts carry the server's "as of" time --------
+    {
+      const page = await newPage(browser);
+      const answers = [];
+      page.on("response", async (r) => {
+        if (/\/jobs\?/.test(r.url()) && r.status() === 200) answers.push(await r.json());
+      });
+      await openDashboard(page);
+      await page.waitForFunction(() => /^Counts as of \d\d:\d\d:\d\d$/.test(document.getElementById("updated").textContent));
+      const asOf = answers.at(-1).counts_as_of;
+      assert.ok(asOf, "GET /jobs has no counts_as_of");
+      const shown = await page.evaluate((iso) => new Date(iso).toLocaleTimeString(undefined, { hour12: false }), asOf);
+      assert.equal(await page.locator("#updated").innerText(), `Counts as of ${shown}`);
+
+      const setHidden = (hidden) => page.evaluate((h) => {
+        Object.defineProperty(document, "hidden", { configurable: true, get: () => h });
+        Object.defineProperty(document, "visibilityState", { configurable: true, get: () => (h ? "hidden" : "visible") });
+        document.dispatchEvent(new Event("visibilitychange"));
+      }, hidden);
+      let polls = 0;
+      page.on("request", (r) => { if (/\/jobs\?/.test(r.url())) polls += 1; });
+      await setHidden(true);
+      await page.waitForTimeout(4500);                 // two polling periods and more
+      assert.equal(polls, 0, `${polls} list requests while the tab was hidden`);
+      await setHidden(false);
+      const t0 = Date.now();
+      while (polls === 0 && Date.now() - t0 < 1500) await page.waitForTimeout(50);
+      assert.ok(polls >= 1 && Date.now() - t0 < 1000, "no refresh right after the tab became visible");
+      assert.deepEqual(page.errors, []);
+      step("hidden tab: no list requests for 4.5 s, one at once on return; header shows 'Counts as of hh:mm:ss' from the server's counts_as_of");
       await page.context().close();
     }
 

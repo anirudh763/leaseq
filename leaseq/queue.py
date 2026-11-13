@@ -7,6 +7,8 @@ Rules that hold everywhere in this file:
 """
 import os
 import secrets
+import threading
+import time
 
 from psycopg import Connection
 from psycopg.types.json import Jsonb
@@ -131,8 +133,12 @@ def complete(conn: Connection, job_id: int, token: str, result: dict | None = No
 
 
 def fail(conn: Connection, job_id: int, token: str, error: str,
-         worker_id: str | None = None) -> dict | None:
-    """Report a failed attempt: requeue with backoff, or dead-letter when out of attempts."""
+         worker_id: str | None = None, permanent: bool = False) -> dict | None:
+    """Report a failed attempt: requeue with backoff, or dead-letter when out of attempts.
+
+    permanent=True (the handler raised PermanentJobError) dead-letters at once,
+    whatever attempts are left; the 'dead' audit row records why. The lease
+    token check is the same either way."""
     with conn.transaction():
         cur = conn.execute(
             "SELECT attempts, max_attempts, leased_by FROM jobs "
@@ -142,7 +148,11 @@ def fail(conn: Connection, job_id: int, token: str, error: str,
             _rejected(conn, job_id, "fail", worker_id)
             return None
         worker_id = worker_id or cur["leased_by"]
-        if cur["attempts"] >= cur["max_attempts"]:
+        if permanent:
+            state, delay = "dead", 0.0
+            _event(conn, job_id, "dead", cur["attempts"], worker_id,
+                   {"error": error, "permanent": True, "reason": "permanent error: not retried"})
+        elif cur["attempts"] >= cur["max_attempts"]:
             state, delay = "dead", 0.0
             _event(conn, job_id, "dead", cur["attempts"], worker_id, {"error": error})
         else:
@@ -222,7 +232,12 @@ def list_jobs(conn: Connection, state: str | None = None, kind: str | None = Non
 
 
 def counts(conn: Connection) -> dict:
-    """Like stats(), plus `retrying`: queued jobs that have already been attempted."""
+    """Like stats(), plus `retrying`: queued jobs that have already been attempted,
+    and `as_of`: the database time the counts were taken.
+
+    This is a full scan of `jobs` (96.8 ms at 520k jobs), so the API serves it
+    through CountsCache rather than once per dashboard poll.
+    """
     row = conn.execute(
         "SELECT count(*) FILTER (WHERE state = 'queued') AS queued, "
         "count(*) FILTER (WHERE state = 'queued' AND attempts > 0) AS retrying, "
@@ -230,8 +245,44 @@ def counts(conn: Connection) -> dict:
         "count(*) FILTER (WHERE state = 'done') AS done, "
         "count(*) FILTER (WHERE state = 'dead') AS dead, "
         "count(*) FILTER (WHERE state = 'leased' AND lease_expires_at <= now()) AS expired_leases, "
-        "count(*) AS total FROM jobs").fetchone()
+        "count(*) AS total, now() AS as_of FROM jobs").fetchone()
     return dict(row)
+
+
+# Declared freshness of the counts the API returns with GET /jobs, in seconds.
+COUNTS_MAX_AGE = max(0.0, float(os.environ.get("LEASEQ_COUNTS_MAX_AGE", "5")))
+
+
+class CountsCache:
+    """Keep one result for `max_age` seconds; compute it at most once per period.
+
+    Every open dashboard tab asks for the counts every 2 s. Through this cache
+    an API process runs the count at most once per `max_age` seconds however
+    many tabs are open, and concurrent requests for a stale value wait for the
+    one computation instead of each starting their own. The result carries
+    `as_of`, so a caller can say how old it is. Nothing here is shared between
+    processes, and nothing but the counts is cached: job rows are always read
+    fresh. max_age = 0 turns the cache off.
+    """
+
+    def __init__(self, max_age: float = COUNTS_MAX_AGE, clock=time.monotonic):
+        self.max_age = max_age
+        self.clock = clock
+        self._lock = threading.Lock()
+        self._value: dict | None = None
+        self._taken = 0.0
+
+    def _fresh(self) -> bool:
+        return self._value is not None and self.clock() - self._taken < self.max_age
+
+    def get(self, compute) -> dict:
+        if self._fresh():
+            return self._value
+        with self._lock:
+            if not self._fresh():                 # another request may have refreshed it
+                self._value = compute()
+                self._taken = self.clock()
+            return self._value
 
 
 def events(conn: Connection, job_id: int, after_id: int = 0,

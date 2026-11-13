@@ -37,6 +37,7 @@ const app = {
   authGen: 0,          // bumped whenever the token changes; older responses are dropped
   inflight: false,
   lastUpdate: null,
+  timer: null,         // the polling interval; cleared while the tab is hidden
   job: null,
   returnFocusTo: null,
 };
@@ -432,7 +433,8 @@ function leaseHistory(job, events) {
       else if (!cur.outcome && e.event === "failed") {
         cur.outcome = { tone: "retrying", text: `Failed: ${e.detail.error || "no message"}. Retry in ${e.detail.retry_in_seconds} s` };
       } else if (!cur.outcome && e.event === "dead") {
-        cur.outcome = { tone: "dead", text: `Dead: ${e.detail.error || e.detail.reason || "out of attempts"}` };
+        const why = e.detail.error || e.detail.reason || "out of attempts";
+        cur.outcome = { tone: "dead", text: `Dead: ${why}${e.detail.permanent ? " (permanent error, not retried)" : ""}` };
       } else if (!cur.outcome && e.event === "cancelled") {
         cur.outcome = { tone: "dead", text: "Cancelled by operator" };
       }
@@ -737,7 +739,10 @@ async function refresh() {
       showPanel(false);
     }
     app.lastUpdate = new Date();
-    $("updated").textContent = `Updated ${app.lastUpdate.toLocaleTimeString(undefined, { hour12: false })}`;
+    // The rows are read fresh on every poll; the counts are taken at most once
+    // per counts_max_age_seconds on the server, so say how old they are.
+    const asOf = new Date(r.body.counts_as_of);
+    $("updated").textContent = `Counts as of ${asOf.toLocaleTimeString(undefined, { hour12: false })}`;
   } catch (e) {
     showBanner("Cannot reach the API. Trying again every 2 seconds.", false);
     $("updated").textContent = "Offline";
@@ -749,6 +754,26 @@ async function refresh() {
 function tick() {
   refreshRelativeTimes();
   if (!app.paused && !document.hidden) refresh();
+}
+
+// No polling at all while the tab is hidden; one refresh as soon as it is
+// visible again, then every REFRESH_MS as before.
+function startPolling() {
+  if (app.timer === null) app.timer = window.setInterval(tick, REFRESH_MS);
+}
+
+function stopPolling() {
+  if (app.timer !== null) window.clearInterval(app.timer);
+  app.timer = null;
+}
+
+function onVisibilityChange() {
+  if (document.hidden) {
+    stopPolling();
+    return;
+  }
+  startPolling();
+  tick();
 }
 
 function togglePause() {
@@ -788,8 +813,9 @@ function init() {
   $("more").addEventListener("click", () => { app.rows = Math.min(MAX_ROWS, app.rows + PAGE); refresh(); });
   window.addEventListener("popstate", () => { readUrl(); renderTabs(null); refresh(); });
   if (app.jobId) showPanel(true);
+  document.addEventListener("visibilitychange", onVisibilityChange);
   refresh();
-  window.setInterval(tick, REFRESH_MS);
+  if (!document.hidden) startPolling();
 }
 
 document.addEventListener("DOMContentLoaded", init);

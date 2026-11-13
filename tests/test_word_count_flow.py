@@ -43,6 +43,26 @@ def test_word_count_result_is_stored_once_and_oversize_fails_clearly(monkeypatch
                   if e["event"] == "dead"]
         assert "10,000" in str(failed[0]["detail"]), failed
 
+        # Oversize input with attempts to spare: retrying cannot help, so the
+        # worker reports a permanent error and the job ends after one attempt.
+        big5 = c.post("/jobs", headers={"Idempotency-Key": "wc-big-5"},
+                      json={"kind": "word_count", "payload": {"text": "x" * 10_001},
+                            "max_attempts": 5})
+        dead5 = _wait(c, big5.json()["id"], "dead")
+        assert (dead5["attempts"], dead5["max_attempts"]) == (1, 5)
+        ev5 = c.get(f"/jobs/{dead5['id']}/events").json()["events"]
+        assert [e["event"] for e in ev5] == ["enqueued", "claimed", "dead"]
+        assert ev5[-1]["detail"]["permanent"] is True
+        assert "10,000" in ev5[-1]["detail"]["error"]
+
+        # Any other exception still retries until max_attempts.
+        flaky = c.post("/jobs", headers={"Idempotency-Key": "wc-generic"},
+                       json={"kind": "fail", "payload": {"error": "flaky"}, "max_attempts": 3})
+        gone = _wait(c, flaky.json()["id"], "dead")
+        assert gone["attempts"] == 3
+        evg = [e["event"] for e in c.get(f"/jobs/{gone['id']}/events").json()["events"]]
+        assert evg == ["enqueued", "claimed", "failed", "claimed", "failed", "claimed", "dead"]
+
         import psycopg
         with psycopg.connect(db_url) as db:
             rows = db.execute("SELECT job_id FROM effects ORDER BY job_id").fetchall()
