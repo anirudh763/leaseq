@@ -15,15 +15,19 @@ from the earlier commits on `main`.
   dashboard URL, where the token is stored and how to stop. `.env` is in
   `.gitignore`; `.env.example` documents the variable. A bare
   `docker compose up` with no `.env` and no token still refuses to start.
-- CI's compose job now starts the stack with `scripts/up.sh` (no token set
-  beforehand) and runs `scripts/smoke.sh` with the token from `.env`, and
-  checks that `docker compose config` fails without a token.
+- CI's compose job gates the install path: a bare `docker compose up` with no
+  `.env` and no token must fail and leave no containers; a fresh
+  `scripts/up.sh` with no token must write a mode-600 `.env` whose token the
+  API accepts; a re-run must leave `.env` byte-identical. `scripts/smoke.sh`
+  then runs with the token from `.env`.
 - Version 0.1.0 in `leaseq.__version__`, the OpenAPI document, `GET /healthz`
   (`{"ok": true, "version": "0.1.0"}`) and the dashboard footer; a test
   checks they match this file.
 - Dashboard: a `<noscript>` message pointing to the API reference, and an SVG
   favicon.
-- `SECURITY.md`, `CONTRIBUTING.md` and two issue templates (Problem, Queue guarantee).
+- `SECURITY.md` (maintenance status: public beta, one student, best effort;
+  security contact; supported versions and scope), `CONTRIBUTING.md` and two
+  issue templates (Problem, Queue guarantee).
 - README: says first that this is a reference implementation of a
   lease-and-fence PostgreSQL queue with a kill test, at demo scale, not a
   production queue, and names mature alternatives. The quick start leads with

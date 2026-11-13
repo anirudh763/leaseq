@@ -1,9 +1,22 @@
 # Security policy
 
-leaseq is a reference implementation at demo scale, maintained by one person.
-It is not meant for production use, and there is no bug bounty.
+## Maintenance status
 
-## Reporting a vulnerability
+Public beta, maintained by one student; best effort. There is no support
+agreement, no guaranteed response time and no bug bounty. leaseq is a
+reference implementation at demo scale and is not meant for production use.
+
+## Supported versions
+
+Only the latest release and the `main` branch get fixes. `GET /healthz`
+shows the running version.
+
+| Version | Supported |
+|---|---|
+| 0.1.x | yes (best effort) |
+| older commits | no |
+
+## Security contact: reporting a vulnerability
 
 Please do not put details of a vulnerability in a public issue. GitHub's
 private vulnerability reporting is not switched on for this repository yet

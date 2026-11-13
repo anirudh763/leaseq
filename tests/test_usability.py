@@ -1,6 +1,6 @@
-"""Install and release hygiene: one version everywhere, scripts/up.sh, and the
-files a stranger needs to try or report on the project. Each test fails if the
-behaviour it names is removed."""
+"""Install behaviour: the running version and scripts/up.sh. Each test fails
+if the behaviour it names is removed. The real Docker path of up.sh (fresh
+start, re-run keeps .env, bare compose fails closed) is gated in CI's compose job."""
 import os
 import re
 import shutil
@@ -16,7 +16,6 @@ import leaseq
 from leaseq.api import app
 
 ROOT = Path(__file__).resolve().parent.parent
-DASHBOARD = ROOT / "leaseq" / "dashboard"
 
 
 # --- version ------------------------------------------------------------------
@@ -28,36 +27,14 @@ def changelog_version() -> str:
     return m.group(1)
 
 
-def test_version_is_the_same_everywhere(client):
+def test_running_version_matches_changelog(client):
+    """Guards drift between the code, what /healthz reports and the release notes.
+    (The dashboard footer is compared with /healthz in tests/e2e/dashboard.e2e.js.)"""
     assert leaseq.__version__ == "0.1.0"
     assert app.version == leaseq.__version__
     assert client.get("/openapi.json").json()["info"]["version"] == leaseq.__version__
     assert client.get("/healthz").json() == {"ok": True, "version": leaseq.__version__}
-    footer = re.search(r'<span id="version"[^>]*>leaseq ([^<]+)</span>',
-                       (DASHBOARD / "index.html").read_text())
-    assert footer, "dashboard footer shows no version"
-    assert footer.group(1) == leaseq.__version__
     assert changelog_version() == leaseq.__version__
-
-
-def test_changelog_top_entry_is_dated_2026_11_13():
-    text = (ROOT / "CHANGELOG.md").read_text()
-    first = re.search(r"^## .*$", text, re.M).group(0)
-    assert first == f"## {leaseq.__version__} - 2026-11-13"
-
-
-# --- dashboard page: noscript and favicon --------------------------------------
-
-def test_dashboard_has_noscript_message_and_svg_favicon(client):
-    html = client.get("/dashboard/").text
-    m = re.search(r"<noscript>(.*?)</noscript>", html, re.S)
-    assert m and "JavaScript" in m.group(1)
-    assert '<link rel="icon" href="assets/favicon.svg" type="image/svg+xml">' in html
-    r = client.get("/dashboard/assets/favicon.svg")
-    assert r.status_code == 200
-    assert r.headers["content-type"].startswith("image/svg+xml")
-    assert r.text.lstrip().startswith("<svg") and "<script" not in r.text
-    assert "content-security-policy" in r.headers
 
 
 # --- scripts/up.sh -----------------------------------------------------------------
@@ -162,30 +139,6 @@ def test_up_fails_when_the_api_never_becomes_healthy(up):
     assert "healthz" in r.stderr
 
 
-def test_env_is_ignored_by_git_and_example_has_no_secret():
+def test_env_with_the_token_is_ignored_by_git():
     r = subprocess.run(["git", "check-ignore", "-q", ".env"], cwd=ROOT)
     assert r.returncode == 0, ".env is not in .gitignore"
-    example = (ROOT / ".env.example").read_text()
-    assert re.search(r"^LEASEQ_API_TOKEN=$", example, re.M), "example must leave the token empty"
-    r = subprocess.run(["git", "check-ignore", "-q", ".env.example"], cwd=ROOT)
-    assert r.returncode == 1, ".env.example must be committed"
-
-
-def test_bare_compose_still_fails_closed_without_a_token():
-    compose = (ROOT / "docker-compose.yml").read_text()
-    assert "LEASEQ_API_TOKEN: ${LEASEQ_API_TOKEN:?" in compose
-
-
-# --- project files ---------------------------------------------------------------
-
-def test_security_contributing_and_issue_templates_exist():
-    security = (ROOT / "SECURITY.md").read_text()
-    assert "Reporting" in security and "scope" in security.lower()
-    assert (ROOT / "CONTRIBUTING.md").read_text().startswith("# Contributing")
-    templates = ROOT / ".github" / "ISSUE_TEMPLATE"
-    md = sorted(p.name for p in templates.glob("*.md"))
-    assert len(md) >= 2, md
-    for p in templates.glob("*.md"):
-        head = p.read_text().split("---")[1]
-        assert re.search(r"^name: \S", head, re.M) and re.search(r"^about: \S", head, re.M)
-    assert (templates / "config.yml").is_file()

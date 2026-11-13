@@ -106,6 +106,8 @@ SABOTAGE = [
                                       '    $("demo-note").hidden = true;')], E2E),
     ("Forget leaves the table until the next poll", [(JS, '    $("token-input").value = "";\n    clearJobData();', '    $("token-input").value = "";\n    clearDetail();')], E2E),
     ("in-flight poll repopulates after Forget", [(JS, "    if (gen !== app.authGen) return;     // fetched with a token that has since changed\n", "")], E2E),
+    ("footer version drifts from /healthz", [("leaseq/dashboard/index.html", '<span id="version" class="mono">leaseq 0.1.0</span>',
+                                             '<span id="version" class="mono">leaseq 0.0.9</span>')], E2E),
     ("noscript message removed", [("leaseq/dashboard/index.html", '<noscript><p class="noscript">', '<noscript><p class="nojs">')], E2E),
     ("job panel kept after a 401", [(JS, "  $(\"expired-note\").hidden = true;\n  clearDetail();\n}", "  $(\"expired-note\").hidden = true;\n}")], E2E),
 ]

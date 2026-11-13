@@ -232,9 +232,12 @@ async function openDashboard(page, query = "") {
       const res = await on.request.get(new URL(icon, on.url()).href);
       assert.equal(res.status(), 200);
       assert.match(res.headers()["content-type"], /^image\/svg\+xml/);
-      assert.match(await on.locator("#version").innerText(), /^leaseq \d+\.\d+\.\d+$/);
+      // The footer must show the version the running server reports.
+      const health = await (await on.request.get(`${BASE}/healthz`)).json();
+      assert.equal(await on.locator("#version").innerText(), `leaseq ${health.version}`);
+      assert.deepEqual(on.errors, []);
       await on.context().close();
-      step("JavaScript off: noscript message with a link to /docs; JavaScript on: hidden; SVG favicon and footer version served");
+      step("JavaScript off: noscript message with a link to /docs; JavaScript on: hidden; favicon 200 with no console errors; footer version = /healthz version");
     }
 
     // ---- 5. narrow screens: no sideways page scroll -------------------------------

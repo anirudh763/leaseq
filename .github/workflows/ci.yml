@@ -87,31 +87,42 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
         with:
           node-version: "22"
-      # A bare `docker compose` with no .env and no token must refuse to start.
-      - name: compose fails closed without a token
+      # Gate 1: a bare `docker compose up` with no .env and no token must refuse
+      # to start, and must not leave any container behind.
+      - name: bare docker compose up fails closed without a token
         run: |
           test ! -e .env
           test -z "${LEASEQ_API_TOKEN:-}"
-          if docker compose config >/dev/null 2>err.txt; then
-            echo "docker compose accepted a missing LEASEQ_API_TOKEN"; exit 1
+          if docker compose up -d --build --scale demo=0 2>"$RUNNER_TEMP/err.txt"; then
+            echo "docker compose up started without LEASEQ_API_TOKEN"; exit 1
           fi
-          grep -q LEASEQ_API_TOKEN err.txt
-          cat err.txt
-      # scripts/up.sh with no token set: it writes a random one to .env and starts the stack.
-      - name: scripts/up.sh
-        run: scripts/up.sh --scale demo=0
-      - name: read the token from .env (masked in logs)
+          cat "$RUNNER_TEMP/err.txt"
+          grep -q "LEASEQ_API_TOKEN" "$RUNNER_TEMP/err.txt"
+          test -z "$(docker ps -aq --filter "label=com.docker.compose.project=$COMPOSE_PROJECT_NAME")"
+      # Gate 2: fresh run of scripts/up.sh with no token anywhere: it writes a
+      # random token to .env (mode 600) and the stack accepts exactly that token.
+      - name: scripts/up.sh, fresh, no token set
         run: |
+          scripts/up.sh --scale demo=0
           test "$(stat -c %a .env)" = 600
           token=$(sed -n 's/^LEASEQ_API_TOKEN=//p' .env)
           test "${#token}" -ge 32
           echo "::add-mask::$token"
+          test "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $token" http://127.0.0.1:8000/auth/check)" = 200
+          test "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer wrong-token-0123456789" http://127.0.0.1:8000/auth/check)" = 401
+          git check-ignore -q .env
+          test -z "$(git status --porcelain)"
           echo "LEASEQ_API_TOKEN=$token" >> "$GITHUB_ENV"
-      - name: a second scripts/up.sh keeps the token
+      # Gate 3: a re-run must not overwrite .env, and the running stack keeps
+      # accepting the same token. Run without the token in the environment so
+      # only .env can supply it.
+      - name: scripts/up.sh re-run keeps .env
         run: |
           before=$(sha256sum .env)
-          scripts/up.sh --scale demo=0
+          env -u LEASEQ_API_TOKEN scripts/up.sh --scale demo=0
           test "$(sha256sum .env)" = "$before"
+          test "$(stat -c %a .env)" = 600
+          test "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $LEASEQ_API_TOKEN" http://127.0.0.1:8000/auth/check)" = 200
       - run: npm install --no-save playwright@1.63.0 axe-core@4.14.0
       - run: npx playwright install --with-deps chromium
       - name: wait for the API

@@ -8,6 +8,11 @@ thousand jobs on one 2-core machine) and is not a production queue; for real
 workloads use a mature PostgreSQL-backed queue such as pgmq (a PostgreSQL
 extension), River (Go) or Procrastinate (Python).
 
+Status: public beta, maintained by one student on a best-effort basis. It has
+no known users and has not been validated with any. Supported scope, and how
+to report a security problem (a GitHub issue, no personal email), are in
+[SECURITY.md](SECURITY.md).
+
 Clients submit jobs over a small HTTP API; workers claim a job under a
 time-limited lease, do the work, and report the result with the lease token
 they were given. It exists to answer one question with evidence instead of a
@@ -339,11 +344,12 @@ setup, not PostgreSQL's ceiling.
 
 Docker was not run on the machine this was built on (it has no Docker
 daemon). The `compose` job in CI is where the real stack is tested. It first
-checks that `docker compose config` refuses to run with no `.env` and no
-token, then starts PostgreSQL, the API and one worker with
+checks that a bare `docker compose up` with no `.env` and no token fails and
+leaves no containers, then starts PostgreSQL, the API and one worker with
 `scripts/up.sh --scale demo=0` (no token set beforehand, so the script writes
-a random one to `.env`), checks that `.env` is mode 600 and that a second
-`scripts/up.sh` leaves it unchanged, and then runs:
+a random one to `.env`), checks that `.env` is mode 600 and that the API
+accepts its token and refuses a wrong one, re-runs `scripts/up.sh` and checks
+that `.env` is byte-identical, and then runs:
 
 1. `tests/e2e/live_flow.e2e.js` in Chromium against `http://127.0.0.1:8000`:
    reads refused without the token, token entered by keyboard, sample jobs
