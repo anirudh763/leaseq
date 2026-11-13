@@ -20,7 +20,7 @@ const { chromium } = require("playwright");
     await page.getByRole("button", { name: "Use token" }).click();
     await page.locator("#operator-label").waitFor({ state: "visible" });
   }
-  await page.waitForFunction(() => document.querySelector('[data-count="all"]').textContent !== "0");
+  await page.waitForFunction(() => /^[1-9][0-9]*$/.test(document.querySelector('[data-count="all"]').textContent));
   if (process.env.JOB) await page.locator("#lease-rows tr").first().waitFor();
   await page.getByRole("button", { name: "Pause updates" }).click();   // freeze the frame
   await page.evaluate(() => document.activeElement.blur());

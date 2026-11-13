@@ -202,7 +202,7 @@ function buildTabs() {
     const b = el("button", { type: "button", role: "tab", class: "tab", id: `tab-${t.id || "all"}`,
                              "aria-controls": "jobs-panel", "data-state": t.id },
                  icon(t.id || "all"), el("span", { text: t.label }),
-                 el("span", { class: "count", "data-count": t.id || "all", text: "0" }));
+                 el("span", { class: "count", "data-count": t.id || "all", text: NO_COUNT }));
     b.addEventListener("click", () => selectTab(t.id, false));
     list.append(b);
   }
@@ -220,6 +220,14 @@ function buildTabs() {
       selectTab(next.dataset.state, true);
     }
   });
+}
+
+// Shown instead of a number until the server has answered with counts
+// (for example while it is waiting for the token), so "0" is never a guess.
+const NO_COUNT = "\u2013";
+
+function clearCounts() {
+  for (const c of document.querySelectorAll("[data-count]")) c.textContent = NO_COUNT;
 }
 
 function renderTabs(counts) {
@@ -470,7 +478,7 @@ function confirmAction(kind, job, trigger) {
     $("confirm-title").textContent = `Cancel job ${job.id}?`;
     $("confirm-text").textContent = job.state === "leased"
       ? `It becomes dead now. Worker ${job.leased_by} is still running it; when it reports back ` +
-        `its lease token is refused and nothing is recorded.`
+        `its result is refused (logged as rejected).`
       : "It becomes dead and will not be run.";
     yes.textContent = "Cancel job";
     yes.className = "btn primary";
@@ -633,6 +641,9 @@ async function refresh() {
     if (r.status === 401) {
       showBanner("This server requires the API token to read jobs.", true);
       $("updated").textContent = "Token needed";
+      clearCounts();
+      $("rows").replaceChildren();
+      $("shown").textContent = "";
       return;
     }
     if (r.status !== 200) {

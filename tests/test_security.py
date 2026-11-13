@@ -94,6 +94,19 @@ def test_routes_are_protected_by_default(make_client):
     assert client.get("/not-a-route", headers=AUTH).status_code == 404
 
 
+@pytest.mark.parametrize("path", ["/jobsadmin", "/jobs.json", "/statsx", "/dashboardx",
+                                  "/dashboard-admin/x"])
+def test_open_prefixes_match_whole_path_segments(make_client, conn, path):
+    """Public read opens /jobs and /jobs/..., not a look-alike such as /jobsadmin."""
+    seed(conn)
+    client = make_client(public_read=True, auth=False)
+    assert client.get(path).status_code == 401, path
+    assert security.access("GET", path, True) == "token"
+    assert security.access("GET", "/jobs", True) == "open"
+    assert security.access("GET", "/jobs/1/events", True) == "open"
+    assert security.access("GET", "/dashboard", False) == "open"
+
+
 def test_unauthenticated_body_is_not_parsed(make_client, conn):
     """Auth runs before validation: no token means 401 even for a malformed body."""
     client = make_client(auth=False)

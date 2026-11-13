@@ -8,15 +8,17 @@ work, and report the result with the lease token they were given. It exists to
 answer one question with evidence instead of a claim: if worker processes are
 killed at random while they hold jobs, is any job lost, and is any job's result
 recorded twice? The repository contains the queue, its HTTP API with bearer-token
-authentication, an operations dashboard served by the API (about 1,000 lines of
-Python, 83 of SQL and 980 of HTML/JavaScript/CSS in total), a fault-injection
+authentication, an operations dashboard served by the API (1,024 lines of
+Python, 83 of SQL, and 996 of HTML/JavaScript/CSS written for the dashboard,
+not counting the shared `ui.css` base stylesheet), a fault-injection
 test that kills workers with SIGKILL and then checks the database, and the
 measured results below.
 
 ![The leaseq dashboard: job table with state tabs, and the details of a job that failed twice, was retried with backoff and then went dead](docs/screenshots/dashboard.png)
 
-The screenshot shows real jobs from `python -m leaseq.demo` processed by one
-worker, taken with `tests/e2e/readme_screenshot.js`.
+The screenshot was taken from local processes, not Docker: one `uvicorn` API,
+one worker (`worker-1`) and `python -m leaseq.demo` against a local PostgreSQL,
+captured with `tests/e2e/readme_screenshot.js` after entering the token.
 
 ## Quick start
 
@@ -83,7 +85,7 @@ well. A missing or wrong token gets `401` with a JSON body and
 | `GET /jobs?state=&kind=&worker=&before_id=&limit=` | Newest first, at most 200 per page (default 50), without payloads; `next_before_id` pages back. Also returns counts, including `retrying` (queued jobs already attempted). |
 | `GET /jobs/{id}/events?after_id=&limit=` | The job's audit rows, oldest first, at most 500 per page. |
 | `POST /jobs/{id}/requeue` `{extra_attempts}` | Dead job back to `queued` with more attempts (default 3). `attempts` is kept; `max_attempts` is raised. 409 if the job is not dead. |
-| `POST /jobs/{id}/cancel` `{reason}` | Queued or leased job to `dead` and its lease token cleared, so a worker still running it gets 409 and records nothing. 409 otherwise. |
+| `POST /jobs/{id}/cancel` `{reason}` | Queued or leased job to `dead` and its lease token cleared, so a worker still running it gets 409: its result is refused (logged as `rejected`) and no effect is written. 409 otherwise. |
 | `GET /auth/check` | 200 if the token is right, 401 if not. |
 | `POST /demo/jobs` | Enqueues the 16 sample jobs that `python -m leaseq.demo` sends. |
 
@@ -325,8 +327,13 @@ repository, recommended in real use: adding the constraint as a second guard.
   next claim notices the expired lease; there is no background sweeper.
 - Benchmarks are from a 2-core shared container with client, API and database
   competing for the same cores.
-- The dashboard shows at most the newest 200 jobs per filter; older jobs are
-  reached with the filters or "Open job" by id.
+- The dashboard is built for demo-scale queues. Every 2 seconds it runs a
+  `count(*)` over all jobs and, with a job open, fetches up to 500 of that
+  job's events; on a large table those queries would need to be cheaper (for
+  example a maintained counter). The job table shows at most the newest 200
+  jobs per filter; older jobs are reached with the filters or "Open job" by id.
+  The token is kept in page memory only, so reloading the page asks for it
+  again.
 
 ## How this was built
 

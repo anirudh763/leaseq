@@ -53,6 +53,9 @@ async function enterTokenByKeyboard(page) {
     await page.goto(`${BASE}/dashboard/`);
     const banner = page.getByRole("alert");
     await banner.filter({ hasText: "requires the API token to read jobs" }).waitFor();
+    const noTokenCounts = await page.$$eval("[data-count]", (els) => els.map((e) => e.textContent));
+    assert.deepEqual(noTokenCounts, Array(6).fill("\u2013"));   // unknown, not "0"
+    assert.equal(await page.locator("#rows tr").count(), 0);
     report.axe["no-token"] = await axeViolations(page);
     step("reads without a token: 401, the page shows 'requires the API token'");
 

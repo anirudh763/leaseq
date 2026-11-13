@@ -41,7 +41,7 @@ async function newPage(browser, opts = {}) {
 
 async function openDashboard(page, query = "") {
   await page.goto(`${BASE}/dashboard/${query}`);
-  await page.waitForFunction(() => document.querySelector('[data-count="all"]').textContent !== "0");
+  await page.waitForFunction(() => /^[1-9][0-9]*$/.test(document.querySelector('[data-count="all"]').textContent));
 }
 
 (async () => {

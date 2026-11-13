@@ -59,16 +59,22 @@ def _bearer(headers: dict) -> str | None:
 # Paths that hold no job data and are served without a token. Everything else
 # is denied by default, so a route added later is protected unless listed here.
 OPEN_PATHS = {"/", "/healthz", "/dashboard", "/docs", "/docs/oauth2-redirect", "/openapi.json"}
-OPEN_PREFIXES = ("/dashboard/",)
+OPEN_PREFIXES = ("/dashboard",)
 # GET endpoints that LEASEQ_PUBLIC_READ=1 opens. /auth/check is not among them.
 PUBLIC_READ_PREFIXES = ("/stats", "/jobs")
 
 
+def _under(path: str, prefixes: tuple[str, ...]) -> bool:
+    """True for the prefix itself or a path below it: '/jobs' and '/jobs/1',
+    but not '/jobsadmin'."""
+    return any(path == p or path.startswith(p + "/") for p in prefixes)
+
+
 def access(method: str, path: str, public_read: bool) -> str:
     """-> 'open' or 'token' for a request."""
-    if path in OPEN_PATHS or path.startswith(OPEN_PREFIXES):
+    if path in OPEN_PATHS or _under(path, OPEN_PREFIXES):
         return "open"
-    if public_read and method in ("GET", "HEAD") and path.startswith(PUBLIC_READ_PREFIXES):
+    if public_read and method in ("GET", "HEAD") and _under(path, PUBLIC_READ_PREFIXES):
         return "open"
     return "token"
 
@@ -164,7 +170,7 @@ class SecurityHeaders:
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":
             return await self.app(scope, receive, send)
-        dashboard = scope["path"] == "/dashboard/" or scope["path"].startswith("/dashboard/")
+        dashboard = _under(scope["path"], ("/dashboard",))
 
         async def send_with_headers(message):
             if message["type"] == "http.response.start":
