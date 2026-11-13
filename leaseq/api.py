@@ -18,7 +18,7 @@ from fastapi import FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from . import db, demo, queue, security
 
@@ -52,9 +52,32 @@ app.add_middleware(security.Auth)
 app.add_middleware(security.SecurityHeaders)
 
 
+# JSON nested deeper than this is refused with 422 before any database work.
+# Without a limit, a ~2 KB body nested 1,000 deep was stored and then every
+# response containing it failed with a RecursionError (500), including claim,
+# whose lease had already been committed. 64 levels is far more than any
+# real payload needs.
+MAX_JSON_DEPTH = 64
+
+
+def check_json_depth(value):
+    """Walk dicts and lists without recursion; raise if nesting exceeds MAX_JSON_DEPTH."""
+    stack = [(value, 1)]
+    while stack:
+        item, depth = stack.pop()
+        if isinstance(item, (dict, list)):
+            if depth > MAX_JSON_DEPTH:
+                raise ValueError(f"JSON is nested more than {MAX_JSON_DEPTH} levels deep")
+            children = item.values() if isinstance(item, dict) else item
+            stack.extend((child, depth + 1) for child in children)
+    return value
+
+
 class JobIn(BaseModel):
     kind: str = Field(min_length=1, max_length=100, pattern=KIND_PATTERN)
     payload: dict = {}
+
+    _payload_depth = field_validator("payload")(check_json_depth)
     max_attempts: int = Field(default=5, ge=1, le=100)
 
 
@@ -71,6 +94,8 @@ class HeartbeatIn(BaseModel):
 class CompleteIn(BaseModel):
     lease_token: str = Field(min_length=1, max_length=64, pattern=TOKEN_PATTERN)
     result: dict | None = None
+
+    _result_depth = field_validator("result")(check_json_depth)
 
 
 class FailIn(BaseModel):

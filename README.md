@@ -187,6 +187,19 @@ What was checked on this branch, and what was found:
   returned 500 (PostgreSQL rejects it); `"lease_seconds": NaN` returned 500
   because the 422 response tried to echo `NaN` back; a 1 MB payload and a
   10,000-character `kind` were accepted (no body or field limits).
+- Found by a second, independent audit of the merged code, and fixed, each
+  with a test that failed before the fix (`tests/test_audit_round2.py`):
+  - A payload or result nested 1,000 levels deep (about 2 KB) was stored, and
+    then every response containing it failed with a 500 (Python recursion
+    limit), including the claim whose lease had already been committed. JSON
+    nested deeper than 64 levels is now refused with 422 before any database
+    work.
+  - Every API start ran `DROP TRIGGER`/`CREATE TRIGGER` on `job_events`, which
+    takes an exclusive lock: a start behind an open reader stalled every
+    audit-log write until the reader finished. The triggers are now created
+    only when missing, so a normal start takes no such lock.
+  - The retry backoff raised `OverflowError` from about 1,025 attempts; the
+    exponent is now capped.
 - Added: required bearer token (compared with `hmac.compare_digest` on SHA-256
   digests), checked before the body is read and denied by default for any path
   not listed as open; a 64 KiB body limit (`LEASEQ_MAX_BODY_BYTES`) that also
@@ -241,7 +254,7 @@ API and the workers a random token for the run.
 
 | Command | Jobs | SIGKILLs | Jobs needing >1 attempt | Late completions rejected | Time | Result |
 |---|---|---|---|---|---|---|
-| `python scripts/chaos.py --seed 1` | 2000 | 50 | 56 | 29 | 40.3 s | PASS |
+| `python scripts/chaos.py --seed 1` | 2000 | 50 | 61 | 30 | 44.2 s | PASS |
 | negative control (`--unfenced`, 60 jobs) | 60 | 0 | | | | FAIL: 68 effect rows, 8 jobs completed twice |
 
 The seed fixes the job payloads, the victim of each kill and the gaps between
@@ -255,7 +268,7 @@ run of seed 1 on the same machine gave 63 retried jobs in 29.7 s.
 python -m pytest -q
 ```
 
-92 tests passed in 64 s, none skipped. This includes a reduced chaos run (300
+99 tests passed in 86 s, none skipped. This includes a reduced chaos run (300
 jobs, 12 kills), the negative control (40 jobs), the authentication and
 input-limit tests in `tests/test_security.py`, and two Playwright browser tests
 in `tests/test_dashboard_e2e.py`. The browser tests need Node, the `playwright`
@@ -263,12 +276,16 @@ package and axe-core (`AXE_PATH`); without them they are skipped. One of them
 runs real worker processes: the dashboard enqueues jobs, a worker completes
 them, a failing job retries with backoff until it is dead, one job is
 cancelled and one requeued, an API failure and a 401 are simulated, and the
-token and job data are checked to be gone after "Forget token".
+token and job data are checked to be gone after "Forget token" (no cookie,
+localStorage or sessionStorage entries). One browser context runs with the
+Content-Security-Policy enforced (the others bypass it only to inject axe): it
+opens a job whose idempotency key, payload and error text are hostile markup
+and checks that no script ran and no CSP violation was reported.
 
 `python tools/sabotage.py` breaks one protection at a time (auth, body limits,
 input checks, paging caps, lease fencing on cancel and requeue, CSP, the
 dashboard's text-only rendering and token handling), runs the tests and
-restores the code. On commit f23f63f: 37 of 37 sabotages were caught by a failing test, none skipped.
+restores the code. On commit a162539: 42 of 42 sabotages were caught by a failing test, none skipped.
 
 ### Benchmark
 

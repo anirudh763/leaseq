@@ -170,6 +170,8 @@ async function enterTokenByKeyboard(page) {
     assert.deepEqual(await page.$$eval("[data-count]", (els) => els.map((e) => e.textContent)),
                      Array(6).fill("\u2013"));
     await page.unroute("**/jobs?*");
+    assert.deepEqual(await page.evaluate(() => ({ local: localStorage.length,
+      session: sessionStorage.length, cookie: document.cookie })), { local: 0, session: 0, cookie: "" });
     step("Forget token: input empty; job panel closed and its payload gone from the DOM");
 
     await page.locator("#token-button").click();                                       // (b)

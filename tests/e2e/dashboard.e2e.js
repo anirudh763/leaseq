@@ -28,6 +28,11 @@ async function axeViolations(page) {
   });
 }
 
+async function storage(page) {
+  return page.evaluate(() => ({ local: localStorage.length, session: sessionStorage.length,
+                                cookie: document.cookie }));
+}
+
 async function newPage(browser, opts = {}) {
   // bypassCSP only so axe can be injected. It also makes the XSS check stricter:
   // the payload must be inert because of how it is rendered, not because of CSP.
@@ -93,11 +98,12 @@ async function openDashboard(page, query = "") {
     {
       const page = await newPage(browser);
       await openDashboard(page);
+      const dead = EXP.counts.dead;
       await page.getByRole("tab", { name: /Dead/ }).click();
-      await page.waitForFunction(() => document.querySelectorAll("#rows tr").length === 1);
+      await page.waitForFunction((n) => document.querySelectorAll("#rows tr").length === n, dead);
       assert.match(page.url(), /[?&]state=dead/);
       await page.reload();
-      await page.waitForFunction(() => document.querySelectorAll("#rows tr").length === 1);
+      await page.waitForFunction((n) => document.querySelectorAll("#rows tr").length === n, dead);
       assert.equal(await page.getByRole("tab", { name: /Dead/ }).getAttribute("aria-selected"), "true");
       await page.getByRole("tab", { name: /Dead/ }).focus();
       await page.keyboard.press("Home");
@@ -154,6 +160,7 @@ async function openDashboard(page, query = "") {
       assert.equal(posts[0].headers.authorization, `Bearer ${TOKEN}`);
       assert.equal(posts[0].headers.cookie, undefined);
       assert.equal(await page.evaluate(() => document.cookie), "");
+      assert.deepEqual(await storage(page), { local: 0, session: 0, cookie: "" });
       step("requeue asks first, sends the token only in the Authorization header, and is logged");
 
       await page.getByRole("button", { name: `Job ${EXP.running}`, exact: true }).click();
@@ -173,6 +180,38 @@ async function openDashboard(page, query = "") {
       assert.deepEqual(page.errors.filter((e) => !/status of 401/.test(e)), []);
       assert.equal(page.errors.length, 1);
       await page.context().close();
+    }
+
+    // ---- 4b. CSP enforced (no bypass): hostile key, payload and error stay inert ---
+    {
+      const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+      await ctx.addInitScript(() => {
+        window.__csp = [];
+        document.addEventListener("securitypolicyviolation",
+          (e) => window.__csp.push(`${e.violatedDirective} ${e.blockedURI}`));
+      });
+      const page = await ctx.newPage();
+      const errors = [];
+      page.on("pageerror", (e) => errors.push(String(e)));
+      await page.goto(`${BASE}/dashboard/?job=${EXP.hostile}`);
+      await page.locator("#token-button").click();
+      await page.getByLabel("API token", { exact: true }).fill(TOKEN);
+      await page.getByRole("button", { name: "Use token" }).click();
+      await page.locator("#operator-label").waitFor({ state: "visible" });
+      await page.locator("#events").filter({ hasText: "<script>window.__xss=4</script>" }).waitFor();
+      assert.match(await page.locator("#detail-fields").innerText(), /<img src=x onerror="window.__xss=3">/);
+      assert.match(await page.locator("#payload").innerText(), /<svg onload=/);
+      assert.match(await page.locator("#lease-rows").innerText(), /<script>window.__xss=4<\/script>/);
+      await page.getByRole("button", { name: `Job ${EXP.xss}`, exact: true }).click();
+      await page.locator("#payload").filter({ hasText: "<img" }).waitFor();
+      await page.waitForTimeout(500);
+      assert.equal(await page.evaluate(() => window.__xss), undefined);
+      assert.equal(await page.locator("#detail img, #detail svg:not([aria-hidden]) , #detail script").count(), 0);
+      assert.deepEqual(await page.evaluate(() => window.__csp), []);
+      assert.deepEqual(await storage(page), { local: 0, session: 0, cookie: "" });
+      assert.deepEqual(errors, []);
+      step("CSP enforced: hostile key, payload and error shown as text; no script ran; 0 CSP violations; no token in storage");
+      await ctx.close();
     }
 
     // ---- 5. narrow screens: no sideways page scroll -------------------------------

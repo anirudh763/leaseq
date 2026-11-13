@@ -43,8 +43,8 @@ def seed(base: str) -> dict:
     c = httpx.Client(base_url=base, headers=AUTH, timeout=10)
     n = iter(range(100))
 
-    def submit(kind, payload=None, max_attempts=5):
-        r = c.post("/jobs", headers={"Idempotency-Key": f"e2e-{next(n)}"},
+    def submit(kind, payload=None, max_attempts=5, key=None):
+        r = c.post("/jobs", headers={"Idempotency-Key": key or f"e2e-{next(n)}"},
                    json={"kind": kind, "payload": payload or {}, "max_attempts": max_attempts})
         assert r.status_code == 201, r.text
         return r.json()["id"]
@@ -62,14 +62,23 @@ def seed(base: str) -> dict:
     retry = submit("fail", {"error": "flaky"}, max_attempts=3)  # retrying (backoff 300 s)
     job = claim()
     assert c.post(f"/jobs/{retry}/fail", json={"lease_token": job["lease_token"], "error": "flaky"}).json()["state"] == "queued"
+    # Dead job whose key, payload and error text are all hostile markup.
+    hostile = submit("fail", {"note": '<svg onload="window.__xss=5"></svg>'}, max_attempts=1,
+                     key='<img src=x onerror="window.__xss=3">')
+    job = claim()
+    assert job["id"] == hostile
+    assert c.post(f"/jobs/{hostile}/fail", json={
+        "lease_token": job["lease_token"],
+        "error": '<script>window.__xss=4</script><img src=x onerror="window.__xss=4">'}
+    ).json()["state"] == "dead"
     running = submit("sleep", {"ms": 60000})                     # running
     assert claim()["id"] == running
     submit("email.send", {"to": "someone@example.com"})          # queued
     xss = submit("thumbnail.resize",
                  {"note": '<img src=x onerror="window.__xss=1"><script>window.__xss=2</script>'})
     submit("index.rebuild")
-    return {"dead": dead, "running": running, "xss": xss,
-            "counts": {"all": 8, "queued": 4, "leased": 1, "retrying": 1, "done": 2, "dead": 1}}
+    return {"dead": dead, "running": running, "xss": xss, "hostile": hostile,
+            "counts": {"all": 9, "queued": 4, "leased": 1, "retrying": 1, "done": 2, "dead": 2}}
 
 
 def test_dashboard_in_a_real_browser(monkeypatch):

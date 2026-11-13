@@ -17,7 +17,8 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-FAST = ["tests/test_api.py", "tests/test_security.py", "tests/test_worker_kinds.py"]
+FAST = ["tests/test_api.py", "tests/test_security.py", "tests/test_worker_kinds.py",
+        "tests/test_audit_round2.py"]
 E2E = ["tests/test_dashboard_e2e.py"]
 SEC, API, QUEUE, JS = ("leaseq/security.py", "leaseq/api.py", "leaseq/queue.py",
                        "leaseq/dashboard/assets/app.js")
@@ -72,6 +73,11 @@ SABOTAGE = [
     ("worker sends no token", [("leaseq/worker.py", 'headers = {"Authorization": f"Bearer {token}"} if token else {}', "headers = {}")], FAST),
     ("fail_first_n never fails", [("leaseq/worker.py", 'if job["kind"] == "fail_first_n" and job["attempts"] <= int(payload.get("n", 1)):',
                                    'if job["kind"] == "fail_first_n" and False:')], FAST),
+    ("payload depth unchecked", [(API, '    _payload_depth = field_validator("payload")(check_json_depth)\n', "")], FAST),
+    ("result depth unchecked", [(API, '    _result_depth = field_validator("result")(check_json_depth)\n', "")], FAST),
+    ("triggers recreated on every start", [("leaseq/schema.sql", "DO $$\nBEGIN\n    IF NOT EXISTS (SELECT 1 FROM pg_trigger",
+        "DROP TRIGGER IF EXISTS job_events_no_update_delete ON job_events;\nDO $$\nBEGIN\n    IF NOT EXISTS (SELECT 1 FROM pg_trigger")], FAST),
+    ("backoff exponent unclamped", [(QUEUE, "BACKOFF_BASE * 2 ** min(attempts - 1, 30))", "BACKOFF_BASE * 2 ** (attempts - 1))")], FAST),
     # Browser tests (dashboard)
     ("operator buttons without a token", [(JS, "  if (!app.token) return;                 // read-only: no operator buttons at all\n", "")], E2E),
     ("payload rendered as HTML", [(JS, '  $("payload").textContent = JSON.stringify(job.payload, null, 2);',
@@ -83,6 +89,8 @@ SABOTAGE = [
                                  (JS, '    $("token-input").value = "";\n    $("token-dialog").close();', '    $("token-dialog").close();'),
                                  (JS, '  saveToken(value);\n  input.value = "";', "  saveToken(value);"),
                                  (JS, '    saveToken(null);\n    $("token-input").value = "";', "    saveToken(null);")], E2E),
+    ("audit detail rendered as HTML", [(JS, 'extra ? el("span", { class: "extra", text: extra }) : null',
+        'extra ? Object.assign(document.createElement("span"), { className: "extra", innerHTML: extra }) : null')], E2E),
     ("demo-data note never shown", [(JS, '    $("demo-note").hidden = !jobs.some((j) => j.idempotency_key.startsWith("demo-"));',
                                       '    $("demo-note").hidden = true;')], E2E),
     ("Forget leaves the table until the next poll", [(JS, '    $("token-input").value = "";\n    clearJobData();', '    $("token-input").value = "";\n    clearDetail();')], E2E),
