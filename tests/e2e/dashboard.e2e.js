@@ -28,6 +28,29 @@ async function axeViolations(page) {
   });
 }
 
+// Colours of the confirm dialog's "yes" button, and its text contrast (WCAG formula).
+async function confirmButtonStyle(page) {
+  return page.evaluate(() => {
+    const yes = document.getElementById("confirm-yes");
+    const probe = document.createElement("span");
+    probe.style.color = "var(--bad)";
+    document.body.append(probe);
+    const bad = getComputedStyle(probe).color;
+    probe.remove();
+    const cs = getComputedStyle(yes);
+    const lum = (c) => {
+      const [r, g, b] = c.match(/[\d.]+/g).slice(0, 3).map((v) => {
+        const s = Number(v) / 255;
+        return s <= 0.04045 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
+      });
+      return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    };
+    const [a, b] = [lum(cs.color), lum(cs.backgroundColor)].sort((x, y) => y - x);
+    return { classes: yes.className, bg: cs.backgroundColor, bad, focused: document.activeElement.id,
+             contrast: Math.round(((a + 0.05) / (b + 0.05)) * 100) / 100 };
+  });
+}
+
 async function storage(page) {
   return page.evaluate(() => ({ local: localStorage.length, session: sessionStorage.length,
                                 cookie: document.cookie }));
@@ -118,14 +141,62 @@ async function openDashboard(page, query = "") {
       assert.equal(await page.getByLabel("Kind").getAttribute("aria-invalid"), "true");
       step("tab and kind filter are kept in the URL; Home key moves between tabs; bad filter text is flagged");
 
+      // One state mechanism only (DESIGN.md §3, UX 117): the label changes, so the
+      // button must not also carry aria-pressed ("Resume updates, pressed").
       const pause = page.getByRole("button", { name: "Pause updates" });
+      assert.equal(await pause.getAttribute("aria-pressed"), null);
       await pause.click();
       const resume = page.getByRole("button", { name: "Resume updates" });
-      assert.equal(await resume.getAttribute("aria-pressed"), "true");
+      assert.equal(await resume.getAttribute("aria-pressed"), null);
       const before = await page.locator("#updated").innerText();
       await page.waitForTimeout(2600);
       assert.equal(await page.locator("#updated").innerText(), before);
-      step("pause stops automatic updates");
+      step("pause stops automatic updates; the button changes its label and has no aria-pressed");
+      await page.context().close();
+    }
+
+    // ---- 3b. the error banner is stable across polls ------------------------------
+    {
+      const page = await newPage(browser);
+      // Answer every list poll with 401, as a server without public reads would.
+      await page.route("**/jobs?*", (route) => route.fulfill({
+        status: 401, contentType: "application/json", body: JSON.stringify({ detail: "missing token" }) }));
+      await page.goto(`${BASE}/dashboard/`);
+      const banner = page.getByRole("alert");
+      await banner.filter({ hasText: "requires the API token" }).waitFor();
+      await banner.getByRole("button", { name: "Enter API token" }).focus();
+      await page.evaluate(() => {
+        const b = document.getElementById("banner");
+        window.__bannerText = b.firstChild;
+        window.__bannerMutations = 0;
+        new MutationObserver((m) => { window.__bannerMutations += m.length; })
+          .observe(b, { childList: true, subtree: true, characterData: true, attributes: true });
+      });
+      let polls = 0;
+      page.on("request", (r) => { if (/\/jobs\?/.test(r.url())) polls += 1; });
+      const start = Date.now();
+      while (polls < 3 && Date.now() - start < 15000) await page.waitForTimeout(250);
+      await page.waitForTimeout(300);            // let the third answer render
+      assert.ok(polls >= 3, `only ${polls} polls seen`);
+      const kept = await page.evaluate(() => ({
+        focus: document.activeElement && document.activeElement.closest("#banner") !== null,
+        tag: document.activeElement && document.activeElement.tagName,
+        sameNode: document.getElementById("banner").firstChild === window.__bannerText,
+        mutations: window.__bannerMutations,
+      }));
+      assert.equal(kept.focus, true, `focus left the banner button (now on ${kept.tag})`);
+      assert.equal(kept.sameNode, true, "the banner's text node was replaced");
+      assert.equal(kept.mutations, 0, "the banner changed although its content did not");
+      assert.equal(await banner.count(), 1);
+      step("401 banner: after 3 polls focus stays on its button and the live-region text node is not replaced");
+
+      // A non-200 answer names the cause and the next step.
+      await page.unroute("**/jobs?*");
+      await page.route("**/jobs?*", (route) => route.fulfill({ status: 404, contentType: "application/json", body: "{}" }));
+      await banner.filter({ hasText: "HTTP 404" }).waitFor();
+      assert.match(await banner.innerText(), /served by the leaseq API.*retries every 2 seconds/s);
+      step("HTTP 404 banner says what to check and that it retries");
+      assert.deepEqual(page.errors.filter((e) => !/status of 40[14]/.test(e)), []);
       await page.context().close();
     }
 
@@ -150,6 +221,8 @@ async function openDashboard(page, query = "") {
 
       await requeue.click();
       await page.locator("#confirm-dialog").waitFor({ state: "visible" });
+      const requeueYes = await confirmButtonStyle(page);
+      assert.ok(!requeueYes.classes.includes("danger"), "requeue is not destructive");
       report.axe["light-confirm-dialog"] = await axeViolations(page);
       await page.getByRole("button", { name: "Keep as dead" }).click();
       assert.equal(posts.length, 0, "declining the confirmation must not send anything");
@@ -166,10 +239,21 @@ async function openDashboard(page, query = "") {
       await page.getByRole("button", { name: `Job ${EXP.running}`, exact: true }).click();
       await page.locator("#detail-title").filter({ hasText: `Job ${EXP.running}` }).waitFor();
       await page.getByRole("button", { name: "Cancel job" }).click();
+      await page.locator("#confirm-dialog").waitFor({ state: "visible" });
+      // Destructive confirm: danger style, readable, and the safe choice has focus.
+      const cancelYes = await confirmButtonStyle(page);
+      assert.equal(cancelYes.focused, "confirm-no");
+      assert.ok(cancelYes.classes.includes("danger"), `confirm button classes: ${cancelYes.classes}`);
+      assert.equal(cancelYes.bg, cancelYes.bad, "cancel confirm is not filled with the danger colour");
+      assert.ok(cancelYes.contrast >= 4.5, `cancel confirm text contrast ${cancelYes.contrast}`);
+      assert.notEqual(cancelYes.bg, requeueYes.bg, "cancel and requeue confirm buttons look the same");
+      await page.keyboard.press("Escape");
+      assert.equal(posts.length, 1, "Escape on the cancel confirmation must not send anything");
+      await page.getByRole("button", { name: "Cancel job" }).click();
       await page.locator("#confirm-dialog").getByRole("button", { name: "Cancel job" }).click();
       await page.locator("#events li .what").filter({ hasText: "Cancelled by operator" }).waitFor();
       assert.match(await page.locator("#lease-rows").innerText(), /Cancelled by operator/);
-      step("cancel of a running job is confirmed and logged");
+      step("cancel asks first in the danger style (text contrast >= 4.5:1), focuses Keep job, and is logged");
 
       await page.getByRole("button", { name: "Forget token" }).click();
       await page.getByRole("button", { name: `Job ${EXP.dead}`, exact: true }).click();
@@ -240,6 +324,10 @@ async function openDashboard(page, query = "") {
       const res = await on.request.get(new URL(icon, on.url()).href);
       assert.equal(res.status(), 200);
       assert.match(res.headers()["content-type"], /^image\/svg\+xml/);
+      // Shared header convention: product name is the h1, the source link sits in the header.
+      assert.equal(await on.locator("header h1").innerText(), "leaseq operations");
+      assert.equal(await on.locator("h1").count(), 1);
+      assert.equal(await on.locator("header a.repo").getAttribute("href"), "https://github.com/anirudh763/leaseq");
       // The footer must show the version the running server reports.
       const health = await (await on.request.get(`${BASE}/healthz`)).json();
       assert.equal(await on.locator("#version").innerText(), `leaseq ${health.version}`);
@@ -255,6 +343,9 @@ async function openDashboard(page, query = "") {
       await page.locator("#detail-title").filter({ hasText: `Job ${EXP.dead}` }).waitFor();
       const sw = await page.evaluate(() => document.documentElement.scrollWidth);
       assert.ok(sw <= width, `page is ${sw}px wide at a ${width}px viewport`);
+      // State tabs stay on one row (they scroll sideways), so the underline sits on the baseline.
+      const tops = await page.$$eval('[role="tab"]', (els) => new Set(els.map((e) => e.offsetTop)).size);
+      assert.equal(tops, 1, `state tabs wrap onto ${tops} rows at ${width}px`);
       report.axe[`light-${width}px`] = await axeViolations(page);
       await page.context().close();
     }

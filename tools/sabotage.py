@@ -113,6 +113,12 @@ SABOTAGE = [
     ("footer version drifts from /healthz", [("leaseq/dashboard/index.html", '<span id="version" class="mono">leaseq 0.1.0</span>',
                                              '<span id="version" class="mono">leaseq 0.0.9</span>')], E2E),
     ("noscript message removed", [("leaseq/dashboard/index.html", '<noscript><p class="noscript">', '<noscript><p class="nojs">')], E2E),
+    # Design standard (DESIGN.md §3): stable live region, one toggle mechanism, danger confirm.
+    ("banner rebuilt on every poll", [(JS, "  if (!b.hidden && b.dataset.key === key) return;\n", "")], E2E),
+    ("pause has label and aria-pressed", [(JS, "  const b = $(\"pause\");\n", "  const b = $(\"pause\");\n  b.setAttribute(\"aria-pressed\", app.paused ? \"true\" : \"false\");\n")], E2E),
+    ("cancel confirm styled like requeue", [(JS, 'yes.className = "btn primary danger";', 'yes.className = "btn primary";')], E2E),
+    ("HTTP error banner without next step", [(JS, '"served by the leaseq API; it retries every 2 seconds."', '""')], E2E),
+    ("no empty-state row without a token", [(JS, '    el("p", { text: "Jobs appear here after you enter the API token." }))));', "    ));")], E2E),
     ("job panel kept after a 401", [(JS, "  $(\"expired-note\").hidden = true;\n  clearDetail();\n}", "  $(\"expired-note\").hidden = true;\n}")], E2E),
 ]
 

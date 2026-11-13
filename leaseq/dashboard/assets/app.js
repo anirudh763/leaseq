@@ -353,7 +353,8 @@ function clearDetail() {
 // not on the next poll) and whenever the server answers 401.
 function clearJobData() {
   clearCounts();
-  $("rows").replaceChildren();
+  $("rows").replaceChildren(el("tr", {}, el("td", { colspan: 7, class: "empty" },
+    el("p", { text: "Jobs appear here after you enter the API token." }))));
   $("shown").textContent = "";
   $("more").hidden = true;
   $("demo-note").hidden = true;
@@ -512,7 +513,7 @@ function confirmAction(kind, job, trigger) {
         `its result is refused (logged as rejected).`
       : "It becomes dead and will not be run.";
     yes.textContent = "Cancel job";
-    yes.className = "btn primary";
+    yes.className = "btn primary danger";      // destructive: filled with --bad, not the accent
     $("confirm-no").textContent = "Keep job";
   }
   d.returnValue = "";
@@ -545,8 +546,14 @@ function handleActionError(r) {
 
 /* ---------- banner ---------- */
 
+// Called on every poll. Rebuild the banner only when its content changes: a
+// rebuild would drop keyboard focus from its button to <body> and make screen
+// readers announce the role="alert" text again every 2 seconds.
 function showBanner(text, offerToken) {
   const b = $("banner");
+  const key = `${offerToken ? 1 : 0}|${text}`;
+  if (!b.hidden && b.dataset.key === key) return;
+  b.dataset.key = key;
   b.replaceChildren(document.createTextNode(text));
   if (offerToken) {
     const btn = el("button", { type: "button", class: "btn", text: "Enter API token" });
@@ -555,7 +562,13 @@ function showBanner(text, offerToken) {
   }
   b.hidden = false;
 }
-function hideBanner() { $("banner").hidden = true; $("banner").replaceChildren(); }
+function hideBanner() {
+  const b = $("banner");
+  if (b.hidden) return;
+  b.hidden = true;
+  b.replaceChildren();
+  delete b.dataset.key;
+}
 
 /* ---------- token dialog ---------- */
 
@@ -681,7 +694,9 @@ async function refresh() {
       return;
     }
     if (r.status !== 200) {
-      showBanner(`The API answered HTTP ${r.status}. ${detailText(r.body)}`, false);
+      const why = detailText(r.body).replace(/\.$/, "");
+      showBanner(`The API answered HTTP ${r.status}.${why ? ` ${why}.` : ""} Check that this page is ` +
+                 "served by the leaseq API; it retries every 2 seconds.", false);
       return;
     }
     hideBanner();
@@ -738,8 +753,9 @@ function tick() {
 
 function togglePause() {
   app.paused = !app.paused;
+  // The label says what the button will do; no aria-pressed as well, or screen
+  // readers announce "Resume updates, pressed" (one state mechanism, DESIGN.md §3).
   const b = $("pause");
-  b.setAttribute("aria-pressed", app.paused ? "true" : "false");
   b.textContent = app.paused ? "Resume updates" : "Pause updates";
   announce(app.paused ? "Automatic updates paused." : "Automatic updates resumed.");
   if (!app.paused) refresh();

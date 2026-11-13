@@ -27,8 +27,11 @@ SIGKILL and then checks the database, and the measured results below.
 ![The leaseq dashboard: job table with state tabs, and the details of a job that failed twice, was retried with backoff and then went dead](docs/screenshots/dashboard.png)
 
 The screenshot was taken from local processes, not Docker: one `uvicorn` API,
-one worker (`worker-1`) and `python -m leaseq.demo` against a local PostgreSQL,
-captured with `tests/e2e/readme_screenshot.js` after entering the token.
+one worker (`worker-1`) and the `leaseq.demo` sample jobs (enqueued through
+`POST /demo/jobs`) against a local PostgreSQL, captured with
+`tests/e2e/readme_screenshot.js` after entering the token. The dashboard's
+colours, type, components and measured contrast are documented in
+[DESIGN.md](DESIGN.md).
 
 ## Quick start
 

@@ -1,6 +1,7 @@
 /* leaseq dashboard. Base tokens and components come from ui.css (shared, unmodified). */
 [hidden]{display:none!important}
 .app-header{flex-wrap:wrap;gap:8px 16px}
+.app-header h1.name{margin:0;font-size:1rem;line-height:1.4}
 .header-right{margin-left:auto;display:flex;flex-wrap:wrap;align-items:center;gap:8px}
 main{padding:16px 20px 24px;max-width:1600px}
 .app-footer{padding:12px 20px 24px;border-top:1px solid var(--border);font-size:.9em}
@@ -9,10 +10,13 @@ main{padding:16px 20px 24px;max-width:1600px}
   background:var(--bad-subtle);color:var(--fg)}
 .banner .btn{margin-left:8px}
 
-/* State tabs: Primer underline nav with a count pill */
-.tabs{display:flex;flex-wrap:wrap;gap:4px;border-bottom:1px solid var(--border);margin-bottom:12px}
-.tab{display:inline-flex;align-items:center;gap:8px;min-height:40px;padding:6px 12px;border:0;
-  border-bottom:2px solid transparent;margin-bottom:-1px;background:none;color:var(--fg);font:inherit;
+/* State tabs: Primer underline nav with a count pill. One row that scrolls sideways
+   on narrow screens, so the selected underline always sits on the baseline; the
+   baseline is an inset shadow so the scroll box does not clip the 2px underline. */
+.tabs{display:flex;flex-wrap:nowrap;overflow-x:auto;overflow-y:hidden;gap:4px;
+  box-shadow:inset 0 -1px 0 var(--border);margin-bottom:12px}
+.tab{flex:none;display:inline-flex;align-items:center;gap:8px;min-height:40px;padding:6px 12px;border:0;
+  border-bottom:2px solid transparent;background:none;color:var(--fg);font:inherit;
   cursor:pointer;border-radius:var(--radius) var(--radius) 0 0}
 .tab:hover{background:var(--bg-subtle)}
 .tab[aria-selected="true"]{border-bottom-color:var(--accent);font-weight:700}
@@ -60,7 +64,7 @@ tbody tr:last-child td{border-bottom:0}
 @media (max-width:960px){.detail{position:static;max-height:none}}
 .detail-head{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:12px 0 10px;
   border-bottom:1px solid var(--border);margin-bottom:10px}
-.detail-head h2{margin:0;font-size:1.15em;font-family:var(--mono)}
+.detail-head h2{margin:0;font-size:1.15em}
 .detail-head h2:focus{outline:none}
 .detail-head h2:focus-visible{outline:2px solid var(--focus)}
 .detail-head .close{margin-left:auto}
@@ -111,10 +115,19 @@ dialog label{display:block;font-weight:700;margin-top:10px}
 .detail table.dense th:nth-child(3){width:5.6em}
 .detail table.dense th:nth-child(4){width:3.8em}
 .detail table.dense td{white-space:normal;overflow-wrap:anywhere}
-.demo-note{margin:0 0 12px;padding:8px 12px;border:1px solid var(--border);border-left:3px solid var(--warn);
+.demo-note{margin:0 0 12px;padding:8px 12px;border:1px solid var(--border);
   border-radius:var(--radius);background:var(--bg-subtle);font-size:.9em;max-width:80ch}
 
 /* Shown only when JavaScript is off (<noscript>). */
-.noscript{margin:0 0 12px;padding:10px 14px;border:1px solid var(--border);border-left:3px solid var(--warn);
+.noscript{margin:0 0 12px;padding:10px 14px;border:1px solid var(--border);
   border-radius:var(--radius);background:var(--bg-subtle);max-width:80ch}
 .app-footer #version{margin-left:8px}
+
+/* Destructive confirm ("Cancel job"): filled with --bad so it never looks like the
+   accent-filled "Requeue job". --bad-fg keeps the label at >= 4.5:1 in both schemes. */
+:root{--bad-fg:#ffffff}
+@media (prefers-color-scheme:dark){:root{--bad-fg:#0d1117}}
+.btn.primary.danger{background:var(--bad);border-color:var(--bad);color:var(--bad-fg)}
+/* ui.css darkens pressed primary buttons to brightness(.85); on the dark --bad fill that
+   leaves the label at 4.31:1, so the danger button stops at .9 (4.72:1). */
+.btn.primary.danger:active{filter:brightness(.9)}

@@ -13,18 +13,18 @@
 <a class="skip" href="#jobs-panel">Skip to jobs</a>
 
 <header class="app-header">
-  <span class="name">leaseq</span>
-  <span class="muted">Operations</span>
+  <h1 class="name">leaseq operations</h1>
   <div class="header-right">
     <span id="updated" class="muted mono">Connecting</span>
-    <button type="button" class="btn" id="pause" aria-pressed="false">Pause updates</button>
+    <button type="button" class="btn" id="pause">Pause updates</button>
     <span id="operator-label" class="label ok" hidden>Operator mode</span>
     <button type="button" class="btn" id="token-button">Enter API token</button>
+    <a class="repo" href="https://github.com/anirudh763/leaseq">Source on GitHub</a>
   </div>
 </header>
 
 <main id="main">
-  <h1 class="sr-only">Jobs</h1>
+  <h2 class="sr-only">Jobs</h2>
   <noscript><p class="noscript">This dashboard needs JavaScript to load and show jobs.
     The HTTP API works without it: use <code>curl</code> as in the
     <a href="https://github.com/anirudh763/leaseq#quick-start">README quick start</a>,
