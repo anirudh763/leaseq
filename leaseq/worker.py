@@ -8,6 +8,7 @@ rolls back together with the fenced completion, a worker that is killed at any
 point, or that finishes after its lease was re-issued, leaves no effect behind.
 """
 import argparse
+import os
 import time
 
 import httpx
@@ -70,9 +71,18 @@ def _complete_without_token_check(conn, job, worker_id):
     queue._event(conn, job["id"], "completed", job["attempts"], worker_id, {"unfenced": True})
 
 
+MAX_ERROR_CHARS = 4000      # the API rejects longer error strings
+
+
+def api_client(api_url: str, token: str | None = None) -> httpx.Client:
+    """HTTP client for the API, sending the bearer token when there is one."""
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+    return httpx.Client(base_url=api_url, timeout=10, headers=headers)
+
+
 def run(api_url: str, worker_id: str, lease_seconds: float, poll_seconds: float,
-        unfenced: bool = False) -> None:
-    api = httpx.Client(base_url=api_url, timeout=10)
+        unfenced: bool = False, token: str | None = None) -> None:
+    api = api_client(api_url, token)
     conn = db.connect()
     while True:
         try:
@@ -81,6 +91,8 @@ def run(api_url: str, worker_id: str, lease_seconds: float, poll_seconds: float,
             if r.status_code == 204:
                 time.sleep(poll_seconds)
                 continue
+            if r.status_code == 401:
+                raise SystemExit("the API rejected the token: set LEASEQ_API_TOKEN or --token")
             r.raise_for_status()
             job = r.json()
             try:
@@ -89,7 +101,8 @@ def run(api_url: str, worker_id: str, lease_seconds: float, poll_seconds: float,
                 continue
             except Exception as exc:    # the job failed, not the worker: report it
                 api.post(f"/jobs/{job['id']}/fail",
-                         json={"lease_token": job["lease_token"], "error": repr(exc)})
+                         json={"lease_token": job["lease_token"],
+                               "error": repr(exc)[:MAX_ERROR_CHARS]})
                 continue
             finish(conn, job, result, worker_id, unfenced)
         except httpx.HTTPError:
@@ -108,10 +121,12 @@ def main() -> None:
     p.add_argument("--worker-id", required=True)
     p.add_argument("--lease-seconds", type=float, default=30)
     p.add_argument("--poll-seconds", type=float, default=0.2)
+    p.add_argument("--token", default=os.environ.get("LEASEQ_API_TOKEN"),
+                   help="bearer token for the API (default: $LEASEQ_API_TOKEN)")
     p.add_argument("--unfenced", action="store_true",
                    help="negative control for the chaos test: skip the lease-token check")
     a = p.parse_args()
-    run(a.api, a.worker_id, a.lease_seconds, a.poll_seconds, a.unfenced)
+    run(a.api, a.worker_id, a.lease_seconds, a.poll_seconds, a.unfenced, a.token)
 
 
 if __name__ == "__main__":

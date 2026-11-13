@@ -22,7 +22,7 @@ import harness
 def client_loop(api: str, worker_id: str, start_at: float) -> tuple[list[float], float]:
     """Claim and complete until the queue is empty. -> (claim latencies in s, end time)"""
     latencies = []
-    with httpx.Client(base_url=api, timeout=30) as c:
+    with httpx.Client(base_url=api, timeout=30, headers=harness.auth_headers()) as c:
         c.get("/stats")                                  # open the connection first
         time.sleep(max(0.0, start_at - time.time()))
         while True:
@@ -38,7 +38,8 @@ def client_loop(api: str, worker_id: str, start_at: float) -> tuple[list[float],
 
 
 def one_run(api: str, workers: int, jobs: int, tag: str) -> dict:
-    with httpx.Client(base_url=api, timeout=30) as c, ThreadPoolExecutor(8) as pool:
+    with httpx.Client(base_url=api, timeout=30, headers=harness.auth_headers()) as c, \
+            ThreadPoolExecutor(8) as pool:
         list(pool.map(lambda i: c.post("/jobs", headers={"Idempotency-Key": f"{tag}-{i}"},
                                        json={"kind": "noop"}).raise_for_status(), range(jobs)))
     start_at = time.time() + 1.5                         # time for the processes to spawn

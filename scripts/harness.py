@@ -38,6 +38,12 @@ def free_port() -> int:
         return s.getsockname()[1]
 
 
+def auth_headers() -> dict:
+    """Bearer header for the API when LEASEQ_API_TOKEN is set (child processes inherit it)."""
+    token = os.environ.get("LEASEQ_API_TOKEN")
+    return {"Authorization": f"Bearer {token}"} if token else {}
+
+
 def child_env(db_url: str) -> dict:
     return {**os.environ, "LEASEQ_DATABASE_URL": db_url, "PYTHONPATH": str(ROOT)}
 
@@ -52,7 +58,7 @@ def start_api(db_url: str) -> tuple[subprocess.Popen, str]:
     deadline = time.monotonic() + 20
     while time.monotonic() < deadline:
         try:
-            if httpx.get(base + "/stats", timeout=1).status_code == 200:
+            if httpx.get(base + "/healthz", timeout=1).status_code == 200:
                 return proc, base
         except httpx.HTTPError:
             time.sleep(0.1)

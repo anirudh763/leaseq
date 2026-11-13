@@ -1,0 +1,94 @@
+"""Runs tests/e2e/dashboard.e2e.js (Playwright + axe-core) against a real API
+process. Skipped when Node, Playwright or axe-core is not installed:
+
+    AXE_PATH=/path/to/axe.min.js python -m pytest tests/test_dashboard_e2e.py -s
+"""
+import json
+import os
+import shutil
+import subprocess
+from pathlib import Path
+
+import httpx
+import pytest
+
+import harness
+
+E2E = Path(__file__).with_name("e2e") / "dashboard.e2e.js"
+TOKEN = "e2e-token-0123456789abcdef"
+AUTH = {"Authorization": f"Bearer {TOKEN}"}
+
+
+def _axe_path() -> str | None:
+    for candidate in (os.environ.get("AXE_PATH"),
+                      "/home/claude/site/build/node_modules/axe-core/axe.min.js"):
+        if candidate and Path(candidate).is_file():
+            return candidate
+    return None
+
+
+def _has_playwright() -> bool:
+    node = shutil.which("node")
+    return bool(node) and subprocess.run(
+        [node, "-e", "require.resolve('playwright')"], capture_output=True).returncode == 0
+
+
+pytestmark = pytest.mark.skipif(not (_has_playwright() and _axe_path()),
+                                reason="needs node, the playwright package and axe-core")
+
+
+def seed(base: str) -> dict:
+    """Jobs in every state, created through the API in an order that makes
+    each claim pick the intended job (claims take the oldest runnable job)."""
+    c = httpx.Client(base_url=base, headers=AUTH, timeout=10)
+    n = iter(range(100))
+
+    def submit(kind, payload=None, max_attempts=5):
+        r = c.post("/jobs", headers={"Idempotency-Key": f"e2e-{next(n)}"},
+                   json={"kind": kind, "payload": payload or {}, "max_attempts": max_attempts})
+        assert r.status_code == 201, r.text
+        return r.json()["id"]
+
+    def claim(worker="w-e2e", lease=600):
+        return c.post("/jobs/claim", json={"worker_id": worker, "lease_seconds": lease}).json()
+
+    for _ in range(2):                                        # done
+        submit("report.render")
+        job = claim()
+        assert c.post(f"/jobs/{job['id']}/complete", json={"lease_token": job["lease_token"]}).status_code == 200
+    dead = submit("fail", {"error": "boom"}, max_attempts=1)   # dead
+    job = claim()
+    assert c.post(f"/jobs/{dead}/fail", json={"lease_token": job["lease_token"], "error": "boom"}).json()["state"] == "dead"
+    retry = submit("fail", {"error": "flaky"}, max_attempts=3)  # retrying (backoff 300 s)
+    job = claim()
+    assert c.post(f"/jobs/{retry}/fail", json={"lease_token": job["lease_token"], "error": "flaky"}).json()["state"] == "queued"
+    running = submit("sleep", {"ms": 60000})                     # running
+    assert claim()["id"] == running
+    submit("email.send", {"to": "someone@example.com"})          # queued
+    xss = submit("thumbnail.resize",
+                 {"note": '<img src=x onerror="window.__xss=1"><script>window.__xss=2</script>'})
+    submit("index.rebuild")
+    return {"dead": dead, "running": running, "xss": xss,
+            "counts": {"all": 8, "queued": 4, "leased": 1, "retrying": 1, "done": 2, "dead": 1}}
+
+
+def test_dashboard_in_a_real_browser(monkeypatch):
+    db_url = harness.scratch_database("leaseq_e2e")
+    monkeypatch.setenv("LEASEQ_API_TOKEN", TOKEN)
+    monkeypatch.setenv("LEASEQ_PUBLIC_READ", "1")
+    monkeypatch.setenv("LEASEQ_BACKOFF_BASE", "300")       # keep the retrying job queued
+    proc, base = harness.start_api(db_url)
+    try:
+        expected = seed(base)
+        r = subprocess.run(["node", str(E2E)], capture_output=True, text=True, timeout=240,
+                           env={**os.environ, "BASE_URL": base, "API_TOKEN": TOKEN,
+                                "AXE_PATH": _axe_path(), "EXPECTED": json.dumps(expected)})
+        print(r.stdout)
+        print(r.stderr)
+        assert r.returncode == 0, r.stderr
+        report = json.loads(r.stdout.strip().splitlines()[-1])
+        assert report["axe_total"] == 0
+        assert len(report["axe"]) == 10          # every view that was scanned
+    finally:
+        proc.terminate()
+        proc.wait()

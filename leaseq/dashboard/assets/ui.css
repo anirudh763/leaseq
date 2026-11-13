@@ -1,0 +1,37 @@
+/* Shared UI base for Anirudh's tools. Copy as-is into each app; put app-specific styles in a separate file.
+   Reference patterns: GitHub Primer (1px borders, 6px radius, dense tables), Stripe dashboard (filter chips,
+   URL-synced state), Chrome DevTools (split panes). WCAG 2.2 AA: text >= 4.5:1, borders/focus >= 3:1. */
+@font-face{font-family:"Atkinson Hyperlegible";font-weight:400;font-display:swap;src:url(atkinson-hyperlegible-latin-400-normal.woff2) format("woff2")}
+@font-face{font-family:"Atkinson Hyperlegible";font-weight:700;font-display:swap;src:url(atkinson-hyperlegible-latin-700-normal.woff2) format("woff2")}
+:root{
+  --bg:#ffffff; --bg-subtle:#f6f8fa; --bg-inset:#eef1f4; --fg:#1f2328; --fg-muted:#59636e;
+  --border:#d1d9e0; --border-strong:#818b98; --accent:#0b57d0; --accent-fg:#ffffff; --accent-subtle:#e8f0fe;
+  --ok:#1a7f37; --ok-subtle:#dafbe1; --bad:#cf222e; --bad-subtle:#ffebe9; --warn:#9a6700; --warn-subtle:#fff8c5;
+  --focus:#0b57d0; --radius:6px; --font:"Atkinson Hyperlegible",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace; --fs:15px;
+  color-scheme:light dark;
+}
+@media (prefers-color-scheme:dark){:root{
+  --bg:#0d1117; --bg-subtle:#151b23; --bg-inset:#010409; --fg:#e6edf3; --fg-muted:#9198a1;
+  --border:#3d444d; --border-strong:#656c76; --accent:#4493f8; --accent-fg:#0d1117; --accent-subtle:#121d2f;
+  --ok:#3fb950; --ok-subtle:#122117; --bad:#f85149; --bad-subtle:#25171c; --warn:#d29922; --warn-subtle:#272115; --focus:#4493f8}}
+*,*::before,*::after{box-sizing:border-box}
+html{font-size:var(--fs)} body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--font);line-height:1.5}
+code,kbd,pre,.mono{font-family:var(--mono);font-size:.92em}
+a{color:var(--accent)} :focus-visible{outline:2px solid var(--focus);outline-offset:2px;border-radius:2px}
+.skip{position:absolute;left:-9999px}.skip:focus{left:8px;top:8px;z-index:9;background:var(--bg);padding:8px 12px;border:1px solid var(--border)}
+.btn{display:inline-flex;align-items:center;gap:6px;min-height:32px;padding:5px 12px;border:1px solid var(--border);border-radius:var(--radius);background:var(--bg-subtle);color:var(--fg);font:inherit;font-weight:700;cursor:pointer;text-decoration:none}
+.btn:hover{background:var(--bg-inset)} .btn.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-fg)}
+.btn.danger{color:var(--bad)} .btn[disabled]{opacity:.55;cursor:not-allowed}
+.input,select,textarea{font:inherit;color:var(--fg);background:var(--bg);border:1px solid var(--border-strong);border-radius:var(--radius);padding:5px 10px;min-height:32px}
+.label{display:inline-flex;align-items:center;gap:4px;padding:0 8px;border:1px solid var(--border);border-radius:2em;font-size:.85em;line-height:22px}
+.label.ok{color:var(--ok);border-color:currentColor} .label.bad{color:var(--bad);border-color:currentColor} .label.warn{color:var(--warn);border-color:currentColor}
+.box{border:1px solid var(--border);border-radius:var(--radius);background:var(--bg)}
+.box-header{padding:10px 14px;background:var(--bg-subtle);border-bottom:1px solid var(--border);border-radius:var(--radius) var(--radius) 0 0;font-weight:700}
+table{border-collapse:collapse;width:100%} th,td{text-align:left;padding:6px 10px;border-bottom:1px solid var(--border);vertical-align:top}
+th{font-size:.85em;color:var(--fg-muted);font-weight:700;background:var(--bg-subtle)}
+.app-header{display:flex;align-items:center;gap:16px;padding:10px 20px;border-bottom:1px solid var(--border);background:var(--bg-subtle)}
+.app-header .name{font-weight:700} .app-header nav a{color:var(--fg);text-decoration:none;padding:6px 8px;border-radius:var(--radius)}
+.app-header nav a[aria-current="page"]{box-shadow:inset 0 -2px 0 var(--accent)}
+.muted{color:var(--fg-muted)} .sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}

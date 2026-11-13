@@ -171,6 +171,128 @@ def stats(conn: Connection) -> dict:
     return dict(row)
 
 
+# --- reads for the dashboard ---------------------------------------------------
+#
+# Every list is bounded: the API caps `limit`, and paging is by id (keyset),
+# so a page costs the same however much history there is. The WHERE clauses
+# below are joined from the fixed strings in this file only; every value from
+# a request goes in as a %s parameter.
+
+MAX_PAGE = 200
+MAX_EVENTS_PAGE = 500
+
+# The list leaves out payload and result (each can be up to the body limit);
+# GET /jobs/{id} returns them for one job.
+SUMMARY = ("id, kind, state, attempts, max_attempts, run_after, lease_expires_at, "
+           "leased_by, idempotency_key, created_at, updated_at")
+
+STATE_FILTERS = {
+    "queued": "state = 'queued'",
+    "leased": "state = 'leased'",
+    "retrying": "state = 'queued' AND attempts > 0",   # a subset of queued
+    "done": "state = 'done'",
+    "dead": "state = 'dead'",
+}
+
+
+def list_jobs(conn: Connection, state: str | None = None, kind: str | None = None,
+              worker: str | None = None, before_id: int | None = None,
+              limit: int = 50) -> tuple[list[dict], int | None]:
+    """Newest first. -> (jobs, id to pass as before_id for the next page, or None)"""
+    limit = max(1, min(limit, MAX_PAGE))
+    where, params = [], []
+    if state is not None:
+        where.append(STATE_FILTERS[state])           # KeyError for anything else
+    if kind is not None:
+        where.append("kind = %s")
+        params.append(kind)
+    if worker is not None:
+        where.append("leased_by = %s")
+        params.append(worker)
+    if before_id is not None:
+        where.append("id < %s")
+        params.append(before_id)
+    clause = (" WHERE " + " AND ".join(where)) if where else ""
+    rows = conn.execute(f"SELECT {SUMMARY} FROM jobs{clause} ORDER BY id DESC LIMIT %s",
+                        (*params, limit + 1)).fetchall()
+    next_before = rows[limit - 1]["id"] if len(rows) > limit else None
+    return rows[:limit], next_before
+
+
+def counts(conn: Connection) -> dict:
+    """Like stats(), plus `retrying`: queued jobs that have already been attempted."""
+    row = conn.execute(
+        "SELECT count(*) FILTER (WHERE state = 'queued') AS queued, "
+        "count(*) FILTER (WHERE state = 'queued' AND attempts > 0) AS retrying, "
+        "count(*) FILTER (WHERE state = 'leased') AS leased, "
+        "count(*) FILTER (WHERE state = 'done') AS done, "
+        "count(*) FILTER (WHERE state = 'dead') AS dead, "
+        "count(*) FILTER (WHERE state = 'leased' AND lease_expires_at <= now()) AS expired_leases, "
+        "count(*) AS total FROM jobs").fetchone()
+    return dict(row)
+
+
+def events(conn: Connection, job_id: int, after_id: int = 0,
+           limit: int = 200) -> tuple[list[dict], int | None]:
+    """The job's audit rows, oldest first. -> (events, after_id for the next page, or None)"""
+    _require_exists(conn, job_id)
+    limit = max(1, min(limit, MAX_EVENTS_PAGE))
+    rows = conn.execute(
+        "SELECT id, event, attempt, worker_id, detail, created_at FROM job_events "
+        "WHERE job_id = %s AND id > %s ORDER BY id LIMIT %s",
+        (job_id, after_id, limit + 1)).fetchall()
+    next_after = rows[limit - 1]["id"] if len(rows) > limit else None
+    return rows[:limit], next_after
+
+
+# --- operator actions ---------------------------------------------------------
+#
+# Neither touches the fencing rule. cancel() clears the lease token exactly as
+# complete() and fail() do, so a worker still running a cancelled job gets a
+# 409 from heartbeat/complete and its transaction writes no effect.
+
+def requeue(conn: Connection, job_id: int, extra_attempts: int) -> dict | None:
+    """Put a dead job back in the queue with `extra_attempts` more tries.
+
+    `attempts` is not reset (it counts claims, and the audit log has one claim
+    row per attempt); max_attempts is raised instead. Returns None if the job
+    is not dead.
+    """
+    with conn.transaction():
+        cur = conn.execute("SELECT state, attempts, max_attempts FROM jobs "
+                           "WHERE id = %s FOR UPDATE", (job_id,)).fetchone()
+        if cur is None:
+            raise JobNotFound(job_id)
+        if cur["state"] != "dead":
+            return None
+        job = conn.execute(
+            f"UPDATE jobs SET state = 'queued', run_after = now(), updated_at = now(), "
+            f"max_attempts = attempts + %s WHERE id = %s RETURNING {PUBLIC}",
+            (extra_attempts, job_id)).fetchone()
+        _event(conn, job_id, "requeued", cur["attempts"], None,
+               {"extra_attempts": extra_attempts,
+                "previous_max_attempts": cur["max_attempts"]})
+        return job
+
+
+def cancel(conn: Connection, job_id: int, reason: str = "") -> dict | None:
+    """Stop a queued or leased job: it becomes dead. Returns None otherwise."""
+    with conn.transaction():
+        cur = conn.execute("SELECT state, attempts, leased_by FROM jobs "
+                           "WHERE id = %s FOR UPDATE", (job_id,)).fetchone()
+        if cur is None:
+            raise JobNotFound(job_id)
+        if cur["state"] not in ("queued", "leased"):
+            return None
+        job = conn.execute(
+            f"UPDATE jobs SET state = 'dead', lease_token = NULL, lease_expires_at = NULL, "
+            f"updated_at = now() WHERE id = %s RETURNING {PUBLIC}", (job_id,)).fetchone()
+        _event(conn, job_id, "cancelled", cur["attempts"],
+               cur["leased_by"] if cur["state"] == "leased" else None,
+               {"from_state": cur["state"], "reason": reason})
+        return job
+
+
 def _require_exists(conn, job_id):
     row = conn.execute("SELECT attempts FROM jobs WHERE id = %s", (job_id,)).fetchone()
     if row is None:

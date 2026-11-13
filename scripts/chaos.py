@@ -40,7 +40,7 @@ def run_chaos(jobs: int = 2000, kills: int = 50, workers: int = 4, seed: int = 1
     api_proc, api = harness.start_api(db_url)
     procs = []
     try:
-        with httpx.Client(base_url=api, timeout=30) as client:
+        with httpx.Client(base_url=api, timeout=30, headers=harness.auth_headers()) as client:
             def submit(i):
                 r = client.post("/jobs", headers={"Idempotency-Key": f"chaos-{seed}-{i}"},
                                 json={"kind": "sleep", "payload": payloads[i],

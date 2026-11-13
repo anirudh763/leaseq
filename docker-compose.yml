@@ -1,10 +1,22 @@
-# API + PostgreSQL + one worker. Development defaults; the password is not a secret.
+# PostgreSQL + API + one worker + a demo feeder. Development defaults.
+#
+# The API requires a bearer token for every write (submit, claim, complete,
+# requeue, cancel). Set your own before exposing this anywhere:
+#     LEASEQ_API_TOKEN=$(openssl rand -hex 24) docker compose up --build
+# Without it, the well-known development token below is used. The API port is
+# bound to 127.0.0.1 only. LEASEQ_PUBLIC_READ=1 lets the dashboard at
+# http://127.0.0.1:8000/dashboard/ show jobs (including payloads) without the
+# token; remove it to require the token for reads too.
+x-leaseq-env: &leaseq-env
+  LEASEQ_DATABASE_URL: postgresql://leaseq:leaseq@postgres:5432/leaseq
+  LEASEQ_API_TOKEN: ${LEASEQ_API_TOKEN:-leaseq-dev-token-change-me}
+
 services:
   postgres:
     image: postgres:16
     environment:
       POSTGRES_USER: leaseq
-      POSTGRES_PASSWORD: leaseq
+      POSTGRES_PASSWORD: leaseq      # not a secret: the database is not published to the host
       POSTGRES_DB: leaseq
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U leaseq -d leaseq"]
@@ -15,18 +27,35 @@ services:
   app:
     build: .
     environment:
-      LEASEQ_DATABASE_URL: postgresql://leaseq:leaseq@postgres:5432/leaseq
+      <<: *leaseq-env
+      LEASEQ_PUBLIC_READ: "1"
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     depends_on:
       postgres:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=2)"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
 
   worker:
     build: .
     command: ["python", "-m", "leaseq.worker", "--api", "http://app:8000", "--worker-id", "compose-worker"]
-    environment:
-      LEASEQ_DATABASE_URL: postgresql://leaseq:leaseq@postgres:5432/leaseq
+    environment: *leaseq-env
     depends_on:
-      - app
+      app:
+        condition: service_healthy
     restart: on-failure
+
+  # Enqueues one batch of sample jobs, then a few more every 3-8 s for 10
+  # minutes, so the dashboard shows jobs moving. Remove this service to start empty.
+  demo:
+    build: .
+    command: ["python", "-m", "leaseq.demo", "--api", "http://app:8000", "--trickle-minutes", "10"]
+    environment: *leaseq-env
+    depends_on:
+      app:
+        condition: service_healthy
+    restart: "no"
