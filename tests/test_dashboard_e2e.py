@@ -92,3 +92,32 @@ def test_dashboard_in_a_real_browser(monkeypatch):
     finally:
         proc.terminate()
         proc.wait()
+
+
+def test_live_flow_with_real_workers(monkeypatch):
+    """Dashboard -> enqueue -> worker processes run the jobs -> events, retry,
+    cancel, requeue, error states. Reads need the token (no LEASEQ_PUBLIC_READ)."""
+    db_url = harness.scratch_database("leaseq_e2e_live")
+    monkeypatch.setenv("LEASEQ_API_TOKEN", TOKEN)
+    monkeypatch.delenv("LEASEQ_PUBLIC_READ", raising=False)
+    monkeypatch.setenv("LEASEQ_BACKOFF_BASE", "0.5")      # fast retries for the test
+    proc, base = harness.start_api(db_url)
+    workers = [harness.start_worker(db_url, base, f"live-{i}", 10) for i in range(2)]
+    try:
+        r = subprocess.run(["node", str(E2E.with_name("live_flow.e2e.js"))], capture_output=True,
+                           text=True, timeout=300,
+                           env={**os.environ, "BASE_URL": base, "API_TOKEN": TOKEN,
+                                "AXE_PATH": _axe_path()})
+        print(r.stdout)
+        print(r.stderr)
+        assert r.returncode == 0, r.stderr
+        report = json.loads(r.stdout.strip().splitlines()[-1])
+        assert report["axe_total"] == 0 and len(report["axe"]) == 7
+        with httpx.Client(base_url=base, headers=AUTH) as c:     # the database agrees
+            assert c.get("/jobs/16").json()["state"] == "dead"
+            assert c.get("/jobs/1").json()["state"] == "done"
+            assert c.get("/jobs/13").json()["max_attempts"] == 6
+    finally:
+        for p in workers + [proc]:
+            p.terminate()
+            p.wait()

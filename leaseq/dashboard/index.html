@@ -112,15 +112,16 @@
 
 <footer class="app-footer muted">
   Read-only unless an API token is entered. The token is sent only in the
-  Authorization header and is kept for this tab only.
+  Authorization header and is never stored. Font: Atkinson Hyperlegible,
+  <a href="assets/OFL.txt">SIL Open Font License 1.1</a>.
   <a href="/docs">API reference</a>
 </footer>
 
 <dialog id="token-dialog" aria-labelledby="token-title">
   <form id="token-form" method="dialog" novalidate>
     <h2 id="token-title">Enter API token</h2>
-    <p class="muted">The value of <code>LEASEQ_API_TOKEN</code> on the server. It unlocks requeue
-      and cancel. It stays in this tab until you close it or choose Forget token.</p>
+    <p class="muted">The value of <code>LEASEQ_API_TOKEN</code> on the server. It is kept in this
+      page's memory only; reloading the page forgets it.</p>
     <label for="token-input">API token</label>
     <input class="input wide" id="token-input" type="password" autocomplete="off"
            spellcheck="false" aria-describedby="token-error" required>

@@ -1,15 +1,15 @@
-# PostgreSQL + API + one worker + a demo feeder. Development defaults.
+# PostgreSQL + API + one worker + a demo feeder.
 #
-# The API requires a bearer token for every write (submit, claim, complete,
-# requeue, cancel). Set your own before exposing this anywhere:
-#     LEASEQ_API_TOKEN=$(openssl rand -hex 24) docker compose up --build
-# Without it, the well-known development token below is used. The API port is
-# bound to 127.0.0.1 only. LEASEQ_PUBLIC_READ=1 lets the dashboard at
-# http://127.0.0.1:8000/dashboard/ show jobs (including payloads) without the
-# token; remove it to require the token for reads too.
+# Every request to the API needs a bearer token, and there is no default one:
+#     export LEASEQ_API_TOKEN=$(openssl rand -hex 24)
+#     docker compose up --build
+# Then open http://127.0.0.1:8000/dashboard/ and paste the token when asked.
+# The API is published on 127.0.0.1 only. Job reads need the token too; to open
+# them (payloads included) to anyone who can reach the port, add
+# LEASEQ_PUBLIC_READ: "1" to the app service.
 x-leaseq-env: &leaseq-env
   LEASEQ_DATABASE_URL: postgresql://leaseq:leaseq@postgres:5432/leaseq
-  LEASEQ_API_TOKEN: ${LEASEQ_API_TOKEN:-leaseq-dev-token-change-me}
+  LEASEQ_API_TOKEN: ${LEASEQ_API_TOKEN:?set LEASEQ_API_TOKEN to a random value of 16+ characters, for example the output of openssl rand -hex 24}
 
 services:
   postgres:
@@ -26,9 +26,7 @@ services:
 
   app:
     build: .
-    environment:
-      <<: *leaseq-env
-      LEASEQ_PUBLIC_READ: "1"
+    environment: *leaseq-env
     ports:
       - "127.0.0.1:8000:8000"
     depends_on:

@@ -8,8 +8,8 @@
    * The API token is sent only in the Authorization header of fetch() calls this
      page makes. It is never stored in a cookie, so the browser never attaches it
      to a request that another site triggers: there is no CSRF surface. It is kept
-     in sessionStorage (this tab only, gone when the tab closes), or in memory when
-     storage is unavailable, and "Forget token" removes it.
+     only in this page's memory: never in a cookie, localStorage, sessionStorage or
+     the URL. Reloading the page or choosing "Forget token" drops it.
    * Requeue and cancel buttons exist only while a token that the server accepted
      (GET /auth/check) is set, and each action asks for confirmation first. The
      server checks the token on every request regardless of what this page shows.
@@ -18,7 +18,6 @@
 const REFRESH_MS = 2000;
 const PAGE = 50;
 const MAX_ROWS = 200;            // the API's page cap
-const TOKEN_KEY = "leaseq.dashboard.token";
 
 const TABS = [
   { id: "", label: "All", count: (c) => c.total },
@@ -135,17 +134,10 @@ function announce(msg) {
   window.setTimeout(() => { s.textContent = msg; }, 50);
 }
 
-/* ---------- token (sessionStorage when available) ---------- */
+/* ---------- token (memory only) ---------- */
 
-function loadToken() {
-  try { return window.sessionStorage.getItem(TOKEN_KEY); } catch (e) { return null; }
-}
 function saveToken(t) {
-  app.token = t;
-  try {
-    if (t) window.sessionStorage.setItem(TOKEN_KEY, t);
-    else window.sessionStorage.removeItem(TOKEN_KEY);
-  } catch (e) { /* storage blocked: keep it in memory only */ }
+  app.token = t || null;
   renderTokenControls();
 }
 
@@ -565,7 +557,6 @@ async function submitToken(e) {
   }).catch(() => null);
   if (!r) return fail("Cannot reach the API to check the token.");
   if (r.status === 401) return fail("The server rejected this token.");
-  if (r.status === 403) return fail("This server has no API token set, so operator actions are off.");
   if (r.status !== 200) return fail(`Unexpected answer from the server (HTTP ${r.status}).`);
   saveToken(value);
   $("token-dialog").close();
@@ -709,7 +700,6 @@ function togglePause() {
 /* ---------- start ---------- */
 
 function init() {
-  app.token = loadToken();
   buildTabs();
   readUrl();
   renderTabs(null);

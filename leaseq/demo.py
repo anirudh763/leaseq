@@ -1,7 +1,7 @@
 """Enqueue sample jobs so the dashboard has something to show.
 
-    python -m leaseq.demo --api http://127.0.0.1:8000            # one batch
-    python -m leaseq.demo --api http://app:8000 --trickle-minutes 10
+    LEASEQ_API_TOKEN=... python -m leaseq.demo --api http://127.0.0.1:8000   # one batch
+    LEASEQ_API_TOKEN=... python -m leaseq.demo --api http://app:8000 --trickle-minutes 10
 
 The jobs use the kinds the bundled worker understands (see worker.handle):
 `sleep` works for `ms` milliseconds while heartbeating, `fail` always raises,
@@ -64,7 +64,7 @@ def enqueue(client: httpx.Client, jobs: list[dict]) -> int:
         r = client.post("/jobs", headers={"Idempotency-Key": job["key"]},
                         json={k: job[k] for k in ("kind", "payload", "max_attempts")})
         if r.status_code == 401:
-            raise SystemExit("the API needs a token: set LEASEQ_API_TOKEN or pass --token")
+            raise SystemExit("the API rejected the token: set LEASEQ_API_TOKEN")
         r.raise_for_status()
         created += r.status_code == 201
     return created
@@ -73,12 +73,11 @@ def enqueue(client: httpx.Client, jobs: list[dict]) -> int:
 def main() -> int:
     p = argparse.ArgumentParser(description="enqueue sample jobs for the leaseq dashboard")
     p.add_argument("--api", default="http://127.0.0.1:8000")
-    p.add_argument("--token", default=os.environ.get("LEASEQ_API_TOKEN"),
-                   help="bearer token (default: $LEASEQ_API_TOKEN)")
     p.add_argument("--trickle-minutes", type=float, default=0,
                    help="after the first batch, add 1-3 jobs every few seconds for this long")
     a = p.parse_args()
-    with httpx.Client(base_url=a.api, headers=_headers(a.token), timeout=10) as client:
+    token = os.environ.get("LEASEQ_API_TOKEN")        # environment only, not argv
+    with httpx.Client(base_url=a.api, headers=_headers(token), timeout=10) as client:
         wait_for_api(client)
         print(f"enqueued {enqueue(client, sample_jobs())} sample jobs", flush=True)
         rng = random.Random(1)      # demo pacing only; nothing here is security-relevant

@@ -92,7 +92,7 @@ def run(api_url: str, worker_id: str, lease_seconds: float, poll_seconds: float,
                 time.sleep(poll_seconds)
                 continue
             if r.status_code == 401:
-                raise SystemExit("the API rejected the token: set LEASEQ_API_TOKEN or --token")
+                raise SystemExit("the API rejected the token: set LEASEQ_API_TOKEN to the API's token")
             r.raise_for_status()
             job = r.json()
             try:
@@ -121,12 +121,13 @@ def main() -> None:
     p.add_argument("--worker-id", required=True)
     p.add_argument("--lease-seconds", type=float, default=30)
     p.add_argument("--poll-seconds", type=float, default=0.2)
-    p.add_argument("--token", default=os.environ.get("LEASEQ_API_TOKEN"),
-                   help="bearer token for the API (default: $LEASEQ_API_TOKEN)")
     p.add_argument("--unfenced", action="store_true",
                    help="negative control for the chaos test: skip the lease-token check")
     a = p.parse_args()
-    run(a.api, a.worker_id, a.lease_seconds, a.poll_seconds, a.unfenced, a.token)
+    # The token comes from the environment only, never the command line, so it
+    # does not show up in `ps` output or shell history.
+    run(a.api, a.worker_id, a.lease_seconds, a.poll_seconds, a.unfenced,
+        os.environ.get("LEASEQ_API_TOKEN"))
 
 
 if __name__ == "__main__":

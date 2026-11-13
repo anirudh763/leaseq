@@ -9,7 +9,6 @@ import hmac
 import os
 from dataclasses import dataclass
 
-from fastapi import HTTPException, Request
 
 MIN_TOKEN_LENGTH = 16
 DEFAULT_MAX_BODY_BYTES = 64 * 1024
@@ -17,15 +16,24 @@ DEFAULT_MAX_BODY_BYTES = 64 * 1024
 
 @dataclass(frozen=True)
 class Settings:
-    api_token: str | None
+    api_token: str
     public_read: bool
     max_body_bytes: int
 
 
+TOKEN_HELP = ("generate one with: python -c 'import secrets; print(secrets.token_urlsafe(32))'")
+
+
 def load_settings() -> Settings:
-    token = os.environ.get("LEASEQ_API_TOKEN") or None
-    if token is not None and len(token) < MIN_TOKEN_LENGTH:
-        raise RuntimeError(f"LEASEQ_API_TOKEN must be at least {MIN_TOKEN_LENGTH} characters")
+    """Fail closed: the API does not start without a usable token."""
+    token = (os.environ.get("LEASEQ_API_TOKEN") or "").strip()
+    if not token:
+        raise RuntimeError("LEASEQ_API_TOKEN is not set or is blank. leaseq will not start "
+                           "without it, because every write and worker call needs it; "
+                           + TOKEN_HELP)
+    if len(token) < MIN_TOKEN_LENGTH:
+        raise RuntimeError(f"LEASEQ_API_TOKEN must be at least {MIN_TOKEN_LENGTH} characters; "
+                           + TOKEN_HELP)
     return Settings(
         api_token=token,
         public_read=os.environ.get("LEASEQ_PUBLIC_READ") == "1",
@@ -41,40 +49,51 @@ def token_matches(supplied: str, expected: str) -> bool:
     return hmac.compare_digest(_digest(supplied), _digest(expected))
 
 
-def _bearer(request: Request) -> str | None:
-    scheme, _, value = request.headers.get("authorization", "").partition(" ")
+def _bearer(headers: dict) -> str | None:
+    raw = headers.get(b"authorization", b"").decode("latin-1")
+    scheme, _, value = raw.partition(" ")
     value = value.strip()
     return value if scheme.lower() == "bearer" and value else None
 
 
-def _check(request: Request, expected: str) -> None:
-    supplied = _bearer(request)
-    if supplied is None or not token_matches(supplied, expected):
-        raise HTTPException(401, "missing or invalid bearer token",
-                            headers={"WWW-Authenticate": "Bearer"})
+# Paths that hold no job data and are served without a token. Everything else
+# is denied by default, so a route added later is protected unless listed here.
+OPEN_PATHS = {"/", "/healthz", "/dashboard", "/docs", "/docs/oauth2-redirect", "/openapi.json"}
+OPEN_PREFIXES = ("/dashboard/",)
+# GET endpoints that LEASEQ_PUBLIC_READ=1 opens. /auth/check is not among them.
+PUBLIC_READ_PREFIXES = ("/stats", "/jobs")
 
 
-def require_write(request: Request) -> None:
-    """Submit, claim, heartbeat, complete, fail: token required when one is configured."""
-    expected = request.app.state.settings.api_token
-    if expected is not None:
-        _check(request, expected)
+def access(method: str, path: str, public_read: bool) -> str:
+    """-> 'open' or 'token' for a request."""
+    if path in OPEN_PATHS or path.startswith(OPEN_PREFIXES):
+        return "open"
+    if public_read and method in ("GET", "HEAD") and path.startswith(PUBLIC_READ_PREFIXES):
+        return "open"
+    return "token"
 
 
-def require_read(request: Request) -> None:
-    """GET endpoints: like writes, unless LEASEQ_PUBLIC_READ=1."""
-    settings = request.app.state.settings
-    if settings.api_token is not None and not settings.public_read:
-        _check(request, settings.api_token)
+class Auth:
+    """Bearer-token check for every request, before the body is read or parsed.
 
+    Missing or wrong token: 401 with a JSON body and `WWW-Authenticate: Bearer`.
+    """
 
-def require_operator(request: Request) -> None:
-    """Requeue/cancel: fail closed. Without a configured token they are disabled."""
-    expected = request.app.state.settings.api_token
-    if expected is None:
-        raise HTTPException(403, "operator actions are disabled: "
-                                 "start the API with LEASEQ_API_TOKEN set")
-    _check(request, expected)
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+        settings = getattr(scope["app"].state, "settings", None)
+        if settings is None:
+            return await _reply(send, 503, b'{"detail":"starting up"}')
+        if access(scope["method"], scope["path"], settings.public_read) == "token":
+            supplied = _bearer(dict(scope["headers"]))
+            if supplied is None or not token_matches(supplied, settings.api_token):
+                return await _reply(send, 401, b'{"detail":"missing or invalid bearer token"}',
+                                    [(b"www-authenticate", b"Bearer")])
+        await self.app(scope, receive, send)
 
 
 class BodyLimit:
@@ -123,10 +142,10 @@ def _too_large(limit: int) -> bytes:
     return b'{"detail":"request body is larger than %d bytes"}' % limit
 
 
-async def _reply(send, status: int, body: bytes) -> None:
+async def _reply(send, status: int, body: bytes, extra_headers=()) -> None:
     await send({"type": "http.response.start", "status": status,
                 "headers": [(b"content-type", b"application/json"),
-                            (b"content-length", str(len(body)).encode())]})
+                            (b"content-length", str(len(body)).encode()), *extra_headers]})
     await send({"type": "http.response.body", "body": body})
 
 

@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Smoke test against a running stack (docker compose up): writes need the token,
+# Smoke test against a running stack (docker compose up): writes and reads need the token,
 # submit one job twice with the same key, wait for the worker to finish it,
 # check the stats and that the dashboard is served.
 set -euo pipefail
 API="${1:-http://127.0.0.1:8000}"
-TOKEN="${LEASEQ_API_TOKEN:-leaseq-dev-token-change-me}"   # the compose default
+TOKEN="${LEASEQ_API_TOKEN:?set LEASEQ_API_TOKEN to the token the stack was started with}"
 AUTH="Authorization: Bearer $TOKEN"
 
 for _ in $(seq 1 60); do
@@ -15,6 +15,8 @@ done
 code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$API/jobs" -H 'Content-Type: application/json' \
   -H 'Idempotency-Key: smoke-noauth' -d '{"kind": "noop"}')
 [ "$code" = "401" ] || { echo "expected 401 without a token, got $code"; exit 1; }
+code=$(curl -s -o /dev/null -w '%{http_code}' "$API/jobs")
+[ "$code" = "401" ] || { echo "expected 401 for an anonymous read, got $code"; exit 1; }
 
 post() {
   curl -fsS -X POST "$API/jobs" -H 'Content-Type: application/json' -H "$AUTH" \

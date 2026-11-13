@@ -33,7 +33,7 @@ main{padding:16px 20px 24px;max-width:1600px}
 
 /* Split pane: table | details, like DevTools' network panel */
 .split{display:grid;grid-template-columns:minmax(0,1fr);gap:12px;align-items:start}
-.split.open{grid-template-columns:minmax(0,1fr) minmax(360px,460px)}
+.split.open{grid-template-columns:minmax(0,1fr) minmax(380px,540px)}
 @media (max-width:960px){.split.open{grid-template-columns:minmax(0,1fr)}}
 .jobs:focus{outline:none}
 .table-wrap{overflow-x:auto}
@@ -73,7 +73,7 @@ tbody tr:last-child td{border-bottom:0}
 .fields dt{color:var(--fg-muted);font-size:.9em}
 .fields dd{margin:0;overflow-wrap:anywhere}
 table.dense td,table.dense th{padding:4px 8px;font-size:.9em}
-table.dense td.outcome{white-space:normal;min-width:10em;overflow-wrap:anywhere}
+table.dense td.outcome{white-space:normal;overflow-wrap:anywhere}
 
 .events{list-style:none;margin:0;padding:0;border:1px solid var(--border);border-radius:var(--radius)}
 .events li{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:0 10px;padding:6px 10px;
@@ -99,3 +99,15 @@ dialog label{display:block;font-weight:700;margin-top:10px}
   .field .input{width:100%} .field{flex:1 1 9em} .filters-gap{display:none}
   .split.open{grid-template-columns:minmax(0,1fr)} .detail{padding:0 10px 10px}
 }
+
+/* Outcome text in the lease table wraps; the icon keeps its size. */
+.outcome .state{display:flex;align-items:flex-start}
+.outcome .state svg{flex:none;margin-top:3px}
+.outcome .state span{min-width:0;overflow-wrap:anywhere}
+.state svg{flex:none}
+.detail table.dense{table-layout:fixed;width:100%}
+.detail table.dense th:nth-child(1){width:4.6em}
+.detail table.dense th:nth-child(2){width:24%}
+.detail table.dense th:nth-child(3){width:5.6em}
+.detail table.dense th:nth-child(4){width:3.8em}
+.detail table.dense td{white-space:normal;overflow-wrap:anywhere}

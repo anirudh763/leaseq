@@ -1,12 +1,12 @@
 """HTTP API. A thin layer: validate input, call queue.py, map results to status codes.
 
-Access control (see security.py):
-  * LEASEQ_API_TOKEN unset: every endpoint is open, as before. A warning is logged.
-  * LEASEQ_API_TOKEN set: every request except /healthz and the dashboard's static
-    files needs `Authorization: Bearer <token>`. With LEASEQ_PUBLIC_READ=1 the GET
-    endpoints (stats, job list, job detail, events) stay open; writes never do.
-  * Operator actions (requeue, cancel, sample jobs) refuse to run at all unless a
-    token is configured, so they cannot be left open by accident.
+Access control (security.Auth, applied to every request before its body is read):
+  * The API refuses to start unless LEASEQ_API_TOKEN is set (16+ characters).
+  * Every request needs `Authorization: Bearer <token>`, except the paths in
+    security.OPEN_PATHS (health check, dashboard files, API docs), which hold no
+    job data. Anything not listed there is protected by default.
+  * LEASEQ_PUBLIC_READ=1 opens the GET endpoints under /stats and /jobs. Writes,
+    worker calls and operator actions always need the token.
 """
 import logging
 from contextlib import asynccontextmanager
@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Literal
 
 import psycopg
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
+from fastapi import FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -36,9 +36,7 @@ TOKEN_PATTERN = r"^[A-Za-z0-9_-]+$"      # secrets.token_urlsafe alphabet
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    app.state.settings = security.load_settings()
-    if app.state.settings.api_token is None:
-        log.warning("LEASEQ_API_TOKEN is not set: the API accepts unauthenticated requests")
+    app.state.settings = security.load_settings()      # raises without a token
     app.state.pool = db.make_pool()
     with app.state.pool.connection() as conn:
         db.apply_schema(conn)
@@ -47,8 +45,11 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="leaseq", lifespan=lifespan)
+# The last one added runs first: SecurityHeaders wraps everything (401 and 413
+# included), then Auth, then BodyLimit, and only then FastAPI parses the body.
+app.add_middleware(security.BodyLimit)
+app.add_middleware(security.Auth)
 app.add_middleware(security.SecurityHeaders)
-app.add_middleware(security.BodyLimit)      # added last = runs first, before any parsing
 
 
 class JobIn(BaseModel):
@@ -87,9 +88,6 @@ class CancelIn(BaseModel):
 
 LEASE_LOST = HTTPException(409, "lease token is not the current lease for this job")
 
-write = [Depends(security.require_write)]
-read = [Depends(security.require_read)]
-operator = [Depends(security.require_operator)]
 
 
 @app.exception_handler(queue.JobNotFound)
@@ -121,7 +119,7 @@ def data_error(request: Request, exc: psycopg.errors.DataError):
 # Handlers are plain `def`, so FastAPI runs them in its thread pool and the
 # blocking psycopg calls do not stall the event loop.
 
-@app.post("/jobs", dependencies=write)
+@app.post("/jobs")
 def submit(body: JobIn, request: Request, response: Response,
            idempotency_key: str = Header(min_length=1, max_length=200)):
     with request.app.state.pool.connection() as conn:
@@ -131,14 +129,14 @@ def submit(body: JobIn, request: Request, response: Response,
     return job
 
 
-@app.post("/jobs/claim", dependencies=write)
+@app.post("/jobs/claim")
 def claim(body: ClaimIn, request: Request):
     with request.app.state.pool.connection() as conn:
         job = queue.claim(conn, body.worker_id, body.lease_seconds)
     return job if job is not None else Response(status_code=204)
 
 
-@app.post("/jobs/{job_id}/heartbeat", dependencies=write)
+@app.post("/jobs/{job_id}/heartbeat")
 def heartbeat(job_id: int, body: HeartbeatIn, request: Request):
     with request.app.state.pool.connection() as conn:
         job = queue.heartbeat(conn, job_id, body.lease_token, body.lease_seconds)
@@ -147,7 +145,7 @@ def heartbeat(job_id: int, body: HeartbeatIn, request: Request):
     return job
 
 
-@app.post("/jobs/{job_id}/complete", dependencies=write)
+@app.post("/jobs/{job_id}/complete")
 def complete(job_id: int, body: CompleteIn, request: Request):
     with request.app.state.pool.connection() as conn:
         job = queue.complete(conn, job_id, body.lease_token, body.result)
@@ -156,7 +154,7 @@ def complete(job_id: int, body: CompleteIn, request: Request):
     return job
 
 
-@app.post("/jobs/{job_id}/fail", dependencies=write)
+@app.post("/jobs/{job_id}/fail")
 def fail(job_id: int, body: FailIn, request: Request):
     with request.app.state.pool.connection() as conn:
         job = queue.fail(conn, job_id, body.lease_token, body.error)
@@ -167,7 +165,7 @@ def fail(job_id: int, body: FailIn, request: Request):
 
 # --- operator actions (dashboard) --------------------------------------------
 
-@app.post("/jobs/{job_id}/requeue", dependencies=operator)
+@app.post("/jobs/{job_id}/requeue")
 def requeue(job_id: int, request: Request, body: RequeueIn | None = None):
     body = body or RequeueIn()
     with request.app.state.pool.connection() as conn:
@@ -177,7 +175,7 @@ def requeue(job_id: int, request: Request, body: RequeueIn | None = None):
     return job
 
 
-@app.post("/jobs/{job_id}/cancel", dependencies=operator)
+@app.post("/jobs/{job_id}/cancel")
 def cancel(job_id: int, request: Request, body: CancelIn | None = None):
     body = body or CancelIn()
     with request.app.state.pool.connection() as conn:
@@ -187,14 +185,14 @@ def cancel(job_id: int, request: Request, body: CancelIn | None = None):
     return job
 
 
-@app.get("/auth/check", dependencies=operator)
+@app.get("/auth/check")
 def auth_check():
-    """200 if the bearer token is right, 401 if not, 403 if the server has none.
+    """200 if the bearer token is right, 401 if not (even with LEASEQ_PUBLIC_READ=1).
     The dashboard calls this before it shows any operator buttons."""
     return {"ok": True}
 
 
-@app.post("/demo/jobs", dependencies=operator, status_code=201)
+@app.post("/demo/jobs", status_code=201)
 def sample_jobs(request: Request):
     """Enqueue the same sample jobs as `python -m leaseq.demo`, for an empty dashboard."""
     with request.app.state.pool.connection() as conn:
@@ -213,13 +211,13 @@ def healthz(request: Request):
     return {"ok": True}
 
 
-@app.get("/stats", dependencies=read)
+@app.get("/stats")
 def stats(request: Request):
     with request.app.state.pool.connection() as conn:
         return queue.stats(conn)
 
 
-@app.get("/jobs", dependencies=read)
+@app.get("/jobs")
 def list_jobs(request: Request,
               state: Literal["queued", "leased", "retrying", "done", "dead"] | None = None,
               kind: str | None = Query(None, min_length=1, max_length=100, pattern=KIND_PATTERN),
@@ -234,7 +232,7 @@ def list_jobs(request: Request,
     return {"jobs": jobs, "next_before_id": next_before, "counts": counts}
 
 
-@app.get("/jobs/{job_id}/events", dependencies=read)
+@app.get("/jobs/{job_id}/events")
 def job_events(job_id: int, request: Request,
                after_id: int = Query(0, ge=0, le=BIGINT_MAX),
                limit: int = Query(200, ge=1, le=queue.MAX_EVENTS_PAGE)):
@@ -244,13 +242,13 @@ def job_events(job_id: int, request: Request,
     return {"events": events, "next_after_id": next_after}
 
 
-@app.get("/jobs/{job_id}", dependencies=read)
+@app.get("/jobs/{job_id}")
 def get_job(job_id: int, request: Request):
     with request.app.state.pool.connection() as conn:
         return queue.get(conn, job_id)
 
 
-# --- dashboard (static files; holds no data, so it is served without a token) --
+# --- dashboard (static files; no job data, so security.OPEN_PATHS lists them) --
 
 @app.get("/", include_in_schema=False)
 def root():

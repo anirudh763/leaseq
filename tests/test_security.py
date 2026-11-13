@@ -21,7 +21,8 @@ def make_client(db_url, monkeypatch):
     """TestClient whose app was started with the given env (settings load at startup)."""
     clients = []
 
-    def _make(token=TOKEN, public_read=False, **env):
+    def _make(token=TOKEN, public_read=False, auth=True, **env):
+        """auth=True: the client sends the right token on every request."""
         for k in ("LEASEQ_API_TOKEN", "LEASEQ_PUBLIC_READ", "LEASEQ_MAX_BODY_BYTES"):
             monkeypatch.delenv(k, raising=False)
         if token:
@@ -30,7 +31,7 @@ def make_client(db_url, monkeypatch):
             monkeypatch.setenv("LEASEQ_PUBLIC_READ", "1")
         for k, v in env.items():
             monkeypatch.setenv(k, v)
-        c = TestClient(app)
+        c = TestClient(app, headers=AUTH if auth else None)
         c.__enter__()
         clients.append(c)
         return c
@@ -70,9 +71,8 @@ BAD_HEADERS = [{}, {"Authorization": "Bearer wrong-token-0123456789"},
 
 
 @pytest.mark.parametrize("method,path,body", WRITE_CALLS + READ_CALLS)
-def test_every_endpoint_needs_the_token_when_one_is_configured(make_client, conn,
-                                                                method, path, body):
-    client = make_client()
+def test_every_endpoint_needs_the_token(make_client, conn, method, path, body):
+    client = make_client(auth=False)
     seed(conn)
     queue.claim(conn, "w0", 30)
     before = rows(conn)
@@ -81,11 +81,31 @@ def test_every_endpoint_needs_the_token_when_one_is_configured(make_client, conn
                            headers={"Idempotency-Key": "k", **headers})
         assert r.status_code == 401, (headers, r.text)
         assert r.headers["www-authenticate"] == "Bearer"
+        assert r.json() == {"detail": "missing or invalid bearer token"}
     assert rows(conn) == before                       # nothing was written
 
 
+def test_routes_are_protected_by_default(make_client):
+    """A path nobody listed as open needs the token, even one that does not exist,
+    so a route added later cannot be left open by forgetting a check."""
+    client = make_client(auth=False)
+    for method in ("GET", "POST", "DELETE"):
+        assert client.request(method, "/not-a-route").status_code == 401
+    assert client.get("/not-a-route", headers=AUTH).status_code == 404
+
+
+def test_unauthenticated_body_is_not_parsed(make_client, conn):
+    """Auth runs before validation: no token means 401 even for a malformed body."""
+    client = make_client(auth=False)
+    r = client.post("/jobs", content=b"{not json", headers={"Content-Type": "application/json"})
+    assert r.status_code == 401
+    # ...and before the body limit: a stranger's body is never read at all.
+    big = client.post("/jobs", content=b"x" * 70_000, headers={"Content-Type": "application/json"})
+    assert big.status_code == 401
+
+
 def test_correct_token_runs_the_whole_job_cycle(make_client):
-    client = make_client()
+    client = make_client(auth=False)
     r = client.post("/jobs", headers={"Idempotency-Key": "a", **AUTH}, json={"kind": "noop"})
     assert r.status_code == 201
     job = client.post("/jobs/claim", headers=AUTH, json={"worker_id": "w1"}).json()
@@ -97,7 +117,7 @@ def test_correct_token_runs_the_whole_job_cycle(make_client):
 
 
 def test_public_read_opens_gets_but_never_writes(make_client, conn):
-    client = make_client(public_read=True)
+    client = make_client(public_read=True, auth=False)
     job_id = seed(conn)[0]
     for _, path, _ in READ_CALLS:
         assert client.get(path.replace("/1", f"/{job_id}")).status_code == 200, path
@@ -106,10 +126,11 @@ def test_public_read_opens_gets_but_never_writes(make_client, conn):
         assert r.status_code == 401, path
 
 
-def test_public_read_without_a_token_configured_changes_nothing(make_client):
-    client = make_client(token=None, public_read=True)
-    r = client.post("/jobs", headers={"Idempotency-Key": "a"}, json={"kind": "noop"})
-    assert r.status_code == 201
+def test_reads_need_the_token_unless_public_read_is_exactly_1(make_client, conn):
+    seed(conn)
+    for value in ("", "0", "true", "yes"):
+        client = make_client(auth=False, LEASEQ_PUBLIC_READ=value)
+        assert client.get("/jobs").status_code == 401, value
 
 
 def test_token_is_compared_in_constant_time(make_client, monkeypatch):
@@ -121,7 +142,7 @@ def test_token_is_compared_in_constant_time(make_client, monkeypatch):
         return real(a, b)
 
     monkeypatch.setattr(security.hmac, "compare_digest", spy)
-    client = make_client()
+    client = make_client(auth=False)
     assert client.get("/stats", headers={"Authorization": "Bearer short"}).status_code == 401
     assert client.get("/stats", headers=AUTH).status_code == 200
     # Both sides are hashed first, so the comparison never sees the real lengths.
@@ -135,18 +156,20 @@ def test_short_token_is_refused_at_startup(db_url, monkeypatch):
             pass
 
 
-def test_operator_actions_are_disabled_without_a_configured_token(make_client, conn):
-    client = make_client(token=None)
-    job_id = seed(conn)[0]
-    assert client.post(f"/jobs/{job_id}/cancel").status_code == 403
-    assert client.post(f"/jobs/{job_id}/requeue").status_code == 403
-    assert client.post("/demo/jobs").status_code == 403
-    assert client.get("/auth/check", headers=AUTH).status_code == 403
-    assert client.get(f"/jobs/{job_id}").json()["state"] == "queued"
+@pytest.mark.parametrize("value", [None, "", "   "])
+def test_missing_or_blank_token_refuses_to_start(db_url, monkeypatch, value):
+    """Fail closed: no token configured never means an open API."""
+    if value is None:
+        monkeypatch.delenv("LEASEQ_API_TOKEN", raising=False)
+    else:
+        monkeypatch.setenv("LEASEQ_API_TOKEN", value)
+    with pytest.raises(RuntimeError, match="LEASEQ_API_TOKEN is not set or is blank"):
+        with TestClient(app):
+            pass
 
 
 def test_healthz_and_dashboard_files_need_no_token(make_client):
-    client = make_client()
+    client = make_client(auth=False)
     assert client.get("/healthz").json() == {"ok": True}
     assert client.get("/dashboard/").status_code == 200
     assert client.get("/dashboard/assets/app.js").status_code == 200
@@ -155,7 +178,7 @@ def test_healthz_and_dashboard_files_need_no_token(make_client):
 # --- request size and input validation ----------------------------------------
 
 def test_oversized_body_is_rejected_before_parsing(make_client, conn):
-    client = make_client(token=None)
+    client = make_client()
     big = {"kind": "noop", "payload": {"x": "y" * 70_000}}
     r = client.post("/jobs", headers={"Idempotency-Key": "big"}, json=big)
     assert r.status_code == 413
@@ -163,7 +186,7 @@ def test_oversized_body_is_rejected_before_parsing(make_client, conn):
 
 
 def test_oversized_chunked_body_without_content_length_is_rejected(make_client, conn):
-    client = make_client(token=None, LEASEQ_MAX_BODY_BYTES="1000")
+    client = make_client(LEASEQ_MAX_BODY_BYTES="1000")
 
     def chunks():
         yield b'{"kind": "noop", "payload": {"x": "'
@@ -179,7 +202,7 @@ def test_oversized_chunked_body_without_content_length_is_rejected(make_client, 
 
 
 def test_body_limit_is_configurable_and_small_bodies_pass(make_client):
-    client = make_client(token=None, LEASEQ_MAX_BODY_BYTES="200")
+    client = make_client(LEASEQ_MAX_BODY_BYTES="200")
     ok = client.post("/jobs", headers={"Idempotency-Key": "s"}, json={"kind": "noop"})
     assert ok.status_code == 201
     r = client.post("/jobs", headers={"Idempotency-Key": "t"},
@@ -199,7 +222,7 @@ def test_body_limit_is_configurable_and_small_bodies_pass(make_client):
     ("/jobs/claim", {"worker_id": "w\nx"}),
 ])
 def test_invalid_input_is_a_422_not_a_500(make_client, conn, path, body):
-    client = make_client(token=None)       # TestClient re-raises server errors
+    client = make_client()       # TestClient re-raises server errors
     r = client.post(path, headers={"Idempotency-Key": "v"}, json=body)
     assert r.status_code == 422, r.text
     assert rows(conn) == (0, 0)
@@ -207,7 +230,7 @@ def test_invalid_input_is_a_422_not_a_500(make_client, conn, path, body):
 
 def test_nan_lease_length_is_a_422_not_a_500(make_client, conn):
     """Python's json accepts the non-standard literal NaN; it used to reach SQL."""
-    client = make_client(token=None)
+    client = make_client()
     seed(conn)
     for literal in (b"NaN", b"Infinity", b"-Infinity"):
         r = client.post("/jobs/claim",
@@ -219,7 +242,7 @@ def test_nan_lease_length_is_a_422_not_a_500(make_client, conn):
 
 
 def test_idempotency_key_longer_than_200_is_rejected(make_client):
-    client = make_client(token=None)
+    client = make_client()
     r = client.post("/jobs", headers={"Idempotency-Key": "k" * 201}, json={"kind": "noop"})
     assert r.status_code == 422
 
@@ -228,14 +251,14 @@ def test_idempotency_key_longer_than_200_is_rejected(make_client):
     ("lease_token", "t" * 65), ("lease_token", ""), ("lease_token", "a'b"),
 ])
 def test_lease_token_shape_is_checked(make_client, conn, field, value):
-    client = make_client(token=None)
+    client = make_client()
     seed(conn)
     for op in ("heartbeat", "complete", "fail"):
         assert client.post(f"/jobs/1/{op}", json={field: value}).status_code == 422
 
 
 def test_error_text_is_bounded_and_nul_is_a_422(make_client, conn):
-    client = make_client(token=None)
+    client = make_client()
     seed(conn)
     job = queue.claim(conn, "w1", 30)
     long = client.post("/jobs/1/fail", json={"lease_token": job["lease_token"], "error": "e" * 4001})
@@ -247,7 +270,7 @@ def test_error_text_is_bounded_and_nul_is_a_422(make_client, conn):
 
 def test_job_id_beyond_bigint_is_404_not_500(make_client):
     """Regression check, not a fix: psycopg sends such ids as numeric, which match no row."""
-    client = make_client(token=None)
+    client = make_client()
     assert client.get(f"/jobs/{2**63}").status_code == 404
     assert client.get(f"/jobs/{2**63}/events").status_code == 404
     assert client.post(f"/jobs/{2**64}/complete", json={"lease_token": "a"}).status_code == 404
@@ -256,7 +279,7 @@ def test_job_id_beyond_bigint_is_404_not_500(make_client):
 # --- bounded reads ------------------------------------------------------------
 
 def test_job_list_is_paged_and_capped(make_client, conn, monkeypatch):
-    client = make_client(token=None)
+    client = make_client()
     ids = seed(conn, 60)
     first = client.get("/jobs").json()
     assert [j["id"] for j in first["jobs"]] == ids[::-1][:50]
@@ -271,7 +294,7 @@ def test_job_list_is_paged_and_capped(make_client, conn, monkeypatch):
 
 
 def test_job_list_never_returns_payload_result_or_lease_token(make_client, conn):
-    client = make_client(token=None)
+    client = make_client()
     seed(conn, 2)
     queue.claim(conn, "w1", 30)
     body = client.get("/jobs").json()
@@ -280,7 +303,7 @@ def test_job_list_never_returns_payload_result_or_lease_token(make_client, conn)
 
 
 def test_job_list_filters(make_client, conn):
-    client = make_client(token=None)
+    client = make_client()
     a = queue.enqueue(conn, "email", {}, "a")[0]["id"]
     queue.enqueue(conn, "sms", {}, "b")
     claimed = queue.claim(conn, "w9", 30)
@@ -297,7 +320,7 @@ def test_job_list_filters(make_client, conn):
 
 
 def test_events_are_paged_and_capped(make_client, conn):
-    client = make_client(token=None)
+    client = make_client()
     job_id = seed(conn)[0]
     job = queue.claim(conn, "w1", 30)
     for _ in range(5):
@@ -326,9 +349,15 @@ def test_requeue_gives_a_dead_job_more_attempts(make_client, conn):
     assert (r.json()["state"], r.json()["attempts"], r.json()["max_attempts"]) == ("queued", 1, 3)
     again = queue.claim(conn, "w2", 30)
     assert again["id"] == job_id and again["attempts"] == 2
+    # The lease from the attempt that died is stale: its holder cannot report back.
+    stale = {"lease_token": job["lease_token"]}
+    assert client.post(f"/jobs/{job_id}/complete", headers=AUTH, json=stale).status_code == 409
+    assert worker.finish(conn, job, {}, "w1") is False
+    assert worker.finish(conn, again, {}, "w2") is True
     events = [e["event"] for e in client.get(f"/jobs/{job_id}/events", headers=AUTH)
               .json()["events"]]
-    assert events == ["enqueued", "claimed", "dead", "requeued", "claimed"]
+    assert events == ["enqueued", "claimed", "dead", "requeued", "claimed", "rejected",
+                      "rejected", "completed"]
     # The audit invariant the chaos test checks still holds: one claim row per attempt.
     claims = conn.execute("SELECT count(*) AS n FROM job_events WHERE event = 'claimed'"
                           ).fetchone()["n"]
@@ -388,7 +417,7 @@ def test_old_event_check_is_widened_on_start(db_url):
 # --- dashboard ------------------------------------------------------------------
 
 def test_dashboard_has_a_strict_csp_and_loads_nothing_external(make_client):
-    client = make_client(token=None)
+    client = make_client()
     r = client.get("/dashboard/")
     csp = r.headers["content-security-policy"]
     assert "script-src 'self'" in csp and "frame-ancestors 'none'" in csp
