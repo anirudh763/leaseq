@@ -82,10 +82,12 @@ SABOTAGE = [
     ("version missing from /healthz", [(API, 'return {"ok": True, "version": __version__}', 'return {"ok": True}')], FAST),
     # Not listed: dropping FastAPI(version=...) cannot be caught while the
     # version is 0.1.0, because that is FastAPI's own default version.
-    ("up.sh overwrites an existing token", [("scripts/up.sh", "if [ -f \"$ENV_FILE\" ] && grep -q '^LEASEQ_API_TOKEN=.' \"$ENV_FILE\"; then",
-                                             "if false; then")], FAST),
-    ("up.sh leaves .env readable by others", [("scripts/up.sh", 'chmod 600 "$ENV_FILE"\n', ""),
-                                               ("scripts/up.sh", "    umask 077                                  # a new .env is never world-readable\n", "")], FAST),
+    ("up.sh overwrites an existing token", [("scripts/up.sh", 'if [ "$count" = 1 ] && ! blank "$current"; then', "if false; then")], FAST),
+    ("up.sh leaves .env readable by others", [("scripts/up.sh", '  chmod 600 "$ENV_FILE"\n', ""),
+                                               ("scripts/up.sh", "        umask 077                              # a new .env is never world-readable\n", "")], FAST),
+    ("up.sh appends instead of filling a blank token", [("scripts/up.sh", 'if [ "$count" = 1 ]; then\n      # Fill', 'if false; then\n      # Fill')], FAST),
+    ("up.sh ignores the shell token", [("scripts/up.sh", 'if [ -n "${LEASEQ_API_TOKEN+set}" ]; then', "if false; then")], FAST),
+    ("up.sh health check without a per-request timeout", [("scripts/up.sh", '--connect-timeout "$left" --max-time "$left" ', "")], FAST),
     ("up.sh does not wait for /healthz", [("scripts/up.sh", 'echo "The API did not answer $URL/healthz within ${TIMEOUT}s. See: docker compose logs app" >&2\nexit 1',
                                            'exit 0')], FAST),
     (".env not ignored by git", [(".gitignore", "\n.env\n", "\n")], FAST),
