@@ -196,6 +196,7 @@ function clearSensitive() {
   app.list = null;
   app.details.clear();
   app.submit = null;
+  app.submitDraft = "";      // text typed for a job is a would-be payload: dropped too
   stopSubmitPoll();
 }
 
@@ -862,14 +863,42 @@ function confirmAction(kind, job, trigger) {
 
 /* ---------- Submit test job screen ---------- */
 
+// Characters as the worker counts them (Python len: code points, not UTF-16 units).
+function charCount(s) { return Array.from(s).length; }
+function overLimitMessage(n) {
+  return `The text has ${n.toLocaleString("en-US")} characters; the limit is 10,000. Shorten it to submit.`;
+}
+
 function viewSubmit() {
-  const text = el("textarea", { id: "wc-text", name: "text", maxlength: WC_MAX, spellcheck: "false",
+  // No maxlength: it would silently cut a long paste at 10,000 characters, so
+  // the person would never learn that their text was too long. The count is
+  // live, and over the limit the error shows and Submit is disabled.
+  const text = el("textarea", { id: "wc-text", name: "text", spellcheck: "false",
                                 "aria-describedby": "wc-hint wc-count wc-error" });
   text.value = app.submitDraft;
   const count = el("p", { class: "hint", id: "wc-count" });
-  const setCount = () => { count.textContent = `${text.value.length.toLocaleString("en-US")} of 10,000 characters`; };
-  setCount();
-  text.addEventListener("input", () => { app.submitDraft = text.value; setCount(); });
+  const submitBtn = el("button", { type: "submit", class: "btn primary", id: "submit-job", text: "Submit job" });
+  const setCount = () => {
+    const n = charCount(text.value);
+    const over = n > WC_MAX;
+    count.textContent = `${n.toLocaleString("en-US")} of 10,000 characters` +
+      (over ? `, ${(n - WC_MAX).toLocaleString("en-US")} over the limit` : "");
+    submitBtn.disabled = over;
+    const err = $("wc-error");
+    if (over) {
+      text.setAttribute("aria-invalid", "true");
+      if (err) err.textContent = overLimitMessage(n);
+    } else if (err && err.dataset.kind !== "other") {
+      text.removeAttribute("aria-invalid");
+      err.textContent = "";
+    }
+  };
+  text.addEventListener("input", () => {
+    app.submitDraft = text.value;
+    const err = $("wc-error");
+    if (err) err.dataset.kind = "";
+    setCount();
+  });
   const sample = el("button", { type: "button", class: "btn", id: "load-text", text: "Load sample text" });
   sample.addEventListener("click", async () => {
     try {
@@ -892,13 +921,15 @@ function viewSubmit() {
     el("p", { class: "hint", id: "wc-hint", text: "Up to 10,000 characters, the handler's limit. The text is stored " +
                                                    "as the job's payload on this server." }),
     text, count,
-    el("p", { class: "field-error", id: "wc-error" }),
+    el("p", { class: "field-error", id: "wc-error", "aria-live": "polite" }),
     el("p", { class: "hint" }, "Sample text: Jane Austen, ", el("cite", { text: "Pride and Prejudice" }),
        ", chapter 1, from Project Gutenberg eBook #1342. The novel is in the public domain; see ",
        el("a", { href: "assets/sample/SOURCE.txt", text: "source and licence note" }), "."),
     el("div", { class: "form-actions" },
-       el("button", { type: "submit", class: "btn primary", id: "submit-job", text: "Submit job" }), sample, clear));
+       submitBtn, sample, clear));
   form.addEventListener("submit", submitJob);
+  // The error element exists once the form is built; then show the current state.
+  window.queueMicrotask(setCount);
   return [
     h1("Submit test job"),
     el("p", { class: "lede", text: "Send text to the bundled word_count handler through the real queue: the API " +
@@ -919,10 +950,15 @@ async function submitJob(e) {
   e.preventDefault();
   const text = $("wc-text");
   const err = $("wc-error");
-  const fail = (msg) => { err.textContent = msg; text.setAttribute("aria-invalid", "true"); text.focus(); };
+  const fail = (msg) => {
+    err.textContent = msg;
+    err.dataset.kind = "other";
+    text.setAttribute("aria-invalid", "true");
+    text.focus();
+  };
   const v = text.value;
   if (v.trim() === "") return fail("Enter some text to count.");
-  if (v.length > WC_MAX) return fail(`The text has ${v.length.toLocaleString("en-US")} characters; the limit is 10,000.`);
+  if (charCount(v) > WC_MAX) return fail(overLimitMessage(charCount(v)));
   if (!app.token) return fail("Enter the API token on Connection & API first: submitting needs it.");
   text.removeAttribute("aria-invalid");
   err.textContent = "";
@@ -1040,6 +1076,8 @@ function viewConnection() {
     ["GET", "/jobs", "List jobs, newest first, with state counts", "unless public read"],
     ["GET", "/jobs/{id}", "One job", "unless public read"],
     ["GET", "/jobs/{id}/events", "A job's audit log", "unless public read"],
+    ["GET", "/stats", "Counts per state (not cached)", "unless public read"],
+    ["GET", "/auth/check", "200 if the token is right, else 401", "yes"],
     ["GET", "/healthz", "Liveness and version", "no"],
   ];
   const errors = [
@@ -1068,8 +1106,12 @@ function viewConnection() {
     el("section", { class: "panel guide", "aria-labelledby": "guide-title" },
       el("div", { class: "panel-body" },
         el("h2", { id: "guide-title", text: "API guide" }),
-        el("p", {}, "Every call except ", el("code", { text: "/healthz" }), " needs ",
-           el("code", { text: "Authorization: Bearer <token>" }), ". Full reference: ",
+        el("p", {}, "Every call except ", el("code", { text: "/healthz" }), ", ", el("code", { text: "/docs" }),
+           " and ", el("code", { text: "/openapi.json" }), " needs ",
+           el("code", { text: "Authorization: Bearer <token>" }), ". If the server runs with ",
+           el("code", { text: "LEASEQ_PUBLIC_READ=1" }), ", the GET calls under ", el("code", { text: "/jobs" }),
+           " and ", el("code", { text: "/stats" }), " are open too; writes, worker calls, operator actions and ",
+           el("code", { text: "/auth/check" }), " always need the token. Full reference: ",
            el("a", { href: "/docs", text: "interactive API docs" }), " (needs JavaScript) or the ",
            el("a", { href: "/openapi.json", text: "OpenAPI description (JSON)" }), "."),
         el("h3", { text: "Submit a job and read it back" }),
@@ -1156,7 +1198,8 @@ async function refreshJob(id) {
   } else if (jr.status === 404) {
     app.details.set(id, { notfound: true });
   } else {
-    showBanner(`The API answered HTTP ${jr.status}. It retries every 2 seconds.`, false);
+    const [call, status] = jr.status !== 200 ? [`GET /jobs/${id}`, jr.status] : [`GET /jobs/${id}/events`, er.status];
+    showBanner(`${call} answered HTTP ${status}. It retries every 2 seconds.`, false);
     return;
   }
   hideBanner();
@@ -1168,7 +1211,10 @@ async function refreshJob(id) {
 // accept what this page holds?
 async function probe() {
   const gen = app.authGen;
-  const r = await api(app.token ? "/auth/check" : "/stats");
+  // With a token: /auth/check, which does not touch the database. Without one:
+  // a one-row list, whose counts come from the API's CountsCache (never the
+  // uncached /stats scan). The answer's job data is not kept.
+  const r = await api(app.token ? "/auth/check" : "/jobs?limit=1");
   if (gen !== app.authGen) return;
   if (r.status === 401) { handleUnauthorized(); return; }
   if (r.status === 200) { hideBanner(); noteReadable(); }

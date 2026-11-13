@@ -153,7 +153,25 @@ SABOTAGE = [
                                                 "`It goes back to the queue with 3 more attempts. `")], E2E),
     ("submit result computed in the browser", [(JS, "  const job = s.job;\n  const link",
         "  const job = { ...s.job, state: \"done\", leased_by: \"browser\", result: { words: app.submitDraft.split(/\\s+/).length, lines: 1 } };\n  const link")], E2E),
-    ("submit text not bounded", [(JS, "maxlength: WC_MAX, spellcheck", "spellcheck")], E2E),
+    ("submit allowed over the limit", [(JS, "    submitBtn.disabled = over;\n", "    submitBtn.disabled = false;\n"),
+                                        (JS, "  if (charCount(v) > WC_MAX) return fail(overLimitMessage(charCount(v)));\n", "")], E2E),
+    ("long paste silently cut by maxlength", [(JS, '{ id: "wc-text", name: "text", spellcheck: "false",', '{ id: "wc-text", name: "text", maxlength: WC_MAX, spellcheck: "false",')], E2E),
+    ("Forget/401 keep the Submit text", [(JS, '  app.submitDraft = "";      // text typed for a job is a would-be payload: dropped too\n', "")], E2E),
+    ("failing events call reported as HTTP 200", [(JS, "`${call} answered HTTP ${status}. It retries every 2 seconds.`", "`The API answered HTTP ${jr.status}. It retries every 2 seconds.`")], E2E),
+    ("Submit/Connection poll uncached /stats", [(JS, 'const r = await api(app.token ? "/auth/check" : "/jobs?limit=1");', 'const r = await api(app.token ? "/auth/check" : "/stats");')], E2E),
+    ("endpoint table says token for public reads", [(JS, '["GET", "/jobs/{id}", "One job", "unless public read"],', '["GET", "/jobs/{id}", "One job", "yes"],')], E2E),
+    # 44 x 44 px targets on every route (visual_gate.e2e.js 8c)
+    ("job id links back to 24px", [("leaseq/dashboard/assets/app.css", ".job-link{font-weight:700}",
+                                    ".job-link{font-weight:700}\na.job-link.job-link{display:inline;min-height:0;min-width:0}")], E2E),
+    ("nav links shrink to 32px", [("leaseq/dashboard/assets/app.css", ".nav a{display:flex;align-items:center;min-height:44px;",
+                                   ".nav a{display:flex;align-items:center;min-height:32px;")], E2E),
+    ("state lanes shrink", [("leaseq/dashboard/assets/app.css", "gap:2px;min-height:76px;padding:10px 14px 12px;", "gap:0;min-height:0;padding:0;"),
+                            ("leaseq/dashboard/assets/app.css", ".lane .count{font-size:1.5rem;", ".lane .count{display:none;font-size:1.5rem;"),
+                            ("leaseq/dashboard/assets/app.css", "  .lane{min-height:64px;padding:8px 12px}\n", "")], E2E),
+    ("links in text lose their 44px box", [("leaseq/dashboard/assets/app.css", "a:not(.btn){display:inline-flex;align-items:center;min-height:44px;min-width:44px;vertical-align:middle}", "")], E2E),
+    ("long event tokens widen the page", [("leaseq/dashboard/assets/app.css", ".timeline > li{position:relative;padding:0 0 16px 36px;overflow-wrap:anywhere;min-width:0}", ".timeline > li{position:relative;padding:0 0 16px 36px}"),
+                                          ("leaseq/dashboard/assets/app.css", ".timeline .ev-title{font-weight:700;overflow-wrap:anywhere}", ".timeline .ev-title{font-weight:700}"),
+                                          ("leaseq/dashboard/assets/app.css", ".timeline .ev-detail{display:block;color:var(--muted);font-size:.9375rem;overflow-wrap:anywhere}", ".timeline .ev-detail{display:block;color:var(--muted);font-size:.9375rem}")], E2E),
 ]
 
 

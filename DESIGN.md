@@ -38,7 +38,7 @@ owner's light-first system (2026-11-13) is the source of truth.
 | divider | #dce2e8 | #2e3c48 | decorative lines only |
 | primary (LeaseQ) | #3d5267 | #a9c1d9 | primary button, links, current nav, focus |
 | positive | #12633c | #62d394 | done (always with icon + word) |
-| warning | #925400 | #f0b450 | retrying, disconnected notice edge |
+| warning | #925400 | #f0b450 | retrying |
 | danger | #b42318 | #ff8a80 | dead, errors, Cancel confirm fill |
 
 Contrast (WCAG 2.x, computed from the hex values; light / dark): ink on canvas
@@ -57,8 +57,11 @@ the only thing in `localStorage`, read and written inside try/catch.
 
 - Atkinson Hyperlegible (local woff2, SIL OFL 1.1), body/UI 16px/1.5, H1 30px/1.2.
 - System monospace 14px only for worker ids, idempotency keys, JSON and commands.
-- Spacing 4/8/16/24/32. Controls 44px minimum height, radius 7px.
-- Panels: 1px divider border, no shadows, no gradients. Motion: none beyond
+- Spacing 4/8/16/24/32. Every interactive element (buttons, inputs, lanes, nav,
+  and every link, including links inside sentences) is at least 44 x 44 px;
+  a test measures all of them on every route at 320 and 1440 px. Radius 7px.
+- Panels: 1px border, no shadows, no gradients, no decorative coloured side
+  stripes; a panel's heading says what it is. Motion: none beyond
   state changes; `prefers-reduced-motion` turns transitions off.
 
 ## Layout and routes

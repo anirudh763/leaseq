@@ -307,6 +307,10 @@ async function axeViolations(page) {
       await connect(page);
       await go(page, `#/jobs/${EXP.dead}`, new RegExp(`^Job ${EXP.dead}$`));
       await page.locator("#payload").filter({ hasText: EXP.marker }).waitFor();
+      await go(page, "#/submit", /^Submit test job$/);
+      await page.getByLabel("Text to count").fill(`draft ${EXP.marker}`);
+      await go(page, `#/jobs/${EXP.dead}`, new RegExp(`^Job ${EXP.dead}$`));
+      await page.locator("#payload").filter({ hasText: EXP.marker }).waitFor();
       await page.getByRole("navigation", { name: "Main" }).first().getByRole("link", { name: "Jobs" }).click();
       await waitH1(page, /^Jobs$/);
       await page.getByRole("button", { name: "Forget token" }).first().click();
@@ -315,6 +319,8 @@ async function axeViolations(page) {
       await page.waitForTimeout(2500);                    // a poll, too
       assert.equal(await markerInDom(page), false, "stale payload shown after Forget");
       assert.ok(await page.getByText("Not connected").first().isVisible());
+      await go(page, "#/submit", /^Submit test job$/);
+      assert.equal(await page.getByLabel("Text to count").inputValue(), "", "Submit text kept after Forget");
       await page.context().close();
     });
     await check("after a 401, a route change cannot reveal the cached payload", async () => {
@@ -322,6 +328,8 @@ async function axeViolations(page) {
       await connect(page);
       await go(page, `#/jobs/${EXP.dead}`, new RegExp(`^Job ${EXP.dead}$`));
       await page.locator("#payload").filter({ hasText: EXP.marker }).waitFor();
+      await go(page, "#/submit", /^Submit test job$/);
+      await page.getByLabel("Text to count").fill(`draft ${EXP.marker}`);
       await go(page, "#/jobs", /^Jobs$/);
       await page.route("**/jobs?*", (r) => r.fulfill({ status: 401, contentType: "application/json",
         body: '{"detail":"missing or invalid bearer token"}' }));
@@ -330,6 +338,8 @@ async function axeViolations(page) {
       await go(page, `#/jobs/${EXP.dead}`, new RegExp(`^Job ${EXP.dead}$`));
       await page.waitForTimeout(2500);
       assert.equal(await markerInDom(page), false, "stale payload shown after 401");
+      await go(page, "#/submit", /^Submit test job$/);
+      assert.equal(await page.getByLabel("Text to count").inputValue(), "", "Submit text kept after 401");
       assert.equal(await page.evaluate(() => ({ l: JSON.stringify(localStorage), s: sessionStorage.length }))
         .then((x) => x.l.includes("e2e") || x.s > 0), false, "token found in browser storage");
       await page.context().close();
@@ -372,6 +382,94 @@ async function axeViolations(page) {
       await page.context().close();
     });
 
+    // ---- 8c. review fixes: target size, long tokens, failing-call banner, polling ----
+    const INTERACTIVE = 'a[href], button, input, textarea, select, summary, [tabindex]:not([tabindex="-1"])';
+    const smallTargets = (page) => page.evaluate((sel) => [...document.querySelectorAll(sel)]
+      .filter((e) => e.getClientRects().length > 0 && getComputedStyle(e).visibility !== "hidden")
+      .map((e) => { const r = e.getBoundingClientRect(); return { e, w: r.width, h: r.height }; })
+      .filter((x) => x.w < 43.5 || x.h < 43.5)
+      .map((x) => `${x.e.tagName.toLowerCase()}${x.e.id ? "#" + x.e.id : ""} "${(x.e.textContent || x.e.getAttribute("aria-label") || "").trim().slice(0, 30)}" ${Math.round(x.w)}x${Math.round(x.h)}`), INTERACTIVE);
+    for (const width of [320, 1440]) {
+      await check(`every interactive element is at least 44x44 px on every route at ${width}px`, async () => {
+        const page = await newPage(browser, { viewport: { width, height: 900 } });
+        const bad = [];
+        await page.goto(`${DASH}#/jobs`);
+        await waitH1(page, /^Jobs$/);
+        await page.getByText("Not connected").first().waitFor();
+        bad.push(...(await smallTargets(page)).map((x) => `jobs (not connected): ${x}`));
+        await go(page, "#/connection", /^Connection & API$/);
+        bad.push(...(await smallTargets(page)).map((x) => `connection (form): ${x}`));
+        await connect(page);
+        for (const s of [...SCREENS, { route: "#/nope", h1: /^Not found$/ }]) {
+          await go(page, s.route, s.h1);
+          await page.waitForTimeout(600);
+          bad.push(...(await smallTargets(page)).map((x) => `${s.route}: ${x}`));
+        }
+        await go(page, "#/jobs", /^Jobs$/);
+        if (width < 1000) {
+          await page.getByRole("button", { name: "Menu", exact: true }).click();
+          bad.push(...(await smallTargets(page)).map((x) => `menu sheet: ${x}`));
+          await page.keyboard.press("Escape");
+        }
+        assert.deepEqual(bad, []);
+        await page.context().close();
+      });
+    }
+    await check("long unbroken tokens and a 19-digit job id do not widen the page at 320px", async () => {
+      const page = await newPage(browser, { viewport: { width: 320, height: 800 } });
+      await connect(page);
+      const long = "x".repeat(300);
+      await page.route(`**/jobs/${EXP.dead}/events*`, (r) => r.fulfill({ status: 200, contentType: "application/json",
+        body: JSON.stringify({ next_after_id: null, events: [
+          { id: 1, event: "enqueued", attempt: 0, worker_id: null, detail: {}, created_at: new Date().toISOString() },
+          { id: 2, event: long, attempt: 1, worker_id: "w".repeat(200), detail: { k: "y".repeat(400) }, created_at: new Date().toISOString() },
+          { id: 3, event: "claimed", attempt: 1, worker_id: "w".repeat(200), detail: { lease_seconds: 30 }, created_at: new Date().toISOString() },
+          { id: 4, event: "dead", attempt: 1, worker_id: "w".repeat(200), detail: { error: "e".repeat(500) }, created_at: new Date().toISOString() },
+        ] }) }));
+      await go(page, `#/jobs/${EXP.dead}`, new RegExp(`^Job ${EXP.dead}$`));
+      await page.locator(".timeline").filter({ hasText: "xxxxxxxxxx" }).waitFor();
+      const wide = () => page.evaluate(() => ({ sw: document.scrollingElement.scrollWidth, iw: innerWidth }));
+      let m = await wide();
+      assert.ok(m.sw <= m.iw, `job details are ${m.sw}px wide at ${m.iw}px with long event tokens`);
+      await page.unroute(`**/jobs/${EXP.dead}/events*`);
+      await go(page, "#/jobs/9223372036854775807", /^Job 9223372036854775807$/);
+      await page.getByText("No job 9223372036854775807").waitFor();
+      m = await wide();
+      assert.ok(m.sw <= m.iw, `a 19-digit job id makes the page ${m.sw}px wide`);
+      await page.context().close();
+    });
+    await check("a failing events call is named with its real status in the banner", async () => {
+      const page = await newPage(browser);
+      await connect(page);
+      await page.route(`**/jobs/${EXP.dead}/events*`, (r) => r.fulfill({ status: 503, contentType: "application/json", body: "{}" }));
+      await go(page, `#/jobs/${EXP.dead}`, new RegExp(`^Job ${EXP.dead}$`));
+      const banner = page.getByRole("alert");
+      await banner.filter({ hasText: `GET /jobs/${EXP.dead}/events answered HTTP 503` }).waitFor();
+      assert.doesNotMatch(await banner.innerText(), /HTTP 200/);
+      await page.context().close();
+    });
+    await check("Submit and Connection never poll /stats (uncached); only /auth/check or a CountsCache list", async () => {
+      const page = await newPage(browser);
+      const seen = [];
+      page.on("request", (r) => { const u = new URL(r.url()); if (!u.pathname.startsWith("/dashboard")) seen.push(u.pathname + u.search); });
+      await page.goto(`${DASH}#/submit`);
+      await waitH1(page, /^Submit test job$/);
+      await page.waitForTimeout(4500);
+      await go(page, "#/connection", /^Connection & API$/);
+      await page.waitForTimeout(4500);
+      const noToken = seen.splice(0);
+      assert.equal(noToken.filter((u) => u.startsWith("/stats")).length, 0, JSON.stringify(noToken));
+      assert.ok(noToken.every((u) => u === "/jobs?limit=1" || u === "/healthz"), JSON.stringify(noToken));
+      await page.getByLabel("API token", { exact: true }).fill(TOKEN);
+      await page.getByRole("button", { name: "Use token" }).click();
+      await page.getByRole("button", { name: "Forget token" }).first().waitFor();
+      seen.splice(0);
+      await go(page, "#/submit", /^Submit test job$/);
+      await page.waitForTimeout(4500);
+      assert.ok(seen.length >= 1 && seen.every((u) => u === "/auth/check"), JSON.stringify(seen));
+      await page.context().close();
+    });
+
     // ---- 9. Submit test job: bounded word_count through the real handler ---------------
     await check("Submit test job runs word_count through a worker and shows the real result", async () => {
       const page = await newPage(browser);
@@ -380,7 +478,21 @@ async function axeViolations(page) {
       await page.getByRole("button", { name: "Submit job" }).click();
       await page.getByText(/Enter some text/).waitFor();
       assert.equal(await page.getByLabel("Text to count").getAttribute("aria-invalid"), "true");
-      assert.equal(await page.getByLabel("Text to count").getAttribute("maxlength"), "10000");
+      // A paste over the limit is kept whole (no silent cut), flagged, and cannot be sent.
+      const posts = [];
+      page.on("request", (r) => { if (r.method() === "POST" && /\/jobs$/.test(r.url())) posts.push(r.url()); });
+      assert.equal(await page.getByLabel("Text to count").getAttribute("maxlength"), null);
+      await page.getByLabel("Text to count").fill("x".repeat(10001));
+      assert.equal((await page.getByLabel("Text to count").inputValue()).length, 10001);
+      await page.locator("#wc-error").filter({ hasText: "10,001 characters; the limit is 10,000" }).waitFor();
+      assert.match(await page.locator("#wc-count").innerText(), /10,001 of 10,000 characters, 1 over the limit/);
+      assert.equal(await page.getByRole("button", { name: "Submit job" }).isDisabled(), true);
+      await page.evaluate(() => document.getElementById("submit-form").requestSubmit());
+      await page.waitForTimeout(500);
+      assert.deepEqual(posts, [], "an over-limit text was submitted");
+      await page.getByLabel("Text to count").fill("x".repeat(10000));
+      assert.equal(await page.getByRole("button", { name: "Submit job" }).isDisabled(), false);
+      assert.equal(await page.locator("#wc-error").innerText(), "");
       // Public-domain sample: Pride and Prejudice, chapter 1 (Project Gutenberg #1342).
       await page.getByRole("button", { name: "Load sample text" }).click();
       await page.waitForFunction(() => document.getElementById("wc-text").value.startsWith("Chapter 1"));

@@ -386,6 +386,32 @@ async function enterToken(page, token) {
       step("JavaScript off: noscript message links to the README curl steps and /openapi.json (no /docs); JavaScript on: hidden; favicon 200 with no console errors; footer version = /healthz version");
     }
 
+    // ---- 4d. the Connection screen's endpoint table matches the server ------------
+    // This server runs with LEASEQ_PUBLIC_READ=1, so "unless public read" rows must
+    // answer without a token, "yes" rows must answer 401, "no" rows 200.
+    {
+      const page = await newPage(browser);
+      await page.goto(`${BASE}/dashboard/#/connection`);
+      await page.locator("h1").filter({ hasText: "Connection & API" }).waitFor();
+      const rows = await page.getByRole("region", { name: /^Endpoints/ }).locator("tbody tr").evaluateAll((trs) =>
+        trs.map((tr) => [...tr.cells].map((c) => c.textContent.trim())));
+      assert.ok(rows.length >= 10, `only ${rows.length} endpoint rows`);
+      const checked = [];
+      for (const [method, path, , token] of rows) {
+        const url = BASE + path.replace("{id}", String(EXP.dead));
+        const res = method === "GET" ? await page.request.get(url)
+          : await page.request.post(url, { data: {}, headers: { "Idempotency-Key": "endpoint-table" } });
+        const status = res.status();
+        if (token === "yes") assert.equal(status, 401, `${method} ${path} without a token gave ${status}`);
+        else if (token === "unless public read" || token === "no") assert.notEqual(status, 401, `${method} ${path} gave 401`);
+        else assert.fail(`unknown token column "${token}" for ${method} ${path}`);
+        checked.push(`${method} ${path} ${status}`);
+      }
+      assert.match(await page.locator(".guide").innerText(), /LEASEQ_PUBLIC_READ=1/);
+      await page.context().close();
+      step(`Connection & API endpoint table matches the server's answers without a token (${checked.length} rows)`);
+    }
+
     // ---- 5. narrow screens: no sideways page scroll -------------------------------
     for (const width of [320, 640]) {
       const page = await newPage(browser, { viewport: { width, height: 800 } });
