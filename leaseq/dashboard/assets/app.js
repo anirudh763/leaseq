@@ -459,8 +459,7 @@ function viewJobs() {
 
   return [
     h1("Jobs"),
-    el("p", { class: "lede", text: "Every job in this local queue, newest first. Pick a state lane to filter, " +
-                                   "or open a job to see its leases, payload and result." }),
+    el("p", { class: "lede", text: "Review background jobs, filter by state, and open a job to inspect its attempts, payload, result and history." }),
     connectionNotice("Job data cannot be shown."),
     el("div", { class: "console-bar" }, el("span", { id: "updated", text: "Waiting for the first update" }), pause),
     lanes,
@@ -942,9 +941,7 @@ function viewSubmit() {
   form.addEventListener("submit", submitJob);
   return [
     h1("Submit test job"),
-    el("p", { class: "lede", text: "Send text to the bundled word_count handler through the real queue: the API " +
-      "stores the job, a worker claims it under a lease, counts words and lines, and completes it with its lease " +
-      "token. The result shown is the one the worker stored." }),
+    el("p", { class: "lede", text: "Submit text for word and line counts. The server queues the task; a worker processes it and returns its recorded result." }),
     app.token ? null : (connectionNotice("Submitting needs the API token.") ||
       el("section", { class: "notice", "aria-labelledby": "notice-title" },
         el("h2", { id: "notice-title", text: "Token needed to submit" }),
