@@ -40,3 +40,34 @@ def test_database_outage_fails_readiness_without_failing_liveness(hosting_client
         assert response.status_code == 503
         assert response.json() == {"ok": False}
         assert "private" not in response.text
+
+
+def test_readiness_timeout_applies_inside_probe_and_resets_afterward(hosting_client, monkeypatch):
+    pool = app.state.pool
+    observed = {}
+
+    class ProbeConnection:
+        def __init__(self, conn):
+            self.conn = conn
+
+        def transaction(self):
+            return self.conn.transaction()
+
+        def execute(self, query, **kwargs):
+            if query == "SELECT 1":
+                observed["during"] = self.conn.execute("SHOW statement_timeout").fetchone()["statement_timeout"]
+            return self.conn.execute(query, **kwargs)
+
+    class ObservedPool:
+        @contextmanager
+        def connection(self, **kwargs):
+            with pool.connection(**kwargs) as conn:
+                observed["before"] = conn.execute("SHOW statement_timeout").fetchone()["statement_timeout"]
+                yield ProbeConnection(conn)
+                observed["after"] = conn.execute("SHOW statement_timeout").fetchone()["statement_timeout"]
+
+    with monkeypatch.context() as patch:
+        patch.setattr(app.state, "pool", ObservedPool())
+        assert hosting_client.get("/readyz").status_code == 200
+    assert observed["during"] == "2s"
+    assert observed["after"] == observed["before"]

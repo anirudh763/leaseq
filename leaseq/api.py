@@ -243,8 +243,9 @@ def readyz(request: Request):
     """Database readiness without disclosing connection details."""
     try:
         with request.app.state.pool.connection(timeout=2) as conn:
-            conn.execute("SET LOCAL statement_timeout = '2s'")
-            conn.execute("SELECT 1", prepare=False)
+            with conn.transaction():
+                conn.execute("SET LOCAL statement_timeout = '2s'")
+                conn.execute("SELECT 1", prepare=False)
     except psycopg.Error:
         return JSONResponse({"ok": False}, status_code=503)
     return {"ok": True, "version": __version__}
