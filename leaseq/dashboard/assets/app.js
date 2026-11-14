@@ -165,13 +165,20 @@ async function api(path, options = {}) {
   const headers = { Accept: "application/json", ...(options.headers || {}) };
   if (app.token) headers.Authorization = `Bearer ${app.token}`;
   if (options.body !== undefined) headers["Content-Type"] = "application/json";
-  const res = await fetch(path, {
-    method: options.method || "GET",
-    headers,
-    body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
-    credentials: "omit",
-    cache: "no-store",
-  });
+  let res;
+  try {
+    res = await fetch(path, {
+      method: options.method || "GET",
+      headers,
+      body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
+      credentials: "omit",
+      cache: "no-store",
+    });
+  } catch (e) {
+    const failure = new Error("Cannot reach the API");
+    failure.path = path.split("?")[0];
+    throw failure;
+  }
   let body = null;
   if (res.status !== 204) {
     try { body = await res.json(); } catch (e) { body = null; }
@@ -317,7 +324,7 @@ function onLocationChange() {
     app.lastJobsHash = key;
   }
   const sheet = $("menu-sheet");
-  if (sheet.open) sheet.close();
+  if (sheet.open) sheet.close("navigate");
   const sameScreen = prev.name === app.route.name && prev.id === app.route.id && app.view;
   renderView(!sameScreen);
   pollNow();
@@ -452,8 +459,7 @@ function viewJobs() {
 
   return [
     h1("Jobs"),
-    el("p", { class: "lede", text: "Every job in this local queue, newest first. Pick a state lane to filter, " +
-                                   "or open a job to see its leases, payload and result." }),
+    el("p", { class: "lede", text: "Review background jobs, filter by state, and open a job to inspect its attempts, payload, result and history." }),
     connectionNotice("Job data cannot be shown."),
     el("div", { class: "console-bar" }, el("span", { id: "updated", text: "Waiting for the first update" }), pause),
     lanes,
@@ -796,7 +802,8 @@ function timeline(job, events) {
       list.append(step("requeued", e.created_at, d.extra_attempts ? `${d.extra_attempts} more attempts.` : ""));
     } else if (e.event === "cancelled") {
       open = null;
-      list.append(step("cancelled", e.created_at, d.reason ? String(d.reason) : "It will not run."));
+      list.append(step("cancelled", e.created_at, d.reason ? String(d.reason) :
+        "Marked dead; its lease is revoked. Previously claimed work may still run; external effects are not undone."));
     } else {
       list.append(step(e.event, e.created_at, Object.keys(d).length ? JSON.stringify(d) : ""));
     }
@@ -853,10 +860,9 @@ function confirmAction(kind, job, trigger) {
     $("confirm-no").textContent = "Keep as dead";
   } else {
     $("confirm-title").textContent = `Cancel job ${job.id}?`;
-    $("confirm-text").textContent = job.state === "leased"
-      ? `Job ${job.id} (${job.kind}) becomes dead now. Worker ${job.leased_by} is still running it; when it ` +
-        "reports back, its result is refused by the fence (logged as rejected)."
-      : `Job ${job.id} (${job.kind}) becomes dead and will not be run.`;
+    $("confirm-text").textContent = `Job ${job.id} (${job.kind}) becomes dead and its lease is revoked, ` +
+      "so it is unavailable for future claims. Previously claimed work may still be running; " +
+      "any later completion using the revoked lease is rejected. This does not undo external effects.";
     yes.textContent = "Cancel job";
     yes.className = "btn primary danger";
     $("confirm-no").textContent = "Keep job";
@@ -887,7 +893,7 @@ function confirmAction(kind, job, trigger) {
 /* ---------- Submit test job screen ---------- */
 
 function viewSubmit() {
-  const text = el("textarea", { id: "wc-text", name: "text", maxlength: WC_MAX, spellcheck: "false",
+  const text = el("textarea", { id: "wc-text", name: "text", spellcheck: "false",
                                 "aria-describedby": "wc-hint wc-count wc-error" });
   text.value = app.submitDraft;
   const count = el("p", { class: "hint", id: "wc-count" });
@@ -922,8 +928,8 @@ function viewSubmit() {
   clear.addEventListener("click", () => { text.value = ""; app.submitDraft = ""; app.submitIntent = null; setCount(); text.focus(); });
   const form = el("form", { id: "submit-form", class: "form-stack", novalidate: true },
     el("label", { for: "wc-text", text: "Text to count" }),
-    el("p", { class: "hint", id: "wc-hint", text: "Up to 10,000 characters, the handler's limit. The text is stored " +
-                                                   "as the job's payload on this server." }),
+    el("p", { class: "hint", id: "wc-hint", text: "The handler accepts up to 10,000 characters. Longer text stays " +
+      "here for editing and cannot be submitted. Submitted text is stored as the job's payload on this server." }),
     text, count,
     el("p", { class: "field-error", id: "wc-error" }),
     el("p", { class: "hint" }, "Sample text: Jane Austen, ", el("cite", { text: "Pride and Prejudice" }),
@@ -935,9 +941,7 @@ function viewSubmit() {
   form.addEventListener("submit", submitJob);
   return [
     h1("Submit test job"),
-    el("p", { class: "lede", text: "Send text to the bundled word_count handler through the real queue: the API " +
-      "stores the job, a worker claims it under a lease, counts words and lines, and completes it with its lease " +
-      "token. The result shown is the one the worker stored." }),
+    el("p", { class: "lede", text: "Submit text for word and line counts. The server queues the task; a worker processes it and returns its recorded result." }),
     app.token ? null : (connectionNotice("Submitting needs the API token.") ||
       el("section", { class: "notice", "aria-labelledby": "notice-title" },
         el("h2", { id: "notice-title", text: "Token needed to submit" }),
@@ -1083,7 +1087,7 @@ function viewConnection() {
     ["POST", "/jobs/{id}/complete", "Worker stores the result (fenced by lease token)", "yes"],
     ["POST", "/jobs/{id}/fail", "Worker reports an error; retry with backoff or dead", "yes"],
     ["POST", "/jobs/{id}/requeue", "Operator: dead job back to the queue", "yes"],
-    ["POST", "/jobs/{id}/cancel", "Operator: queued or running job becomes dead", "yes"],
+    ["POST", "/jobs/{id}/cancel", "Operator: mark dead and revoke its lease; does not stop previously claimed work", "yes"],
     ["GET", "/jobs", "List jobs, newest first, with state counts", "unless public read"],
     ["GET", "/jobs/{id}", "One job", "unless public read"],
     ["GET", "/jobs/{id}/events", "A job's audit log", "unless public read"],
@@ -1182,6 +1186,7 @@ async function refreshJobs() {
   const r = await api(`/jobs?${p}`);
   if (gen !== app.authGen) return;          // sent before a token change or a clear
   if (r.status === 401) { handleUnauthorized(); return; }
+  if (key !== app.routeKey) return;         // this response belongs to an earlier view
   if (r.status !== 200) {
     const why = detailText(r.body).replace(/\.$/, "");
     showBanner(`The API answered HTTP ${r.status}.${why ? ` ${why}.` : ""} Check that this page is ` +
@@ -1190,13 +1195,13 @@ async function refreshJobs() {
   }
   hideBanner();
   noteReadable();
-  if (key !== app.routeKey) return;         // filters changed while this was in flight
   app.list = r.body;
   if (app.route.name === "jobs") renderJobsData();
 }
 
 async function refreshJob(id) {
   const gen = app.authGen;
+  const key = app.routeKey;
   const [jr, er] = await Promise.all([api(`/jobs/${id}`), api(`/jobs/${id}/events?limit=500`)]);
   if (gen !== app.authGen) return;
   if (jr.status === 401 || er.status === 401) { handleUnauthorized(); return; }
@@ -1205,9 +1210,13 @@ async function refreshJob(id) {
   } else if (jr.status === 404) {
     app.details.set(id, { notfound: true });
   } else {
-    showBanner(`The API answered HTTP ${jr.status}. It retries every 2 seconds.`, false);
+    if (key !== app.routeKey) return;
+    const failed = jr.status !== 200 ? jr : er;
+    const path = jr.status !== 200 ? `/jobs/${id}` : `/jobs/${id}/events`;
+    showBanner(`The API request ${path} answered HTTP ${failed.status}. It retries every 2 seconds.`, false);
     return;
   }
+  if (key !== app.routeKey) return;
   hideBanner();
   noteReadable();
   if (app.route.name === "job" && app.route.id === id) renderJobData();
@@ -1217,7 +1226,7 @@ async function refreshJob(id) {
 // accept what this page holds?
 async function probe() {
   const gen = app.authGen;
-  const r = await api(app.token ? "/auth/check" : "/stats");
+  const r = await api(app.token ? "/auth/check" : "/jobs?limit=1");
   if (gen !== app.authGen) return;
   if (r.status === 401) { handleUnauthorized(); return; }
   if (r.status === 200) { hideBanner(); noteReadable(); }
@@ -1235,15 +1244,18 @@ function noteReadable() {
 async function refresh() {
   if (app.inflight) return;
   app.inflight = true;
+  const gen = app.authGen;
+  const key = app.routeKey;
   try {
     const r = app.route;
     if (r.name === "jobs") await refreshJobs();
     else if (r.name === "job") await refreshJob(r.id);
     else await probe();
   } catch (e) {
+    if (gen !== app.authGen || key !== app.routeKey) return;
     if (app.conn !== "offline") {
       setConn("offline");
-      showBanner("Cannot reach the API. Trying again every 2 seconds.", false);
+      showBanner(`Cannot reach the API${e.path ? ` (${e.path})` : ""}. Trying again every 2 seconds.`, false);
       if (!hasSensitive() || app.route.name !== "jobs") renderView(false);
     }
     if ($("updated")) $("updated").textContent = "Offline";
@@ -1307,17 +1319,21 @@ function initMenu() {
   const button = $("menu-button");
   button.addEventListener("click", () => {
     button.setAttribute("aria-expanded", "true");
+    sheet.returnValue = "";
     sheet.showModal();
     const current = sheet.querySelector('a[aria-current]');
     (current || sheet.querySelector("a")).focus();
   });
-  // However it closes (Escape, Close, a link), focus goes back to the Menu button.
+  // Menu exits return focus to Menu; navigation exits leave focus on the new screen heading.
   sheet.addEventListener("close", () => {
     button.setAttribute("aria-expanded", "false");
-    if (window.getComputedStyle(button).display !== "none") button.focus();
+    if (sheet.returnValue === "navigate") focusH1();
+    else if (window.getComputedStyle(button).display !== "none") button.focus();
   });
   $("menu-close").addEventListener("click", () => sheet.close());
-  for (const a of sheet.querySelectorAll("a")) a.addEventListener("click", () => sheet.close());
+  for (const a of sheet.querySelectorAll("a")) a.addEventListener("click", () => {
+    sheet.close("navigate");
+  });
   sheet.addEventListener("click", (e) => { if (e.target === sheet) sheet.close(); });   // backdrop
   button.setAttribute("aria-expanded", "false");
   window.matchMedia("(min-width: 1000px)").addEventListener("change", (m) => { if (m.matches && sheet.open) sheet.close(); });

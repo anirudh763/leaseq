@@ -8,9 +8,11 @@
 Each entry applies text replacements to the source, runs the named tests, and
 restores the files whatever happens. "CAUGHT" means the tests failed with the
 sabotage in place. A browser test that is skipped (no Node/Playwright/axe)
-counts as "SKIPPED", not as caught. Exit status 1 if anything was missed.
+counts as "SKIPPED", not as caught. Skips and test-runner errors fail the gate.
 """
 import argparse
+import json
+import re
 import subprocess
 import sys
 import time
@@ -21,6 +23,7 @@ FAST = ["tests/test_api.py", "tests/test_security.py", "tests/test_worker_kinds.
         "tests/test_audit_round2.py", "tests/test_usability.py", "tests/test_schema_startup.py",
         "tests/test_counts_cache.py", "tests/test_permanent_error.py"]
 E2E = ["tests/test_dashboard_e2e.py"]
+REVIEW = ["tests/test_dashboard_e2e.py::test_dashboard_review_fixes"]
 SEC, API, QUEUE, JS = ("leaseq/security.py", "leaseq/api.py", "leaseq/queue.py",
                        "leaseq/dashboard/assets/app.js")
 
@@ -144,7 +147,8 @@ SABOTAGE = [
     ("OS dark preference switches the theme", [("leaseq/dashboard/assets/theme.js", '  var theme = "light";',
         '  var theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";')], E2E),
     ("route change leaves focus behind", [(JS, "    window.scrollTo(0, 0);\n    focusH1();", "    window.scrollTo(0, 0);")], E2E),
-    ("Menu sheet does not return focus", [(JS, '    if (window.getComputedStyle(button).display !== "none") button.focus();\n', "")], E2E),
+    ("Menu navigation leaves focus on Menu", [(JS, '    if (sheet.returnValue === "navigate") focusH1();\n',
+        '    if (sheet.returnValue === "navigate") button.focus();\n')], REVIEW),
     ("old ?job= links not migrated", [(JS, "  migrateOldLink();\n  initMenu();", "  initMenu();")], E2E),
     ("state lanes show a guessed 0", [(JS, 'b.querySelector(".count").textContent = counts ? String(l.count(counts)) : NO_COUNT;',
                                        'b.querySelector(".count").textContent = counts ? String(l.count(counts)) : "0";')], E2E),
@@ -153,19 +157,49 @@ SABOTAGE = [
                                                 "`It goes back to the queue with 3 more attempts. `")], E2E),
     ("submit result computed in the browser", [(JS, "  const job = s.job;\n  const link",
         "  const job = { ...s.job, state: \"done\", leased_by: \"browser\", result: { words: app.submitDraft.split(/\\s+/).length, lines: 1 } };\n  const link")], E2E),
-    ("submit text not bounded", [(JS, "maxlength: WC_MAX, spellcheck", "spellcheck")], E2E),
+    ("submit text not bounded", [(JS, "if (v.length > WC_MAX) return fail(", "if (false) return fail(")], REVIEW),
+    ("paste silently truncated", [(JS, 'id: "wc-text", name: "text", spellcheck:', 'id: "wc-text", name: "text", maxlength: WC_MAX, spellcheck:')], REVIEW),
+    ("events failure reported as job success", [(JS, "const failed = jr.status !== 200 ? jr : er;", "const failed = jr;")], REVIEW),
+    ("events failure names wrong endpoint", [(JS, 'const path = jr.status !== 200 ? `/jobs/${id}` : `/jobs/${id}/events`;', 'const path = `/jobs/${id}`;')], REVIEW),
+    ("network failure loses endpoint", [(JS, 'failure.path = path.split("?")[0];', 'failure.path = "";')], REVIEW),
+    ("late failure ignores token generation", [(JS, 'if (gen !== app.authGen || key !== app.routeKey) return;', 'if (key !== app.routeKey) return;')], REVIEW),
+    ("late failure ignores route change", [(JS, 'if (gen !== app.authGen || key !== app.routeKey) return;', 'if (gen !== app.authGen) return;')], REVIEW),
+    ("anonymous probe uses uncached stats", [(JS, 'api(app.token ? "/auth/check" : "/jobs?limit=1")', 'api(app.token ? "/auth/check" : "/stats")')], REVIEW),
+    ("Cancel promises to stop claimed work", [(JS, '"so it is unavailable for future claims. Previously claimed work may still be running; "', '"so it will not be run. "')], REVIEW),
+    ("Cancel omits external effects caveat", [(JS, 'This does not undo external effects.', 'Cancellation finishes immediately.')], REVIEW),
+    ("Cancel initially focuses danger action", [(JS, '  d.showModal();\n  $("confirm-no").focus();', '  d.showModal();\n  $("confirm-yes").focus();')], REVIEW),
+    ("breadcrumb targets too short", [("leaseq/dashboard/assets/app.css", '.crumbs a{color:var(--muted)}', '.crumbs a{color:var(--muted);min-height:20px}')], REVIEW),
+    ("job links too narrow", [("leaseq/dashboard/assets/app.css", '.job-link{display:inline-flex;', '.job-link{min-width:8px!important;display:inline-flex;')], REVIEW),
+    ("footer links too short", [("leaseq/dashboard/assets/app.css", '.app-footer #version{margin-left:8px}', '.app-footer #version{margin-left:8px}\n.app-footer a{min-height:20px!important}')], REVIEW),
+    ("input counter does not update", [(JS, '    if (app.submitIntent && app.submitIntent.text !== text.value) app.submitIntent = null;\n    setCount();\n  });', '    if (app.submitIntent && app.submitIntent.text !== text.value) app.submitIntent = null;\n  });')], REVIEW),
+    ("input draft lost on navigation", [(JS, 'text.addEventListener("input", () => {\n    app.submitDraft = text.value;', 'text.addEventListener("input", () => {\n    app.submitDraft = "";')], REVIEW),
+    ("invalid input lacks accessible state", [(JS, 'text.setAttribute("aria-invalid", "true"); text.focus();', 'text.focus();')], REVIEW),
+    ("late Jobs HTTP error changes new route", [(JS, '  if (key !== app.routeKey) return;         // this response belongs to an earlier view\n', '')], REVIEW),
 ]
 
 
-def apply(patches):
+def planned_changes(patches):
     originals = {}
+    changed = {}
     for rel, old, new in patches:
         path = ROOT / rel
-        text = originals.setdefault(path, path.read_text())
-        current = path.read_text()
+        originals.setdefault(path, path.read_text())
+        current = changed.get(path, originals[path])
         if current.count(old) != 1:
             raise SystemExit(f"patch target not found exactly once in {rel}: {old[:60]!r}")
-        path.write_text(current.replace(old, new))
+        changed[path] = current.replace(old, new)
+    return originals, changed
+
+
+def apply(patches):
+    originals, changed = planned_changes(patches)
+    try:
+        for path, text in changed.items():
+            path.write_text(text)
+    except BaseException:
+        for path, text in originals.items():
+            path.write_text(text)
+        raise
     return originals
 
 
@@ -173,32 +207,51 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--no-e2e", action="store_true")
     ap.add_argument("-k", default="")
+    ap.add_argument("--report", type=Path, help="save verdicts as JSON and individual test logs alongside it")
     a = ap.parse_args()
-    todo = [s for s in SABOTAGE if a.k in s[0] and not (a.no_e2e and s[2] is E2E)]
+    todo = [s for s in SABOTAGE if a.k in s[0] and not (a.no_e2e and s[2] in (E2E, REVIEW))]
     for name, patches, _ in todo:                  # check every target first, change nothing
+        planned_changes(patches)
+    records = []
+    log_dir = a.report.with_suffix("") if a.report else None
+    if log_dir:
+        log_dir.mkdir(parents=True, exist_ok=True)
+    for index, (name, patches, tests) in enumerate(todo, 1):
         originals = apply(patches)
-        for path, text in originals.items():
-            path.write_text(text)
-    missed = 0
-    for name, patches, tests in todo:
-        originals = apply(patches)
+        t0 = time.monotonic()
         try:
-            t0 = time.monotonic()
             r = subprocess.run([sys.executable, "-m", "pytest", "-q", "-x", "-p", "no:cacheprovider",
                                 *tests], cwd=ROOT, capture_output=True, text=True, timeout=900)
             last = (r.stdout.strip().splitlines() or ["(no output)"])[-1]
+            if r.returncode not in (0, 1) or re.search(r"\b[1-9]\d* errors?\b", last):
+                verdict = "ERROR"
+            elif re.search(r"\b[1-9]\d* skipped\b", last):
+                verdict = "SKIPPED"
+            elif r.returncode == 1 and re.search(r"\b[1-9]\d* failed\b", last):
+                verdict = "CAUGHT"
+            elif r.returncode != 0:
+                verdict = "ERROR"
+            else:
+                verdict = "MISSED"
+            output = r.stdout + "\n" + r.stderr
+        except subprocess.TimeoutExpired:
+            verdict, last, output = "ERROR", "test runner timed out", "test runner timed out"
         finally:
             for path, text in originals.items():
                 path.write_text(text)
-        if r.returncode != 0:
-            verdict = "CAUGHT"
-        elif "skipped" in last and "passed" not in last:
-            verdict = "SKIPPED"
-        else:
-            verdict, missed = "MISSED", missed + 1
-        print(f"{verdict:8s} {name:40s} {last} ({time.monotonic() - t0:.0f} s)", flush=True)
-    print(f"\n{len(todo) - missed}/{len(todo)} sabotaged protections caught or skipped; {missed} missed")
-    return 1 if missed else 0
+        seconds = round(time.monotonic() - t0, 2)
+        record = {"name": name, "verdict": verdict, "summary": last, "seconds": seconds, "tests": tests}
+        if log_dir:
+            log = log_dir / f"{index:03d}.log"
+            log.write_text(output)
+            record["log"] = str(log)
+        records.append(record)
+        if a.report:
+            a.report.write_text(json.dumps(records, indent=2) + "\n")
+        print(f"{verdict:8s} {name:40s} {last} ({seconds:.0f} s)", flush=True)
+    caught = sum(record["verdict"] == "CAUGHT" for record in records)
+    print(f"\n{caught}/{len(todo)} sabotaged protections caught; {len(todo) - caught} incomplete or missed")
+    return 0 if todo and caught == len(todo) else 1
 
 
 if __name__ == "__main__":

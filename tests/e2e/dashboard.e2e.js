@@ -293,7 +293,8 @@ async function enterToken(page, token) {
       await page.locator("h1").filter({ hasText: `Job ${EXP.running}` }).waitFor();
       await page.getByRole("button", { name: "Cancel job" }).click();
       await page.locator("#confirm-dialog").waitFor({ state: "visible" });
-      assert.match(await page.locator("#confirm-text").innerText(), /refused by the fence/);
+      assert.match(await page.locator("#confirm-text").innerText(), /revoked lease is rejected/);
+      assert.match(await page.locator("#confirm-text").innerText(), /work may still be running/);
       const cancelYes = await confirmButtonStyle(page);
       assert.equal(cancelYes.focused, "confirm-no");
       assert.ok(cancelYes.classes.includes("danger"), `confirm button classes: ${cancelYes.classes}`);

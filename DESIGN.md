@@ -1,9 +1,14 @@
-# LeaseQ dashboard design
+# LeaseQ dispatch-console design
 
 The dashboard (`leaseq/dashboard/`) is an **operations console** for a local
 recovery/reference queue: plain HTML, CSS and JavaScript, no build step, no CDN,
-no third-party code. This file replaces the earlier dark-first design notes; the
-owner's light-first system (2026-11-13) is the source of truth.
+no third-party code. The owner's evening instruction on 2026-11-13 replaces the
+shared sidebar shell with an independent cobalt dispatch console. The command
+header and wide jobs table serve repeated operator scans; the other four apps
+have separate compositions. Atkinson and the existing interaction model stay.
+
+Codex owns the design and dashboard review fixes while Claude is rate-limited.
+The layout, contrast and functional checks must pass together before release.
 
 ## Signature pattern: operations console
 
@@ -29,27 +34,29 @@ owner's light-first system (2026-11-13) is the source of truth.
 
 | Token | Light (default) | Dark (opt-in) | Use |
 |---|---|---|---|
-| canvas | #f7f8fa | #10161c | page background |
-| surface | #ffffff | #172029 | panels, header, table, dialogs |
-| rail | #f0f3f5 | #131b22 | left rail, table head/foot, code |
-| ink | #152536 | #e7edf3 | text |
-| muted | #4b5e6f | #a9b7c4 | secondary text |
-| input boundary | #748694 | #8595a3 | input and button borders |
-| divider | #dce2e8 | #2e3c48 | decorative lines only |
-| primary (LeaseQ) | #3d5267 | #a9c1d9 | primary button, links, current nav, focus |
+| canvas | #ffffff | #111b2b | page background |
+| surface | #ffffff | #17243a | panels, table, dialogs |
+| rail | #f2f6fc | #1c2c45 | status strip, table head/foot, code |
+| command | #174aa6 | #162e56 | compact desktop command header |
+| command text | #ffffff | #edf3fd | header navigation and wordmark |
+| command secondary | #e2ebff | #c1d3f3 | purpose and theme boundary |
+| ink | #192b43 | #edf3fd | text |
+| muted | #4b5e76 | #afc0d8 | secondary text |
+| input boundary | #72839b | #869bbb | input and button borders |
+| divider | #d8e1ed | #344969 | decorative lines only |
+| primary (LeaseQ) | #174aa6 | #aecbff | primary button, links, current nav, focus |
 | positive | #12633c | #62d394 | done (always with icon + word) |
 | warning | #925400 | #f0b450 | retrying, disconnected notice edge |
 | danger | #b42318 | #ff8a80 | dead, errors, Cancel confirm fill |
 
-Contrast (WCAG 2.x, computed from the hex values; light / dark): ink on canvas
-14.64 / 15.44, ink on surface 15.56 / 13.96, muted on surface 6.71 / 8.04, muted
-on lane tint 5.75 / 6.50, primary on surface 8.07 / 8.88, text on primary
-8.07 / 9.81, positive 7.30 / 8.83, warning 6.02 / 8.90, danger 6.57 / 7.21,
-input boundary on surface 3.76 / 5.35 (non-text, needs 3:1).
+Measure the current rendered token pairs before release, including header links,
+selected navigation, statuses and both themes. Normal text needs 4.5:1;
+component boundaries and focus need 3:1. Old shared-shell contrast values are
+not evidence for this palette.
 
 **Theme**: light by default, including when the OS prefers dark and on first
 visit. `ui.css` no longer has a `prefers-color-scheme` switch. Dark applies only
-after "Use dark theme" (rail on desktop, Menu sheet on narrower screens);
+after "Use dark theme" (command header on desktop, Menu sheet on narrower screens);
 `assets/theme.js` applies a remembered choice before first paint. The theme is
 the only thing in `localStorage`, read and written inside try/catch.
 
@@ -63,11 +70,11 @@ the only thing in `localStorage`, read and written inside try/catch.
 
 ## Layout and routes
 
-- Desktop (>= 1000px): 216px rail (text wordmark "LeaseQ", one-line purpose,
-  "Work": Jobs, Submit test job; "Setup": Connection & API; theme button) +
-  white location header (breadcrumb, connection status, Forget token) +
-  workspace with 32px gutter, content max ~1100px.
-- Below 1000px: no rail; a labelled **Menu** button opens a modal sheet
+- Desktop (>= 1000px): cobalt command header with wordmark, purpose, Jobs,
+  Submit test job, Connection & API and theme control. A pale connection/status
+  strip follows it. The jobs workspace spans up to 1536px with 32px gutters,
+  large tabular lane counts and a full-width table. There is no permanent sidebar.
+- Below 1000px: no desktop command header; a labelled **Menu** button opens a modal sheet
   (`<dialog>`: focus stays inside, Escape closes, focus returns to Menu).
 - Below 600px: 16px gutter; lanes in 2 columns; header wraps.
 - Hash routes: `#/jobs[?state=&kind=&worker=]`, `#/jobs/<id>`, `#/submit`,
@@ -78,6 +85,8 @@ the only thing in `localStorage`, read and written inside try/catch.
   in the URL) and the Submit text (kept in page memory).
 - Wide tables scroll inside their own labelled region; the page never scrolls
   sideways at 320px.
+- Links and controls have a 44px minimum target in both dimensions, including
+  numeric job links, breadcrumbs and source/licence links.
 
 ## States
 
@@ -90,6 +99,15 @@ the only thing in `localStorage`, read and written inside try/catch.
   job (payload, result, events) and the Submit result at once; screens render
   only from that state, so Back to a job route cannot show a stale payload, and
   answers to requests sent before the clear are ignored.
+- Request failures identify the endpoint and actual failing HTTP status. Late
+  failures from an earlier token or route cannot overwrite the current screen.
+- Submit shows its 10,000-character limit and live count. Longer pasted text
+  remains editable and survives route history; validation prevents submission
+  without silently discarding characters.
+- Anonymous connection probes use `GET /jobs?limit=1`, whose counts use the
+  existing five-second cache. Authenticated probes use `GET /auth/check`.
+- Cancel marks a job dead and revokes its lease. Previously claimed work may
+  still run; rejecting its completion cannot undo external effects.
 
 ## Do and don't
 
