@@ -195,6 +195,8 @@ and Back/Forward work):
   `leaseq/dashboard/assets/sample/SOURCE.txt`). Its result, measured by a
   worker in the browser tests and in `scripts/smoke.sh`, is
   `{"words": 849, "lines": 114}`.
+  Retrying an uncertain response keeps the same text and idempotency key;
+  editing or clearing the text starts a new submission intent.
 - **Connection & API**: the token form, the API address and version, the
   connection state, example `curl` calls, the endpoints and the error
   answers (401, 404, 409, 413, 422).
@@ -209,7 +211,7 @@ names the job and the effect, and Cancel uses the danger style with "Keep job"
 focused. Job payloads are shown as text, never as HTML, and the page is served
 with a `Content-Security-Policy` that allows only its own files. "Forget token"
 and any 401 remove all job data at once: the list, every job opened before
-(payload, result, events) and the Submit result. A test checks that going Back
+(payload, result, events), the Submit draft/result and confirmation text. A test checks that going Back
 to a job's URL after either one cannot show the old payload.
 
 When the table contains jobs from `python -m leaseq.demo` (keys starting
@@ -394,14 +396,15 @@ worker process (`tests/test_word_count_flow.py`), `scripts/up.sh` with a stub
 passing against a real API and worker with the token read from a copied
 `.env.example`), and three Playwright browser tests
 in `tests/test_dashboard_e2e.py`. The third, `tests/e2e/visual_gate.e2e.js`,
-is the dashboard's layout and routing gate: 34 named checks (page width at
+is the dashboard's layout and routing gate: 38 named checks (page width at
 320/768/1440 px, Menu sheet, H1 focus, Back/Forward and deep links, old
 links, axe light and dark, light default under an OS dark preference, CSP,
 noscript, the state lanes against the API's counts, the lifecycle timeline,
 the confirmation text, the Submit flow with a real worker, and that Back to a
-job URL after "Forget token" or a 401 cannot show its old payload). Against
-the dashboard before this rebuild, 33 of the 34 fail (only the noscript check
-passes). The browser tests need Node, the `playwright`
+job URL after "Forget token" or a 401 cannot show its old payload). Four
+regressions also cover draft/dialog cleanup, responses received after Forget,
+and safe submission retries. In the original 34-check rebuild comparison,
+33 failed against the old dashboard (only noscript passed). The browser tests need Node, the `playwright`
 package and axe-core (`AXE_PATH`); without them they are skipped. One of them
 runs real worker processes: the dashboard enqueues jobs, a worker completes
 them, a failing job retries with backoff until it is dead, one job is

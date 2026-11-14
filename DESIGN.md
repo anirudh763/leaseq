@@ -16,7 +16,7 @@ owner's light-first system (2026-11-13) is the source of truth.
   (enqueued, claimed with worker and lease length, failed with retry delay,
   completed, dead with the error, fence rejections of stale lease tokens,
   operator requeue/cancel). Two derived items are labelled "Derived": a lease
-  that expired (a claim with no report before the next claim) and "Running now".
+  that expired (a claim with no report before the next claim) and "Current lease".
   Heartbeats are not in the audit log, and the page says so.
 - **Why it is waiting**: a plain sentence computed from the job's state,
   `run_after` and `lease_expires_at` (ready for a worker, retry backoff until a
