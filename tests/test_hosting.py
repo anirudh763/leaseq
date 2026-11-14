@@ -2,6 +2,7 @@ from contextlib import contextmanager
 
 import psycopg
 import pytest
+from psycopg_pool import PoolTimeout
 from fastapi.testclient import TestClient
 
 import harness
@@ -26,11 +27,12 @@ def test_health_probes_are_public_but_jobs_remain_private(hosting_client):
     assert hosting_client.get("/readyz/jobs").status_code == 401
 
 
-def test_database_outage_fails_readiness_without_failing_liveness(hosting_client, monkeypatch):
+@pytest.mark.parametrize("failure", [psycopg.OperationalError, PoolTimeout])
+def test_database_outage_fails_readiness_without_failing_liveness(hosting_client, monkeypatch, failure):
     class DisconnectedPool:
         @contextmanager
         def connection(self, **kwargs):
-            raise psycopg.OperationalError("private database connection details")
+            raise failure("private database connection details")
             yield
 
     with monkeypatch.context() as patch:

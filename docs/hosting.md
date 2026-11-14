@@ -9,7 +9,10 @@ The token grants operator access, so share it only with trusted operators.
 ## Cost and account setup
 
 `render.yaml` selects **paid** Starter web/worker services and Basic PostgreSQL.
-Check the resource summary and current prices before creating them. No account,
+Check the resource summary and current prices before creating them. The owner’s
+proposed $20/month total hosting budget still requires confirmation of that
+period and explicit approval of an itemized estimate before any financial
+commitment. This template is not that approval. No account,
 resources or payment have been created by this change. Free Render web services
 sleep after 15 idle minutes, free databases expire after 30 days, and background
 workers do not support the Free plan. They do not provide this durable stack.
@@ -52,7 +55,7 @@ a database restart, then removes only its uniquely named test project and data.
 
 The API already applies its schema during startup, before serving requests.
 That existing migration path and its lock-timeout protection are unchanged.
-Use database backups before upgrades; a code rollback cannot undo schema/data
+Follow the [backup and restore guide](backup-restore.md) before upgrades; a code rollback cannot undo schema/data
 changes. The API will not start without a valid token or an available database.
 
 | Probe | Meaning | Database access |
@@ -77,6 +80,8 @@ cached per API process; adding replicas increases aggregate database queries.
 Local benchmark results are not HTTP service-level guarantees.
 
 Jobs and audit events currently have no automatic retention. Monitor database
-space and arrange verified backups. The planned terminal-job export must prove
-restore integrity before a separate deletion policy is considered; this change
-does not prune records or weaken append-only triggers.
+space and arrange verified backups. The guide records a local full-database
+archive/restore proof, including audit history, sequences and triggers. It does
+not implement terminal-job archives, automatic retention or deletion. A separate
+retention policy must preserve audit guarantees; this change does not prune
+records or weaken append-only triggers.
