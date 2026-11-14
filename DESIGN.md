@@ -7,8 +7,8 @@ shared sidebar shell with an independent cobalt dispatch console. The command
 header and wide jobs table serve repeated operator scans; the other four apps
 have separate compositions. Atkinson and the existing interaction model stay.
 
-This branch is a design handoff to Claude, not an accepted release. Its layout
-and contrast checks must pass alongside the review fixes before root approval.
+Codex owns the design and dashboard review fixes while Claude is rate-limited.
+The layout, contrast and functional checks must pass together before release.
 
 ## Signature pattern: operations console
 
@@ -85,6 +85,8 @@ the only thing in `localStorage`, read and written inside try/catch.
   in the URL) and the Submit text (kept in page memory).
 - Wide tables scroll inside their own labelled region; the page never scrolls
   sideways at 320px.
+- Links and controls have a 44px minimum target in both dimensions, including
+  numeric job links, breadcrumbs and source/licence links.
 
 ## States
 
@@ -97,6 +99,15 @@ the only thing in `localStorage`, read and written inside try/catch.
   job (payload, result, events) and the Submit result at once; screens render
   only from that state, so Back to a job route cannot show a stale payload, and
   answers to requests sent before the clear are ignored.
+- Request failures identify the endpoint and actual failing HTTP status. Late
+  failures from an earlier token or route cannot overwrite the current screen.
+- Submit shows its 10,000-character limit and live count. Longer pasted text
+  remains editable and survives route history; validation prevents submission
+  without silently discarding characters.
+- Anonymous connection probes use `GET /jobs?limit=1`, whose counts use the
+  existing five-second cache. Authenticated probes use `GET /auth/check`.
+- Cancel marks a job dead and revokes its lease. Previously claimed work may
+  still run; rejecting its completion cannot undo external effects.
 
 ## Do and don't
 

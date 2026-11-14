@@ -385,7 +385,7 @@ async function axeViolations(page) {
       await page.getByRole("button", { name: "Submit job" }).click();
       await page.getByText(/Enter some text/).waitFor();
       assert.equal(await page.getByLabel("Text to count").getAttribute("aria-invalid"), "true");
-      assert.equal(await page.getByLabel("Text to count").getAttribute("maxlength"), "10000");
+      assert.match(await page.locator("#wc-hint").innerText(), /up to 10,000 characters/);
       // Public-domain sample: Pride and Prejudice, chapter 1 (Project Gutenberg #1342).
       await page.getByRole("button", { name: "Load sample text" }).click();
       await page.waitForFunction(() => document.getElementById("wc-text").value.startsWith("Chapter 1"));
