@@ -3,3 +3,9 @@
 __pycache__
 .pytest_cache
 tests
+.env
+.env.*
+.venv
+node_modules
+.codex
+.agents

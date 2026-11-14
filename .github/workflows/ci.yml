@@ -229,6 +229,10 @@ jobs:
           assert request(path + "/events") == events, "audit history did not survive down/up"
           print("retention check passed: existing job, result and audit events survived down/up")
           PY
+      - name: production image, private API, health probes and database recovery
+        run: |
+          docker build --target production -t leaseq-production:ci .
+          python3 scripts/hosting_smoke.py --image leaseq-production:ci
       - if: failure()
         run: docker compose logs
       - if: always()

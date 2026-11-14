@@ -36,6 +36,8 @@ screen. Narrow-screen versions are in `docs/screenshots/` (`jobs-320.png`,
 `job-details-320.png`). The dashboard's tokens, layout and measured contrast are
 in [DESIGN.md](DESIGN.md).
 
+For an operator-controlled deployment template, see [Hosting LeaseQ](docs/hosting.md).
+
 ## Quick start
 
 With Docker (Docker Compose v2):

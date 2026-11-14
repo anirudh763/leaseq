@@ -232,6 +232,25 @@ def sample_jobs(request: Request):
 
 # --- reads -------------------------------------------------------------------
 
+@app.get("/livez")
+def livez():
+    """The HTTP process is running; does not access PostgreSQL."""
+    return {"ok": True, "version": __version__}
+
+
+@app.get("/readyz")
+def readyz(request: Request):
+    """Database readiness without disclosing connection details."""
+    try:
+        with request.app.state.pool.connection(timeout=2) as conn:
+            with conn.transaction():
+                conn.execute("SET LOCAL statement_timeout = '2s'")
+                conn.execute("SELECT 1", prepare=False)
+    except psycopg.Error:
+        return JSONResponse({"ok": False}, status_code=503)
+    return {"ok": True, "version": __version__}
+
+
 @app.get("/healthz")
 def healthz(request: Request):
     """Liveness for compose and the test harness, and the running version.

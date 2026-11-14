@@ -58,7 +58,7 @@ def _bearer(headers: dict) -> str | None:
 
 # Paths that hold no job data and are served without a token. Everything else
 # is denied by default, so a route added later is protected unless listed here.
-OPEN_PATHS = {"/", "/healthz", "/dashboard", "/docs", "/docs/oauth2-redirect", "/openapi.json"}
+OPEN_PATHS = {"/", "/healthz", "/livez", "/readyz", "/dashboard", "/docs", "/docs/oauth2-redirect", "/openapi.json"}
 OPEN_PREFIXES = ("/dashboard",)
 # GET endpoints that LEASEQ_PUBLIC_READ=1 opens. /auth/check is not among them.
 PUBLIC_READ_PREFIXES = ("/stats", "/jobs")
