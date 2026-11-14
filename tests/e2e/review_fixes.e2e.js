@@ -112,6 +112,23 @@ async function connect(page) {
       assert.ok(reads.length >= 1);
       assert.ok(reads.every((path) => path === "/jobs?limit=1"), JSON.stringify(reads));
     });
+    await check("a delayed Jobs HTTP error cannot overwrite Submit", async (page) => {
+      await connect(page);
+      let release;
+      const blocked = new Promise((resolve) => { release = resolve; });
+      let began;
+      const started = new Promise((resolve) => { began = resolve; });
+      await page.route((url) => url.pathname === "/jobs", async (r) => {
+        began(); await blocked;
+        await r.fulfill({ status: 503, contentType: "application/json", body: '{"detail":"old Jobs failure"}' });
+      });
+      await go(page, "#/jobs");
+      await started;
+      await go(page, "#/submit");
+      release();
+      await page.waitForTimeout(300);
+      assert.doesNotMatch(await page.locator("#banner").textContent(), /HTTP 503|old Jobs failure/);
+    });
     await check("every route focuses its H1 including Not found", async (page) => {
       await connect(page);
       for (const [route, title] of [["#/jobs", "Jobs"], [`#/jobs/${EXP.dead}`, `Job ${EXP.dead}`],

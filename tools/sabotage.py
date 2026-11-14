@@ -12,6 +12,7 @@ counts as "SKIPPED", not as caught. Skips and test-runner errors fail the gate.
 """
 import argparse
 import json
+import re
 import subprocess
 import sys
 import time
@@ -172,7 +173,7 @@ SABOTAGE = [
     ("input counter does not update", [(JS, '    if (app.submitIntent && app.submitIntent.text !== text.value) app.submitIntent = null;\n    setCount();\n  });', '    if (app.submitIntent && app.submitIntent.text !== text.value) app.submitIntent = null;\n  });')], REVIEW),
     ("input draft lost on navigation", [(JS, 'text.addEventListener("input", () => {\n    app.submitDraft = text.value;', 'text.addEventListener("input", () => {\n    app.submitDraft = "";')], REVIEW),
     ("invalid input lacks accessible state", [(JS, 'text.setAttribute("aria-invalid", "true"); text.focus();', 'text.focus();')], REVIEW),
-    ("Not found route leaves focus behind", [(JS, 'function focusH1() {\n', 'function focusH1() {\n  if (app.route.name === "notfound") return;\n')], REVIEW),
+    ("late Jobs HTTP error changes new route", [(JS, '  if (key !== app.routeKey) return;         // this response belongs to an earlier view\n', '')], REVIEW),
 ]
 
 
@@ -221,12 +222,14 @@ def main() -> int:
             r = subprocess.run([sys.executable, "-m", "pytest", "-q", "-x", "-p", "no:cacheprovider",
                                 *tests], cwd=ROOT, capture_output=True, text=True, timeout=900)
             last = (r.stdout.strip().splitlines() or ["(no output)"])[-1]
-            if r.returncode == 1 and " failed" in last:
+            if r.returncode not in (0, 1) or re.search(r"\b[1-9]\d* errors?\b", last):
+                verdict = "ERROR"
+            elif re.search(r"\b[1-9]\d* skipped\b", last):
+                verdict = "SKIPPED"
+            elif r.returncode == 1 and re.search(r"\b[1-9]\d* failed\b", last):
                 verdict = "CAUGHT"
             elif r.returncode != 0:
                 verdict = "ERROR"
-            elif "skipped" in last:
-                verdict = "SKIPPED"
             else:
                 verdict = "MISSED"
             output = r.stdout + "\n" + r.stderr

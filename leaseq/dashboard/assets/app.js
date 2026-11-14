@@ -1189,6 +1189,7 @@ async function refreshJobs() {
   const r = await api(`/jobs?${p}`);
   if (gen !== app.authGen) return;          // sent before a token change or a clear
   if (r.status === 401) { handleUnauthorized(); return; }
+  if (key !== app.routeKey) return;         // this response belongs to an earlier view
   if (r.status !== 200) {
     const why = detailText(r.body).replace(/\.$/, "");
     showBanner(`The API answered HTTP ${r.status}.${why ? ` ${why}.` : ""} Check that this page is ` +
@@ -1197,7 +1198,6 @@ async function refreshJobs() {
   }
   hideBanner();
   noteReadable();
-  if (key !== app.routeKey) return;         // filters changed while this was in flight
   app.list = r.body;
   if (app.route.name === "jobs") renderJobsData();
 }
