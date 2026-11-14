@@ -179,3 +179,43 @@ def test_root_visual_gate(monkeypatch):
         for p in (worker, proc):
             p.terminate()
             p.wait()
+
+
+def test_dashboard_review_fixes(monkeypatch):
+    db_url = harness.scratch_database("leaseq_e2e_menu_review")
+    monkeypatch.setenv("LEASEQ_API_TOKEN", TOKEN)
+    monkeypatch.delenv("LEASEQ_PUBLIC_READ", raising=False)
+    proc, base = harness.start_api(db_url)
+    try:
+        with httpx.Client(base_url=base, headers=AUTH, timeout=10) as client:
+            def submit(key, kind="word_count", max_attempts=3):
+                response = client.post("/jobs", headers={"Idempotency-Key": key},
+                    json={"kind": kind, "payload": {"text": "review fixture"}, "max_attempts": max_attempts})
+                assert response.status_code == 201, response.text
+                return response.json()["id"]
+
+            def claim():
+                response = client.post("/jobs/claim", json={"worker_id": "review-fixture", "lease_seconds": 600})
+                assert response.status_code == 200, response.text
+                return response.json()
+
+            dead = submit("review-dead", "fail", 1)
+            lease = claim()
+            response = client.post(f"/jobs/{dead}/fail", json={"lease_token": lease["lease_token"], "error": "fixture"})
+            assert response.json()["state"] == "dead"
+            leased = submit("review-leased")
+            assert claim()["id"] == leased
+            queued = submit("review-queued")
+        result = subprocess.run(["node", str(E2E.with_name("review_fixes.e2e.js"))],
+            capture_output=True, text=True, timeout=180,
+            env={**os.environ, "BASE_URL": base, "API_TOKEN": TOKEN,
+                 "EXPECTED": json.dumps({"dead": dead, "leased": leased, "queued": queued})})
+        print(result.stdout)
+        print(result.stderr)
+        report = json.loads(result.stdout.strip().splitlines()[-1])
+        assert len(report["results"]) == 16
+        assert not [r for r in report["results"] if not r["ok"]], report
+        assert result.returncode == 0
+    finally:
+        proc.terminate()
+        proc.wait()
