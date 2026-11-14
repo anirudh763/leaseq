@@ -24,15 +24,16 @@ HTML/JavaScript/CSS written for the dashboard, counted with `wc -l`, not countin
 `ui.css` base stylesheet), a fault-injection test that kills workers with
 SIGKILL and then checks the database, and the measured results below.
 
-![The LeaseQ operations console: state lanes with counts (16 jobs: 13 done, 3 dead) above the job table](docs/screenshots/jobs-1440.png)
+![The LeaseQ operations console: state lanes with counts (17 jobs: 13 done, 4 dead) above the job table](docs/screenshots/jobs-1440.png)
 
-![Job 13: why it is not running, and its lease lifecycle timeline: enqueued, claimed, failed and retried twice, then dead](docs/screenshots/job-details-1440.png)
+![Job 13: dead after six attempts, with its append-only lease lifecycle and operator actions](docs/screenshots/job-details-1440.png)
 
-The screenshots were taken from local processes, not Docker: one `uvicorn` API,
-two workers and the `leaseq.demo` sample jobs (enqueued through
-`POST /demo/jobs`) against a local PostgreSQL, captured with
-`tests/e2e/readme_screenshot.js` after entering the token on the Connection
-screen. Narrow-screen versions are in `docs/screenshots/` (`jobs-320.png`,
+The screenshots were captured from a local Docker Compose stack with PostgreSQL,
+one API and one worker, using `tests/e2e/readme_screenshot.js` after entering the
+token on the Connection screen. The queue contains previously seeded synthetic
+sample jobs; the demo feeder was stopped for capture. The submit screen shows a
+real `word_count` result from the bundled public-domain text. No email or other
+external action is performed by these sample jobs. Narrow-screen versions are in `docs/screenshots/` (`jobs-320.png`,
 `job-details-320.png`). The dashboard's tokens, layout and measured contrast are
 in [DESIGN.md](DESIGN.md).
 
