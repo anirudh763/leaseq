@@ -1319,17 +1319,21 @@ function initMenu() {
   const button = $("menu-button");
   button.addEventListener("click", () => {
     button.setAttribute("aria-expanded", "true");
+    sheet.returnValue = "";
     sheet.showModal();
     const current = sheet.querySelector('a[aria-current]');
     (current || sheet.querySelector("a")).focus();
   });
-  // However it closes (Escape, Close, a link), focus goes back to the Menu button.
+  // Menu exits return focus to Menu; navigation exits leave focus on the new screen heading.
   sheet.addEventListener("close", () => {
     button.setAttribute("aria-expanded", "false");
-    if (window.getComputedStyle(button).display !== "none") button.focus();
+    if (sheet.returnValue === "navigate") focusH1();
+    else if (window.getComputedStyle(button).display !== "none") button.focus();
   });
   $("menu-close").addEventListener("click", () => sheet.close());
-  for (const a of sheet.querySelectorAll("a")) a.addEventListener("click", () => sheet.close());
+  for (const a of sheet.querySelectorAll("a")) a.addEventListener("click", () => {
+    sheet.close("navigate");
+  });
   sheet.addEventListener("click", (e) => { if (e.target === sheet) sheet.close(); });   // backdrop
   button.setAttribute("aria-expanded", "false");
   window.matchMedia("(min-width: 1000px)").addEventListener("change", (m) => { if (m.matches && sheet.open) sheet.close(); });

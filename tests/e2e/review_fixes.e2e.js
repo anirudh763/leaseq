@@ -139,6 +139,34 @@ async function connect(page) {
         assert.equal(await page.title(), `${title} – LeaseQ`);
       }
     });
+    await check("Menu close returns focus and Menu navigation focuses its destination H1", async (page) => {
+      await page.setViewportSize({ width: 320, height: 800 });
+      await page.goto(`${BASE}/dashboard/#/jobs`);
+      const menu = page.getByRole("button", { name: "Menu", exact: true });
+      const heading = page.locator("main h1");
+      const assertFocused = async (expected) => assert.deepEqual(await page.evaluate(() => ({
+        tag: document.activeElement.tagName, text: document.activeElement.textContent.trim(),
+      })), expected);
+      await menu.click();
+      await page.keyboard.press("Escape");
+      await assertFocused({ tag: "BUTTON", text: "Menu" });
+      await menu.click();
+      await page.getByRole("button", { name: "Close menu", exact: true }).click();
+      await assertFocused({ tag: "BUTTON", text: "Menu" });
+      await menu.click();
+      await page.mouse.click(1, 1);
+      await page.waitForFunction(() => !document.querySelector("#menu-sheet").open);
+      await assertFocused({ tag: "BUTTON", text: "Menu" });
+      for (const [route, title] of [["jobs", "Jobs"], ["jobs", "Jobs"],
+        ["submit", "Submit test job"], ["connection", "Connection & API"]]) {
+        await menu.click();
+        await page.locator(`#menu-sheet a[data-route="${route}"]`).click();
+        await page.waitForFunction((expected) => !document.querySelector("#menu-sheet").open &&
+          document.activeElement.tagName === "H1" && document.activeElement.textContent.trim() === expected, title);
+        await assertFocused({ tag: "H1", text: title });
+        assert.equal(await heading.innerText(), title);
+      }
+    }, 320);
     for (const state of ["queued", "leased"]) {
       await check(`Cancel ${state} explains lease revocation without promising to stop work`, async (page) => {
         await connect(page);

@@ -182,7 +182,7 @@ def test_root_visual_gate(monkeypatch):
 
 
 def test_dashboard_review_fixes(monkeypatch):
-    db_url = harness.scratch_database("leaseq_e2e_review")
+    db_url = harness.scratch_database("leaseq_e2e_menu_review")
     monkeypatch.setenv("LEASEQ_API_TOKEN", TOKEN)
     monkeypatch.delenv("LEASEQ_PUBLIC_READ", raising=False)
     proc, base = harness.start_api(db_url)
@@ -213,7 +213,7 @@ def test_dashboard_review_fixes(monkeypatch):
         print(result.stdout)
         print(result.stderr)
         report = json.loads(result.stdout.strip().splitlines()[-1])
-        assert len(report["results"]) == 15
+        assert len(report["results"]) == 16
         assert not [r for r in report["results"] if not r["ok"]], report
         assert result.returncode == 0
     finally:
