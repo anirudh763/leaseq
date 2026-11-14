@@ -152,10 +152,17 @@ def test_root_visual_gate(monkeypatch):
     monkeypatch.setenv("LEASEQ_API_TOKEN", TOKEN)
     monkeypatch.delenv("LEASEQ_PUBLIC_READ", raising=False)
     proc, base = harness.start_api(db_url)
-    worker = harness.start_worker(db_url, base, "gate-1", 10)
+    worker = None
     marker = "gate-payload-marker-7f3a91"
     try:
         c = httpx.Client(base_url=base, headers=AUTH, timeout=10)
+        # A leased job for the Cancel dialog test, claimed by a placeholder worker id before the
+        # real worker starts, so the real worker stays free for the Submit flow.
+        running = c.post("/jobs", headers={"Idempotency-Key": "gate-running"},
+                         json={"kind": "sleep", "payload": {"ms": 1}}).json()["id"]
+        held = c.post("/jobs/claim", json={"worker_id": "gate-hold", "lease_seconds": 3600}).json()
+        assert held["id"] == running and held["state"] == "leased"
+        worker = harness.start_worker(db_url, base, "gate-1", 10)
         dead = c.post("/jobs", headers={"Idempotency-Key": "gate-dead"},
                       json={"kind": "fail", "payload": {"error": "boom", "note": marker},
                             "max_attempts": 1}).json()["id"]
@@ -167,7 +174,8 @@ def test_root_visual_gate(monkeypatch):
                            text=True, timeout=600, check=False,
                            env={**os.environ, "BASE_URL": base, "API_TOKEN": TOKEN,
                                 "AXE_PATH": _axe_path(),
-                                "EXPECTED": json.dumps({"dead": dead, "done": done, "marker": marker})})
+                                "EXPECTED": json.dumps({"dead": dead, "done": done, "running": running,
+                                                        "marker": marker})})
         print(r.stdout)
         print(r.stderr)
         report = json.loads(r.stdout.strip().splitlines()[-1])
@@ -177,5 +185,6 @@ def test_root_visual_gate(monkeypatch):
         assert r.returncode == 0
     finally:
         for p in (worker, proc):
-            p.terminate()
-            p.wait()
+            if p is not None:
+                p.terminate()
+                p.wait()

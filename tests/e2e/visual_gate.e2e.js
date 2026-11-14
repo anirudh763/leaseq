@@ -403,6 +403,25 @@ async function axeViolations(page) {
       await page.context().close();
     });
 
+    await check("Cancel on a leased job names the job, its kind, the worker and the fenced effect; Keep job sends nothing", async () => {
+      const page = await newPage(browser);
+      const posts = [];
+      page.on("request", (r) => { if (r.method() === "POST" && /cancel/.test(r.url())) posts.push(r.url()); });
+      await connect(page);
+      await go(page, `#/jobs/${EXP.running}`, new RegExp(`^Job ${EXP.running}$`));
+      await page.getByRole("button", { name: "Cancel job" }).click();
+      const dlg = page.getByRole("dialog", { name: `Cancel job ${EXP.running}?` });
+      await dlg.waitFor();
+      const t = await dlg.innerText();
+      assert.match(t, new RegExp(`Job ${EXP.running} \\(sleep\\) becomes dead now`));
+      assert.match(t, /Worker gate-hold is still running it/);
+      assert.match(t, /refused by the fence/);
+      await dlg.getByRole("button", { name: "Keep job" }).click();
+      await page.waitForTimeout(300);
+      assert.deepEqual(posts, []);
+      await page.context().close();
+    });
+
     // ---- 8c. review fixes: target size, long tokens, failing-call banner, polling ----
     const INTERACTIVE = 'a[href], button, input, textarea, select, summary, [tabindex]:not([tabindex="-1"])';
     const smallTargets = (page) => page.evaluate((sel) => [...document.querySelectorAll(sel)]
