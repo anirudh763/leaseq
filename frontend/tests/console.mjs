@@ -20,7 +20,7 @@ const axeSource = await readFile(new URL('../node_modules/axe-core/axe.min.js', 
 const axeUrl = new URL('/console/test-axe.js', baseUrl).href;
 // Serve only the pinned test dependency at same origin. App/API/worker responses remain real and unintercepted.
 await page.route(axeUrl, (route) => route.fulfill({ status: 200, contentType: 'application/javascript; charset=utf-8', body: axeSource }));
-const screenshotDir = process.env.SCREENSHOT_DIR || '/Users/anirudhyadav/Downloads/active/user-council-2026-11-14/leaseq/frontend/screenshots';
+const screenshotDir = process.env.SCREENSHOT_DIR || '.test-artifacts/screenshots';
 await mkdir(screenshotDir, { recursive: true });
 const axeRuns = [];
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
