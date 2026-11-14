@@ -324,7 +324,7 @@ function onLocationChange() {
     app.lastJobsHash = key;
   }
   const sheet = $("menu-sheet");
-  if (sheet.open) sheet.close();
+  if (sheet.open) sheet.close("navigate");
   const sameScreen = prev.name === app.route.name && prev.id === app.route.id && app.view;
   renderView(!sameScreen);
   pollNow();
