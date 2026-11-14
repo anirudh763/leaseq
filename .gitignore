@@ -4,4 +4,8 @@ __pycache__/
 .venv/
 .pgdata/
 node_modules/
+frontend/.test-artifacts/
 .env
+# Local secrets/configuration. Keep the checked-in examples visible.
+.env.*
+!.env.example

@@ -1,0 +1,12 @@
+title = "LeaseQ secret scan"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Deliberately invalid bearer token in the CI authentication negative control and its scanner test"
+targetRules = ["curl-auth-header"]
+condition = "AND"
+paths = ['''^(?:\.github/workflows/ci\.yml|tools/check_secret_allowlist\.py)$''']
+regexTarget = "secret"
+regexes = ['''^wrong-token-0123456789$''']

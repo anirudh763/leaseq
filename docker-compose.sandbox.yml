@@ -1,0 +1,50 @@
+# Local disposable lab. Start with: python3 scripts/sandbox_up.py
+# No operator API token or private service/database is used by this stack.
+services:
+  postgres:
+    image: postgres:16
+    command: ["postgres", "-c", "max_connections=40", "-c", "shared_buffers=64MB", "-c", "max_wal_size=64MB", "-c", "min_wal_size=32MB", "-c", "checkpoint_timeout=60s"]
+    environment:
+      POSTGRES_USER: leaseq_lab
+      POSTGRES_PASSWORD: ${LEASEQ_SANDBOX_DB_PASSWORD:?use python3 scripts/sandbox_up.py}
+      POSTGRES_DB: leaseq_sandbox_admin
+    tmpfs:
+      - /var/lib/postgresql/data:size=256m
+    mem_limit: 256m
+    cpus: 1
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U leaseq_lab -d leaseq_sandbox_admin"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    networks: [lab]
+  gateway:
+    build:
+      context: .
+      target: production
+    command: ["uvicorn", "leaseq.sandbox:app", "--host", "0.0.0.0", "--port", "8765", "--limit-concurrency", "64", "--timeout-keep-alive", "5", "--no-access-log"]
+    environment:
+      LEASEQ_SANDBOX_ADMIN_URL: postgresql://leaseq_lab:${LEASEQ_SANDBOX_DB_PASSWORD:?use python3 scripts/sandbox_up.py}@postgres:5432/leaseq_sandbox_admin
+    ports:
+      - "127.0.0.1:${LEASEQ_SANDBOX_PORT:-8765}:8765"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    cap_drop: [ALL]
+    read_only: true
+    tmpfs: [/tmp:size=32m]
+    mem_limit: 512m
+    cpus: 1
+    pids_limit: 128
+    stop_grace_period: 30s
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/readyz', timeout=3)"]
+      interval: 5s
+      timeout: 4s
+      retries: 20
+    networks: [lab, edge]
+networks:
+  lab:
+    internal: true
+  edge:
+    driver: bridge

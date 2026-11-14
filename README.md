@@ -2,11 +2,37 @@
 
 [CI status](https://github.com/anirudh763/leaseq/actions)
 
-leaseq is a reference implementation of a lease-and-fence job queue on
-PostgreSQL, with a kill test. It is built and measured at demo scale (a few
-thousand jobs on one 2-core machine) and is not a production queue; for real
-workloads use a mature PostgreSQL-backed queue such as pgmq (a PostgreSQL
-extension), River (Go) or Procrastinate (Python).
+leaseq is a PostgreSQL job queue and recovery lab. Run four real worker
+processes, kill one while it holds a job, and inspect lease recovery, stale
+completion rejection and committed database effects in the browser.
+
+## Try the recovery console
+
+With Python 3 and Docker Compose v2, run:
+
+```sh
+python3 scripts/sandbox_up.py
+```
+
+Open [the local console](http://127.0.0.1:8765/console/) and select **Start
+sandbox run**. Operations shows the real workers and job rows; Chaos offers
+batch enqueue, duplicate-key submission and a registered-worker SIGKILL;
+DLQ shows the poison fixture's failure history. Evidence JSON exports the
+observed database snapshot. Stop run reaps its processes and removes only its
+owned database. Stop the disposable Docker lab with
+`python3 scripts/sandbox_up.py --stop`.
+
+The lab is local and synthetic: one run, four original workers, 128 jobs,
+three extra batches and a ten-minute maximum lifetime. It uses a separate
+database and internal API; the existing authenticated operator dashboard
+below retains its interface. Re-running the lab launch resets only the
+`leaseq-local-lab` Compose project. Its data is disposable.
+
+The proposed Free/Pro/Team plans describe a demand-validation hypothesis.
+Subscriptions, private waitlist collection and AWS infrastructure are not
+connected. [Architecture](ARCHITECTURE.md), [failure modes](FAILURE_MODES.md),
+[operator runbook](RUNBOOK.md) and [cost model](FINOPS_AND_PRICING.md) state
+the implemented boundaries and proposed deployment options.
 
 Status: public beta, maintained by one student on a best-effort basis. It has
 no known users and has not been validated with any. Supported scope, and how
@@ -19,9 +45,7 @@ they were given. It exists to answer one question with evidence instead of a
 claim: if worker processes are killed at random while they hold jobs, is any
 job lost, and is any job's result recorded twice? The repository contains the
 queue, its HTTP API with bearer-token authentication, an operations dashboard
-served by the API (1,181 lines of Python, 100 of SQL, and 1,657 of
-HTML/JavaScript/CSS written for the dashboard, counted with `wc -l`, not counting the shared
-`ui.css` base stylesheet), a fault-injection test that kills workers with
+served by the API, an isolated recovery console, a fault-injection test that kills workers with
 SIGKILL and then checks the database, and the measured results below.
 
 ![The LeaseQ operations console: state lanes with counts (17 jobs: 13 done, 4 dead) above the job table](docs/screenshots/jobs-1440.png)
@@ -40,6 +64,9 @@ in [DESIGN.md](DESIGN.md).
 For an operator-controlled deployment template, see [Hosting LeaseQ](docs/hosting.md).
 
 ## Quick start
+
+This starts the authenticated operator API/dashboard and its persistent
+database. The disposable recovery console above has a separate launch command.
 
 With Docker (Docker Compose v2):
 
@@ -458,8 +485,13 @@ setup, not PostgreSQL's ceiling.
 
 ### Docker
 
-Docker was not run on the machine this was built on (it has no Docker
-daemon). The `compose` job in CI is where the real stack is tested. It first
+The 2026-11-14 isolated sandbox was also tested locally in Docker: the production
+image runs as uid 999, the real PostgreSQL engine and four original workers run
+the chaos flows, and browser and abuse checks cover its published loopback port.
+This disposable lab has a private database network and a separate gateway network
+for host publication. It is not a public hosted service or a durability test.
+
+The original operator stack remains covered by the `compose` job in CI. It first
 checks that a bare `docker compose up` with no `.env` and no token fails and
 leaves no containers, then starts PostgreSQL, the API and one worker with
 `scripts/up.sh --scale demo=0` (no token set beforehand, so the script writes

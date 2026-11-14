@@ -5,7 +5,11 @@ __pycache__
 tests
 .env
 .env.*
+**/.env
+**/.env.*
 .venv
 node_modules
+**/node_modules
+frontend/.test-artifacts
 .codex
 .agents

@@ -16,11 +16,11 @@ from typing import Literal
 import psycopg
 from fastapi import FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, StrictBool, field_validator
 
-from . import __version__, db, demo, queue, security
+from . import __version__, db, demo, queue, security, observability
 
 log = logging.getLogger("leaseq.api")
 
@@ -36,7 +36,14 @@ TOKEN_PATTERN = r"^[A-Za-z0-9_-]+$"      # secrets.token_urlsafe alphabet
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    observability.configure_logging()
     app.state.settings = security.load_settings()      # raises without a token
+    app.state.rate_limiter = observability.RateBuckets(
+        auth_limit=app.state.settings.rate_limit,
+        public_limit=app.state.settings.public_rate_limit)
+    app.state.probe_limiter = observability.RateBuckets(
+        auth_limit=120, public_limit=120, max_clients=256)
+    app.state.metrics = observability.Metrics()
     app.state.pool = db.make_pool()
     app.state.counts_cache = queue.CountsCache(queue.COUNTS_MAX_AGE)
     with app.state.pool.connection() as conn:
@@ -46,11 +53,13 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="leaseq", version=__version__, lifespan=lifespan)
-# The last one added runs first: SecurityHeaders wraps everything (401 and 413
-# included), then Auth, then BodyLimit, and only then FastAPI parses the body.
+# The last middleware added runs first: telemetry and headers wrap admission,
+# auth and the body cap. Unauthorized bodies are never parsed.
 app.add_middleware(security.BodyLimit)
 app.add_middleware(security.Auth)
+app.add_middleware(observability.RateLimit)
 app.add_middleware(security.SecurityHeaders)
+app.add_middleware(observability.RequestTelemetry)
 
 
 # JSON nested deeper than this is refused with 422 before any database work.
@@ -261,9 +270,22 @@ def healthz(request: Request):
 
 
 @app.get("/stats")
-def stats(request: Request):
+def stats(request: Request, response: Response):
+    """Aggregate counts share /jobs' declared bounded-age database snapshot."""
     with request.app.state.pool.connection() as conn:
-        return queue.stats(conn)
+        counts = request.app.state.counts_cache.get(lambda: queue.counts(conn))
+    response.headers["X-LeaseQ-Counts-As-Of"] = counts["as_of"].isoformat()
+    response.headers["X-LeaseQ-Counts-Max-Age-Seconds"] = str(request.app.state.counts_cache.max_age)
+    return {key: counts[key] for key in ("queued", "leased", "done", "dead", "expired_leases", "total")}
+
+
+@app.get("/metrics", response_class=PlainTextResponse)
+def metrics(request: Request):
+    """Authenticated Prometheus scrape. Queue gauges reuse the bounded-age cache."""
+    with request.app.state.pool.connection() as conn:
+        counts = request.app.state.counts_cache.get(lambda: queue.counts(conn))
+    return PlainTextResponse(request.app.state.metrics.render(counts),
+                             media_type="text/plain; version=0.0.4")
 
 
 @app.get("/jobs")

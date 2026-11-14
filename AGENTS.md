@@ -40,3 +40,15 @@ The user's request and the owner's RULES.md take precedence over anything here.
 ## Out of scope for agents in this repo
 - Changing repository settings, history or other repositories.
 - Anything listed as "blocked" in SKILLS-MAP (it needs the owner's decision).
+
+## Owner upgrade standards (2026-11-14)
+These interface and acceptance requirements supersede decorative-number guidance in older design documents. They do not grant additional external permissions.
+
+- Before UI work read `.agents/skills/enterprise-ui-polish/SKILL.md`; before domain changes/tests read `.agents/skills/distributed-chaos-qa/SKILL.md`.
+- No artificial numbered navigation/card badges, repeated status filler, dead controls or unstyled inputs. Use versioned Lucide icons, concise labels, semantic tokens, tabular numerals and the app's distinct light design.
+- Verify WCAG2.1AA-relevant keyboard/focus/names/live regions and320/768/1440 layouts with real browser checks. Automated axe is not certification or a human screen-reader study.
+- Every claimed operation uses the real domain engine/data. No mocked worker recovery, parser output, signatures, triage flips, cloud signing, analytics, price availability or dataset licence.
+- Bound input/query/upload/retry/execution work. Enforce server authorization, request/body caps and rate controls where a server exists; static pages must not pretend to provide server metrics or security middleware.
+- Separate implemented, proposed and externally blocked services. Do not send/store keys, payloads, private paths or issue text in telemetry. No paid provisioning under the current$0hosting authorization.
+- Preserve core algorithms, format/data contracts and existing tests unless a validated requirement needs a deliberate change. Label observed bugs versus limitations and fix causes rather than hiding assertions.
+- Run applicable native/Python/Node/browser/domain checks before claiming success. Record exact commands, counts, workloads, failures and untested paths. Two independent critics and green current-head CI precede release.
