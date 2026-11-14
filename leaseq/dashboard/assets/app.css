@@ -1,12 +1,11 @@
-/* LeaseQ operations console. Base components come from ui.css; this file sets the
-   light-first tokens (rebuild.md) and the app's own layout: rail + location header +
-   workspace, state lanes, lifecycle timeline. Dark is opt-in via [data-theme="dark"]. */
+/* LeaseQ dispatch console: command header, live state lanes and a full-width jobs desk. */
 [hidden]{display:none!important}
 :root{
-  --canvas:#f7f8fa; --surface:#ffffff; --rail:#f0f3f5; --ink:#152536; --muted:#4b5e6f;
-  --boundary:#748694; --divider:#dce2e8; --primary:#3d5267; --on-primary:#ffffff;
+  --canvas:#ffffff; --surface:#ffffff; --rail:#f2f6fc; --ink:#192b43; --muted:#4b5e76;
+  --boundary:#72839b; --divider:#d8e1ed; --primary:#174aa6; --on-primary:#ffffff;
+  --command:#174aa6; --command-ink:#ffffff; --command-muted:#e2ebff;
   --ok:#12633c; --warn:#925400; --bad:#b42318; --bad-fg:#ffffff;
-  --tint:#e9eef3; --code-bg:#f0f3f5;
+  --tint:#eaf1fd; --code-bg:#f2f6fc;
   /* ui.css names */
   --bg:var(--surface); --bg-subtle:var(--rail); --bg-inset:#e4e9ee; --fg:var(--ink); --fg-muted:var(--muted);
   --border:var(--divider); --border-strong:var(--boundary); --accent:var(--primary); --accent-fg:var(--on-primary);
@@ -14,8 +13,9 @@
   color-scheme:light;
 }
 :root[data-theme="dark"]{
-  --canvas:#10161c; --surface:#172029; --rail:#131b22; --ink:#e7edf3; --muted:#a9b7c4;
-  --boundary:#8595a3; --divider:#2e3c48; --primary:#a9c1d9; --on-primary:#10161c;
+  --canvas:#111b2b; --surface:#17243a; --rail:#1c2c45; --ink:#edf3fd; --muted:#afc0d8;
+  --boundary:#869bbb; --divider:#344969; --primary:#aecbff; --on-primary:#111b2b;
+  --command:#162e56; --command-ink:#edf3fd; --command-muted:#c1d3f3;
   --ok:#62d394; --warn:#f0b450; --bad:#ff8a80; --bad-fg:#10161c;
   --tint:#22313e; --code-bg:#1c2731; --bg-inset:#22303b;
   color-scheme:dark;
@@ -40,24 +40,31 @@ a{color:var(--primary);text-underline-offset:2px}
 label{font-weight:700}
 
 /* ---- frame ---- */
-.shell{display:grid;grid-template-columns:216px minmax(0,1fr);min-height:100vh}
-.rail{background:var(--rail);border-right:1px solid var(--divider);padding:24px 16px;position:sticky;top:0;
-  height:100vh;overflow-y:auto;display:flex;flex-direction:column}
+.shell{min-height:100vh}
+.rail{background:var(--command);color:var(--command-ink);padding:16px 32px;
+  display:grid;grid-template-columns:220px minmax(0,1fr) auto;align-items:center;gap:24px;border-bottom:1px solid var(--command)}
 .wordmark{margin:0;font-size:1.375rem;font-weight:700;line-height:1.2}
-.wordmark a{color:var(--ink);text-decoration:none}
-.purpose{margin:4px 0 24px;color:var(--muted);font-size:.875rem}
+.wordmark a{color:var(--command-ink);text-decoration:none;display:inline-flex;align-items:center;min-height:44px}
+.purpose{margin:0;color:var(--command-muted);font-size:.875rem}
 .nav ul{list-style:none;margin:0 0 24px;padding:0}
 .nav-group{margin:0 0 4px;padding:0 12px;color:var(--muted);font-size:.875rem}
 .nav a{display:flex;align-items:center;min-height:44px;padding:0 12px;border-radius:7px;color:var(--ink);
   text-decoration:none;border-left:3px solid transparent}
 .nav a:hover{background:var(--tint)}
 .nav a[aria-current="page"],.nav a[aria-current="true"]{background:var(--surface);border-left-color:var(--primary);font-weight:700}
-.rail-foot{margin-top:auto}
-.rail-foot .btn{width:100%;justify-content:flex-start}
+.rail .nav{display:flex;align-items:center;gap:8px}
+.rail .nav-group{display:none}
+.rail .nav ul{display:flex;gap:8px;margin:0}
+.rail .nav a{padding:8px 16px;border:0;color:var(--command-ink);border-radius:6px;white-space:nowrap}
+.rail .nav a:hover{background:rgb(255 255 255 / .12)}
+.rail .nav a[aria-current="page"],.rail .nav a[aria-current="true"]{background:var(--surface);color:var(--primary)}
+.rail-foot .btn{background:transparent;color:var(--command-ink);border-color:var(--command-muted);white-space:nowrap}
+.rail-foot .btn:hover{background:rgb(255 255 255 / .12)}
+.rail :focus-visible{outline-color:var(--command-ink)}
 
 .frame{min-width:0;display:flex;flex-direction:column}
 .loc{display:flex;align-items:center;gap:8px 16px;flex-wrap:wrap;min-height:56px;padding:6px 32px;
-  background:var(--surface);border-bottom:1px solid var(--divider)}
+  background:var(--rail);border-bottom:1px solid var(--divider)}
 .menu-btn{display:none}
 .crumbs ol{display:flex;flex-wrap:wrap;list-style:none;margin:0;padding:0;font-size:.9375rem}
 .crumbs li+li::before{content:"/";padding:0 8px;color:var(--muted)}
@@ -68,9 +75,9 @@ label{font-weight:700}
 .conn svg{flex:none}
 .conn.ok{color:var(--ok)} .conn.warn{color:var(--warn)}
 
-main{flex:1;padding:32px;width:100%;max-width:1164px}
+main{flex:1;padding:28px 32px 40px;width:100%;max-width:1536px;margin:0 auto}
 main:focus{outline:none}
-.app-footer{padding:16px 32px 24px;border-top:1px solid var(--divider);font-size:.875rem;max-width:1164px}
+.app-footer{padding:16px 32px 24px;border-top:1px solid var(--divider);font-size:.875rem;max-width:1536px;width:100%;margin:0 auto}
 .app-footer #version{margin-left:8px}
 
 h1{font-size:1.875rem;line-height:1.2;margin:0 0 8px}
@@ -107,7 +114,7 @@ h3{font-size:1.0625rem;margin:24px 0 8px}
   border:0;border-top:4px solid transparent;background:none;color:var(--ink);font:inherit;text-align:left;cursor:pointer}
 .lane:hover{background:var(--tint)}
 .lane .lane-name{display:inline-flex;align-items:center;gap:6px;font-size:.9375rem}
-.lane .count{font-size:1.5rem;font-weight:700;line-height:1.2;font-variant-numeric:tabular-nums}
+.lane .count{font-size:2rem;font-weight:700;line-height:1.2;font-variant-numeric:tabular-nums}
 .lane[aria-pressed="true"]{background:var(--tint);border-top-color:var(--primary)}
 .lane[aria-pressed="true"] .lane-name{font-weight:700}
 .lane:not(.all)[aria-pressed="true"] .lane-name::after{content:"(filter on)" / "";font-weight:400;color:var(--muted);font-size:.8125rem}
@@ -134,7 +141,7 @@ tbody tr:last-child td{border-bottom:0}
 tbody tr.selected td{background:var(--tint)}
 td.key{max-width:14em;overflow:hidden;text-overflow:ellipsis}
 td.result{max-width:14em;overflow:hidden;text-overflow:ellipsis}
-.job-link{display:inline-flex;align-items:center;min-height:24px;font-weight:700}
+.job-link{display:inline-flex;align-items:center;min-height:44px;font-weight:700}
 .table-foot{display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px;padding:8px 24px;border-top:1px solid var(--divider);
   background:var(--rail)}
 .empty{padding:24px 12px;white-space:normal}
@@ -209,7 +216,6 @@ dialog h2{margin:0 0 8px}
 .sheet-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:16px}
 
 @media (max-width:999px){
-  .shell{grid-template-columns:minmax(0,1fr)}
   .rail{display:none}
   .menu-btn{display:inline-flex}
   .lanes{grid-template-columns:repeat(3,minmax(0,1fr))}
