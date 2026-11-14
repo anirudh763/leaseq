@@ -139,14 +139,19 @@ async function axeViolations(page) {
       await sheet.waitFor({ state: "hidden" });
       await page.context().close();
     });
-    await check("desktop shows the 216px rail and no Menu button", async () => {
+    await check("desktop shows the compact command header above the workspace", async () => {
       const page = await newPage(browser, { viewport: { width: 1440, height: 900 } });
       await page.goto(`${DASH}#/jobs`);
       await waitH1(page, /^Jobs$/);
       const rail = page.getByRole("navigation", { name: "Main" }).first();
       assert.ok(await rail.isVisible());
-      const w = await page.locator(".rail").evaluate((e) => e.getBoundingClientRect().width);
-      assert.equal(Math.round(w), 216);
+      const header = await page.locator(".rail").boundingBox();
+      const workspace = await page.locator("main").boundingBox();
+      assert.equal(Math.round(header.width), 1440);
+      assert.ok(header.height >= 44 && header.height < 120);
+      assert.ok(workspace.y >= header.y + header.height);
+      assert.equal(await page.getByRole("banner").count(), 1, "one page banner landmark");
+      assert.equal(await page.getByRole("region", { name: "LeaseQ commands" }).count(), 1);
       assert.equal(await page.getByRole("button", { name: "Menu", exact: true }).isVisible(), false);
       assert.equal(await rail.getByRole("link", { name: "Jobs" }).getAttribute("aria-current"), "page");
       await page.context().close();
@@ -257,14 +262,14 @@ async function axeViolations(page) {
       await page.goto(`${DASH}#/jobs`);
       await waitH1(page, /^Jobs$/);
       const bg = () => page.evaluate(() => getComputedStyle(document.body).backgroundColor);
-      assert.equal(await bg(), "rgb(247, 248, 250)");
+      assert.equal(await bg(), "rgb(255, 255, 255)");
       await page.getByRole("button", { name: "Use dark theme" }).first().click();
-      assert.notEqual(await bg(), "rgb(247, 248, 250)");
+      assert.notEqual(await bg(), "rgb(255, 255, 255)");
       await page.reload();
       await waitH1(page, /^Jobs$/);
-      assert.notEqual(await bg(), "rgb(247, 248, 250)", "dark choice not remembered");
+      assert.notEqual(await bg(), "rgb(255, 255, 255)", "dark choice not remembered");
       await page.getByRole("button", { name: "Use light theme" }).first().click();
-      assert.equal(await bg(), "rgb(247, 248, 250)");
+      assert.equal(await bg(), "rgb(255, 255, 255)");
       await page.context().close();
     });
 
