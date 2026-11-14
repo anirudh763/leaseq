@@ -54,6 +54,8 @@ const app = {
   details: new Map(),  // job id -> { job, events, more } | { notfound: true } (sensitive)
   submit: null,        // { id, job, started } of the last test job (sensitive)
   submitDraft: "",     // the person's own text; kept across routes
+  submitIntent: null,  // text and key kept together so an ambiguous response can be retried
+  submitInFlight: false,
   submitTimer: null,
   paused: false,
   inflight: false,
@@ -152,8 +154,9 @@ function refreshRelativeTimes() {
 
 function announce(msg) {
   const s = $("status");
+  const gen = app.authGen;
   s.textContent = "";
-  window.setTimeout(() => { s.textContent = msg; }, 50);
+  window.setTimeout(() => { if (gen === app.authGen) s.textContent = msg; }, 50);
 }
 
 /* ---------- API ---------- */
@@ -197,7 +200,11 @@ function clearSensitive() {
   app.details.clear();
   app.submit = null;
   app.submitDraft = "";      // text typed for a job is a would-be payload: dropped too
+  app.submitIntent = null;
+  app.submitInFlight = false;
   stopSubmitPoll();
+  resetConfirmation();
+  $("status").textContent = "";
 }
 
 function setConn(state) {
@@ -541,7 +548,7 @@ function renderJobsData() {
   note.hidden = !counts.expired_leases;
   note.textContent = counts.expired_leases
     ? `${counts.expired_leases} running job${counts.expired_leases > 1 ? "s have" : " has"} an expired lease; ` +
-      "the next claim hands it to another worker." : "";
+      "the next claim can reassign it, or mark it dead if its attempts are exhausted." : "";
   $("updated").textContent = `Counts as of ${clock(body.counts_as_of)}`;
 }
 
@@ -564,7 +571,9 @@ function emptyState(counts) {
 }
 
 async function loadSample() {
+  const gen = app.authGen;
   const r = await api("/demo/jobs", { method: "POST" });
+  if (gen !== app.authGen) return;
   if (r.status === 201) announce(`Loaded ${r.body.enqueued} sample jobs.`);
   else if (r.status === 401) handleUnauthorized();
   else showBanner(`Loading sample jobs failed (HTTP ${r.status}). ${detailText(r.body)}`, false);
@@ -712,12 +721,12 @@ function whyWaiting(job) {
       return { title: "Why it is waiting", parts: [
         "Running on worker ", el("span", { class: "mono", text: job.leased_by || "unknown" }), ". Its lease ends ",
         timeEl(job.lease_expires_at), " unless the worker heartbeats. If the worker stops, another worker can " +
-        "take the job after that, and a late report from this worker is rejected by the lease token fence."] };
+        "reclaim the job after that. A late report is rejected once this lease is replaced or cancelled."] };
     }
     return { title: "Why it is waiting", parts: [
-      "The lease expired ", timeEl(job.lease_expires_at), ". The next claim hands the job to another worker; " +
-      "a late report from ", el("span", { class: "mono", text: job.leased_by || "the old worker" }),
-      " will be rejected by the fence."] };
+      "The lease expired ", timeEl(job.lease_expires_at), ". The next claim can reassign it, or mark it dead " +
+      "if its attempts are exhausted. Until the lease is replaced or cancelled, a late report from ",
+      el("span", { class: "mono", text: job.leased_by || "the old worker" }), " can still be accepted."] };
   }
   const after = job.run_after ? new Date(job.run_after).getTime() : 0;
   if (after > now) {
@@ -742,7 +751,7 @@ const STEP = {
   requeued: { title: "Requeued by operator", tone: "queued", icon: "retrying" },
   cancelled: { title: "Cancelled by operator", tone: "dead", icon: "dead" },
   expired: { title: "Lease expired", tone: "retrying", icon: "retrying" },
-  running: { title: "Running now", tone: "leased", icon: "leased" },
+  running: { title: "Current lease", tone: "leased", icon: "leased" },
 };
 
 function step(kind, at, ...detail) {
@@ -756,7 +765,7 @@ function step(kind, at, ...detail) {
 
 /* The lifecycle as a timeline: one item per audit event, plus two derived items
    that are labelled as such: "Lease expired" (a claim with no report before the
-   next claim) and "Running now" (the current lease). */
+   next claim) and "Current lease" (the current lease). */
 function timeline(job, events) {
   const list = el("ol", { class: "timeline", "aria-labelledby": "timeline-label" });
   let open = null;   // the claim with no outcome yet
@@ -819,9 +828,22 @@ function actions(job) {
   return out;
 }
 
+function resetConfirmation() {
+  const d = $("confirm-dialog");
+  d.onclose = null;
+  if (d.open) d.close();
+  d.returnValue = "";
+  $("confirm-title").textContent = "Confirm";
+  $("confirm-text").textContent = "";
+  $("confirm-yes").textContent = "Confirm";
+  $("confirm-yes").className = "btn primary";
+  $("confirm-no").textContent = "Keep as is";
+}
+
 function confirmAction(kind, job, trigger) {
   const d = $("confirm-dialog");
   const yes = $("confirm-yes");
+  const gen = app.authGen;
   if (kind === "requeue") {
     $("confirm-title").textContent = `Requeue job ${job.id}?`;
     $("confirm-text").textContent = `Job ${job.id} (${job.kind}) goes back to the queue with 3 more attempts. ` +
@@ -841,21 +863,22 @@ function confirmAction(kind, job, trigger) {
   }
   d.returnValue = "";
   d.onclose = async () => {
-    d.onclose = null;
+    const confirmed = d.returnValue === "yes";
+    resetConfirmation();
     const focusBack = () => {
       const again = trigger.id ? $(trigger.id) : null;
       if (again) again.focus();
       else focusH1();
     };
     focusBack();
-    if (d.returnValue !== "yes") return;
-    const gen = app.authGen;
+    if (!confirmed || gen !== app.authGen || !app.token) return;
     const r = await api(`/jobs/${job.id}/${kind}`, { method: "POST", body: {} });
+    if (gen !== app.authGen) return;
     if (r.status === 401) { handleUnauthorized(); return; }
     if (r.status === 200) announce(kind === "requeue" ? `Job ${job.id} requeued.` : `Job ${job.id} cancelled.`);
     else showBanner(`The action failed (HTTP ${r.status}). ${detailText(r.body)}`, false);
-    if (gen === app.authGen) await refreshJob(String(job.id));
-    focusBack();
+    await refreshJob(String(job.id));
+    if (gen === app.authGen) focusBack();
   };
   d.showModal();
   $("confirm-no").focus();
@@ -883,7 +906,7 @@ function viewSubmit() {
     const over = n > WC_MAX;
     count.textContent = `${n.toLocaleString("en-US")} of 10,000 characters` +
       (over ? `, ${(n - WC_MAX).toLocaleString("en-US")} over the limit` : "");
-    submitBtn.disabled = over;
+    submitBtn.disabled = over || app.submitInFlight;
     const err = $("wc-error");
     if (over) {
       text.setAttribute("aria-invalid", "true");
@@ -895,27 +918,33 @@ function viewSubmit() {
   };
   text.addEventListener("input", () => {
     app.submitDraft = text.value;
+    if (app.submitIntent && app.submitIntent.text !== text.value) app.submitIntent = null;
     const err = $("wc-error");
     if (err) err.dataset.kind = "";
     setCount();
   });
   const sample = el("button", { type: "button", class: "btn", id: "load-text", text: "Load sample text" });
   sample.addEventListener("click", async () => {
+    const gen = app.authGen;
     try {
       const r = await fetch(SAMPLE_TEXT, { credentials: "omit" });
       if (!r.ok) throw new Error(String(r.status));
-      text.value = await r.text();
+      const value = await r.text();
+      if (gen !== app.authGen || $("wc-text") !== text) return;
+      text.value = value;
       app.submitDraft = text.value;
+      if (app.submitIntent && app.submitIntent.text !== text.value) app.submitIntent = null;
       setCount();
       text.removeAttribute("aria-invalid");
       $("wc-error").textContent = "";
       announce("Sample text loaded: Pride and Prejudice, chapter 1.");
     } catch (e) {
+      if (gen !== app.authGen || $("wc-text") !== text) return;
       $("wc-error").textContent = "The sample text could not be loaded from this server.";
     }
   });
   const clear = el("button", { type: "button", class: "btn", text: "Clear text" });
-  clear.addEventListener("click", () => { text.value = ""; app.submitDraft = ""; setCount(); text.focus(); });
+  clear.addEventListener("click", () => { text.value = ""; app.submitDraft = ""; app.submitIntent = null; setCount(); text.focus(); });
   const form = el("form", { id: "submit-form", class: "form-stack", novalidate: true },
     el("label", { for: "wc-text", text: "Text to count" }),
     el("p", { class: "hint", id: "wc-hint", text: "Up to 10,000 characters, the handler's limit. The text is stored " +
@@ -948,6 +977,7 @@ function viewSubmit() {
 
 async function submitJob(e) {
   e.preventDefault();
+  if (app.submitInFlight) return;
   const text = $("wc-text");
   const err = $("wc-error");
   const fail = (msg) => {
@@ -962,14 +992,26 @@ async function submitJob(e) {
   if (!app.token) return fail("Enter the API token on Connection & API first: submitting needs it.");
   text.removeAttribute("aria-invalid");
   err.textContent = "";
-  const key = `ui-word-count-${crypto.randomUUID()}`;
+  if (!app.submitIntent || app.submitIntent.text !== v) {
+    app.submitIntent = { text: v, key: `ui-word-count-${crypto.randomUUID()}` };
+  }
+  const intent = app.submitIntent;
   const gen = app.authGen;
+  app.submitInFlight = true;
+  $("submit-job").disabled = true;
   let r;
   try {
-    r = await api("/jobs", { method: "POST", headers: { "Idempotency-Key": key },
-                             body: { kind: "word_count", payload: { text: v }, max_attempts: 3 } });
+    r = await api("/jobs", { method: "POST", headers: { "Idempotency-Key": intent.key },
+                             body: { kind: "word_count", payload: { text: intent.text }, max_attempts: 3 } });
   } catch (x) {
+    if (gen !== app.authGen) return;
     return fail("Cannot reach the API. Check Connection & API and try again.");
+  } finally {
+    if (gen === app.authGen) {
+      app.submitInFlight = false;
+      const button = $("submit-job");
+      if (button) button.disabled = false;
+    }
   }
   if (gen !== app.authGen) return;
   if (r.status === 401) { handleUnauthorized(); return; }
@@ -1138,10 +1180,12 @@ async function submitToken(e) {
     input.focus();
   };
   if (value.length < 16) return fail("Tokens are at least 16 characters long.");
+  const gen = app.authGen;
   const r = await fetch("/auth/check", {
     headers: { Authorization: `Bearer ${value}`, Accept: "application/json" },
     credentials: "omit", cache: "no-store",
   }).catch(() => null);
+  if (gen !== app.authGen) return;
   if (!r) return fail("Cannot reach the API to check the token.");
   if (r.status === 401) return fail("The server rejected this token.");
   if (r.status !== 200) return fail(`Unexpected answer from the server (HTTP ${r.status}).`);

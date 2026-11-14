@@ -532,6 +532,103 @@ async function axeViolations(page) {
       assert.deepEqual(page.errors, []);
       await page.context().close();
     });
+    await check("Forget and 401 clear the Submit draft across route history", async () => {
+      for (const loss of ["forget", "401"]) {
+        const page = await newPage(browser);
+        await connect(page);
+        await go(page, "#/submit", /^Submit test job$/);
+        await page.getByLabel("Text to count").fill(`private-draft-${loss}`);
+        if (loss === "forget") await page.getByRole("button", { name: "Forget token" }).first().click();
+        else {
+          await page.route("**/auth/check", (r) => r.fulfill({ status: 401, contentType: "application/json",
+            body: '{"detail":"missing or invalid bearer token"}' }));
+          await page.getByRole("alert").filter({ hasText: /rejected the API token/ }).waitFor();
+        }
+        assert.equal(await page.getByLabel("Text to count").inputValue(), "");
+        await go(page, "#/jobs", /^Jobs$/);
+        await page.goBack();
+        await waitH1(page, /^Submit test job$/);
+        assert.equal(await page.getByLabel("Text to count").inputValue(), "");
+        await page.context().close();
+      }
+    });
+    await check("closed and unauthorized confirmation dialogs retain no job metadata", async () => {
+      const page = await newPage(browser);
+      await connect(page);
+      await go(page, `#/jobs/${EXP.dead}`, new RegExp(`^Job ${EXP.dead}$`));
+      await page.getByRole("button", { name: "Requeue job" }).click();
+      await page.getByRole("button", { name: "Keep as dead" }).click();
+      await page.waitForFunction(() => document.getElementById("confirm-text").textContent === "");
+      await page.getByRole("button", { name: "Requeue job" }).click();
+      await page.route(`**/jobs/${EXP.dead}*`, (r) => r.fulfill({ status: 401, contentType: "application/json",
+        body: '{"detail":"missing or invalid bearer token"}' }));
+      await page.waitForFunction(() => !document.getElementById("confirm-dialog").open);
+      assert.equal(await page.locator("#confirm-text").textContent(), "");
+      assert.equal(await page.locator("#confirm-title").textContent(), "Confirm");
+      assert.equal(await markerInDom(page), false);
+      await page.context().close();
+    });
+    await check("an action response received after Forget cannot restore job messages or data", async () => {
+      const page = await newPage(browser);
+      await connect(page);
+      await go(page, `#/jobs/${EXP.dead}`, new RegExp(`^Job ${EXP.dead}$`));
+      let release;
+      const held = new Promise((resolve) => { release = resolve; });
+      let requested;
+      const started = new Promise((resolve) => { requested = resolve; });
+      await page.route(`**/jobs/${EXP.dead}/requeue`, async (r) => {
+        requested();
+        await held;
+        await r.fulfill({ status: 200, contentType: "application/json", body: "{}" });
+      });
+      await page.getByRole("button", { name: "Requeue job" }).click();
+      await page.locator("#confirm-yes").click();
+      await started;
+      await page.getByRole("button", { name: "Forget token" }).first().click();
+      release();
+      await page.waitForTimeout(200);
+      assert.doesNotMatch(await page.locator("#status").textContent(), /Job \d+ requeued/);
+      assert.equal(await page.locator("#confirm-text").textContent(), "");
+      assert.equal(await markerInDom(page), false);
+      await page.context().close();
+    });
+    await check("Submit retries an ambiguous commit once with the same body and key", async () => {
+      const page = await newPage(browser);
+      await connect(page);
+      await go(page, "#/submit", /^Submit test job$/);
+      const attempts = [];
+      await page.route("**/jobs", async (route) => {
+        if (route.request().method() !== "POST") return route.continue();
+        const response = await route.fetch();
+        attempts.push({ key: route.request().headers()["idempotency-key"],
+                        body: route.request().postData(), status: response.status(), job: await response.json() });
+        if (attempts.length === 1) return route.abort("connectionreset");
+        await route.fulfill({ response });
+      });
+      await page.getByLabel("Text to count").fill("one two three");
+      await page.locator("#submit-form").evaluate((form) => {
+        form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+        form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+      });
+      await page.locator("#wc-error").filter({ hasText: /try again/ }).waitFor();
+      assert.equal(attempts.length, 1, "a second submit was sent while the first was pending");
+      await page.getByRole("button", { name: "Submit job" }).click();
+      await page.locator("#submit-result").filter({ hasText: /3 words/ }).waitFor({ timeout: 30000 });
+      assert.equal(attempts.length, 2);
+      assert.equal(attempts[0].status, 201);
+      assert.equal(attempts[1].status, 200);
+      assert.equal(attempts[0].key, attempts[1].key);
+      assert.equal(attempts[0].body, attempts[1].body);
+      assert.equal(attempts[0].job.id, attempts[1].job.id);
+      await page.getByLabel("Text to count").fill("four five");
+      await page.getByRole("button", { name: "Submit job" }).click();
+      await page.locator("#submit-result").filter({ hasText: /2 words/ }).waitFor({ timeout: 30000 });
+      assert.equal(attempts.length, 3);
+      assert.equal(attempts[2].status, 201);
+      assert.notEqual(attempts[2].key, attempts[1].key);
+      assert.notEqual(attempts[2].job.id, attempts[1].job.id);
+      await page.context().close();
+    });
   } catch (e) {
     results.push({ name: "harness", ok: false, error: String(e && e.stack ? e.stack : e).slice(0, 600) });
   } finally {
