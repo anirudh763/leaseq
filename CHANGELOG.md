@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- Dashboard rebuilt as a light-first operations console (no API, queue or
+  schema change). Hash routes with one screen per task: Jobs (state lanes with
+  the server's counts that filter the table), Job details (why it is waiting,
+  lease lifecycle timeline from the audit log, payload, result, confirmed
+  Requeue/Cancel that name the job and effect), Submit test job (`word_count`
+  through the real queue and a worker, with a public-domain sample text) and
+  Connection & API. Old `?job=` and `?state=/kind=/worker=` links are
+  redirected. Light by default even when the OS prefers dark; dark is opt-in
+  and remembered. 216px rail on desktop, a Menu sheet below 1000px. "Forget
+  token" and any 401 now also drop every cached job and the Submit result, so
+  Back to a job URL cannot show an old payload. New root visual gate test
+  (`tests/e2e/visual_gate.e2e.js`); `scripts/smoke.sh` also counts the sample
+  text.
 - API start no longer stalls queue writes. `CREATE INDEX IF NOT EXISTS` takes
   a SHARE lock on the table before it checks whether the index exists, so
   every start queued behind any open write transaction on `jobs`, and every

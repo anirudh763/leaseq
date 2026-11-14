@@ -7,7 +7,7 @@
 #   dash     /dashboard/ and its JS and CSS are served without a token
 #   idem     the same Idempotency-Key twice gives the same job
 #   events   a job reaches done; its audit log is enqueued, claimed, completed
-#   words    a word_count job is done with the exact counts as its result
+#   words    word_count jobs (a short text and the public-domain sample) give exact counts
 #   retry    a job that fails once is retried with backoff and ends done
 #   cancel   a running job is cancelled; the worker's late result is rejected
 #   requeue  the cancelled job is requeued and runs to done
@@ -54,11 +54,11 @@ pass "auth: anonymous POST /jobs, GET /jobs, GET /stats and a wrong token -> 401
 # Read the whole page first: `curl | grep -q` fails under pipefail when grep
 # stops early and curl gets SIGPIPE.
 page=$(curl -fsS "$API/dashboard/") || fail "dash: GET /dashboard/"
-case "$page" in *'<title>leaseq operations</title>'*) ;; *) fail "dash: index.html has no title";; esac
-for f in app.js app.css ui.css; do
+case "$page" in *'<title>Jobs – LeaseQ</title>'*) ;; *) fail "dash: index.html has no title";; esac
+for f in app.js app.css ui.css theme.js sample/pride-and-prejudice-ch1.txt; do
   c=$(code "$API/dashboard/assets/$f"); [ "$c" = 200 ] || fail "dash: assets/$f gave $c"
 done
-pass "dash: /dashboard/, assets/app.js, assets/app.css, assets/ui.css -> 200 without a token"
+pass "dash: /dashboard/ and its assets (app.js, app.css, ui.css, theme.js, sample text) -> 200 without a token"
 
 # --- idempotency ---------------------------------------------------------------
 body='{"kind": "sleep", "payload": {"ms": 50}}'
@@ -80,6 +80,16 @@ res=$(api "$API/jobs/$wid" | python3 -c 'import json,sys; print(json.dumps(json.
 ev=$(events "$wid")
 [ "$ev" = "enqueued claimed completed" ] || fail "words: job $wid events are '$ev'"
 pass "words: word_count job $wid done; result $res; audit log = '$ev'"
+
+# Public-domain text: Pride and Prejudice, chapter 1 (Project Gutenberg #1342; see
+# leaseq/dashboard/assets/sample/SOURCE.txt), the same file the Submit screen uses.
+pbody=$(curl -fsS "$API/dashboard/assets/sample/pride-and-prejudice-ch1.txt" |
+        python3 -c 'import json,sys; print(json.dumps({"kind": "word_count", "payload": {"text": sys.stdin.read()}}))')
+pid=$(submit "smoke-$RUN-austen" "$pbody")
+wait_state "$pid" done
+res=$(api "$API/jobs/$pid" | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["result"], sort_keys=True))')
+[ "$res" = '{"lines": 114, "words": 849}' ] || fail "words: public-domain sample job $pid result is $res"
+pass "words: Pride and Prejudice ch. 1 (public domain) -> job $pid result $res"
 
 # --- (b) retry: fails on attempt 1, succeeds on attempt 2 ----------------------
 rid=$(submit "smoke-$RUN-retry" '{"kind": "fail_first_n", "payload": {"n": 1}, "max_attempts": 3}')

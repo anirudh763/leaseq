@@ -1,0 +1,19 @@
+pride-and-prejudice-ch1.txt
+
+Text: Jane Austen, "Pride and Prejudice" (1813), Chapter 1, exactly as in
+Project Gutenberg eBook #1342 (plain-text edition dated 2015-02-15), lines
+"Chapter 1" up to, not including, "Chapter 2". Nothing else from the eBook is
+included: no Project Gutenberg header, footer or licence text.
+
+Retrieved 2026-11-13 from the GITenberg mirror of that eBook:
+https://raw.githubusercontent.com/GITenberg/Pride-and-Prejudice_1342/master/1342.txt
+(SHA-256 of the full downloaded file:
+441e778a4297bfc944dc254810e8ded3134cfb0e36d73eef6bb312b4ffd74d6a)
+
+Licence: the novel is in the public domain (its author died in 1817). Project
+Gutenberg's own licence and trademark apply to its eBook files as distributed
+with their header; this excerpt carries none of that and does not use the
+Project Gutenberg name as an endorsement. Contains no personal data.
+
+word_count result measured with leaseq.worker.word_count on this file:
+{"words": 849, "lines": 114} (4,501 characters).
