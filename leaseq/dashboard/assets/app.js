@@ -610,7 +610,8 @@ function renderLanes() {
 }
 
 function resultSummary(job) {
-  if (job.result === null || job.result === undefined) return el("span", { class: "muted", text: "none" });
+  if (job.result === undefined) return el("span", { class: "muted", text: "Not loaded" });
+  if (job.result === null) return el("span", { class: "muted", text: "none" });
   const r = job.result;
   if (job.kind === "word_count" && Number.isInteger(r.words) && Number.isInteger(r.lines)) {
     return `${r.words} words, ${r.lines} lines`;

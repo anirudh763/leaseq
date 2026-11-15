@@ -14,10 +14,9 @@ With Python 3.11 or newer and Docker Compose v2, run:
 python3 scripts/sandbox_up.py
 ```
 
-Open [the local console](http://127.0.0.1:8765/console/) and select **Start
-sandbox run**. Operations shows the real workers and job rows; Chaos offers
+Open [the local console](http://127.0.0.1:8765/console/) and select **Start run**. In this isolated console, Jobs shows the sandbox’s workers and job rows; Recovery offers
 batch enqueue, duplicate-key submission and a registered-worker SIGKILL;
-DLQ shows the poison fixture's failure history. Evidence JSON exports the
+Dead letters shows the poison fixture's failure history. Evidence JSON exports the
 observed database snapshot. Stop run reaps its processes and removes only its
 owned database. Stop the disposable Docker lab with
 `python3 scripts/sandbox_up.py --stop`.
@@ -48,18 +47,15 @@ queue, its HTTP API with bearer-token authentication, an operations dashboard
 served by the API, an isolated recovery console, a fault-injection test that kills workers with
 SIGKILL and then checks the database, and the measured results below.
 
-![The LeaseQ operations console: state lanes with counts (17 jobs: 13 done, 4 dead) above the job table](docs/screenshots/jobs-1440.png)
+![LeaseQ Jobs with state filters and queue counts](docs/screenshots/jobs-1440.png)
 
-![Job 13: dead after six attempts, with its append-only lease lifecycle and operator actions](docs/screenshots/job-details-1440.png)
+![LeaseQ job detail with attempts, events and stored results](docs/screenshots/job-details-1440.png)
 
-The screenshots were captured from a local Docker Compose stack with PostgreSQL,
-one API and one worker, using `tests/e2e/readme_screenshot.js` after entering the
-token on the Connection screen. The queue contains previously seeded synthetic
-sample jobs; the demo feeder was stopped for capture. The submit screen shows a
-real `word_count` result from the bundled public-domain text. No email or other
-external action is performed by these sample jobs. Narrow-screen versions are in `docs/screenshots/` (`jobs-320.png`,
-`job-details-320.png`). The dashboard's tokens, layout and measured contrast are
-in [DESIGN.md](DESIGN.md).
+The desktop screenshots were captured on November 15 from the read-only demo,
+backed by Docker Compose with PostgreSQL, one API and one worker. Its seeded
+sample jobs use bundled handlers; no email or other external action is performed.
+Browser checks cover 320, 768 and 1440 px. The dashboard's tokens, layout and
+measured contrast are in [DESIGN.md](DESIGN.md).
 
 For an operator-controlled deployment template, see [Hosting LeaseQ](docs/hosting.md).
 
@@ -192,7 +188,7 @@ A job is runnable when it is `queued` and its `run_after` has passed, or when
 it is `leased` and the lease has expired. Every state change inserts one row
 into `job_events` in the same transaction.
 
-The authenticated Operations screen records worker observations on every claim,
+The authenticated Workers screen records worker observations on every claim,
 including empty polls. “Seen recently” reflects a recent report; `active_jobs`
 counts current unexpired leases, and `last_heartbeat_at` is set only by an
 actual valid heartbeat. None of these proves that a process or host is alive.
@@ -241,9 +237,9 @@ and Back/Forward work):
 |---|---|---|
 | `#/jobs` (default), `#/jobs?state=dead&kind=…&worker=…` | Jobs: state lanes and the job table | `?state=…&kind=…&worker=…` |
 | `#/jobs/<id>` | Job details | `?job=<id>` |
-| `#/submit` | Submit test job | |
-| `#/connection` | Connection & API (token, status, API guide) | |
-| `#/operations` | Observed workers, sampled metrics, durable schedules | |
+| `#/submit` | New job | |
+| `#/connection` | Settings (token, status, API guide) | |
+| `#/operations` | Workers: reports, sampled metrics, durable schedules | |
 
 - **Jobs**: one lane per state (All, Queued, Running, Retrying, Done, Dead)
   with the server's counts; a lane is a toggle that filters the table. Kind
@@ -259,7 +255,7 @@ and Back/Forward work):
   rejections of stale lease tokens, completion, operator actions), the
   payload and the result. Heartbeats are not in the audit log, and the page
   says so.
-- **Submit test job**: sends text (up to 10,000 characters, the handler's
+- **New job**: sends text (up to 10,000 characters, the handler's
   limit) as a `word_count` job through the real queue; a worker claims it,
   counts, and completes it, and the page shows the stored result. "Load
   sample text" fills in chapter 1 of Jane Austen's *Pride and Prejudice*
@@ -269,17 +265,17 @@ and Back/Forward work):
   `{"words": 849, "lines": 114}`.
   Retrying an uncertain response keeps the same text and idempotency key;
   editing or clearing the text starts a new submission intent.
-- **Connection & API**: the token form, the API address and version, the
+- **Settings**: the token form, the API address and version, the
   connection state, example `curl` calls, the endpoints and the error
   answers (401, 404, 409, 413, 422).
-- **Operations**: recent worker reports, active lease counts, bounded sampled
+- **Workers**: recent worker reports, active lease counts, bounded sampled
   queue measurements, schedule creation and enable/disable controls. A schedule
   submit retries an ambiguous result with the same idempotency key; after a
   successful create, “Start new schedule” generates a new key for the next
   intent. Schedules run only while an API poller and workers are running.
 
 Without the token (and without `LEASEQ_PUBLIC_READ=1`) the data screens show
-a "Not connected" state that links to Connection & API. The token is checked
+a "Not connected" state that links to Settings. The token is checked
 with `GET /auth/check`, kept in memory by default and sent only in the
 `Authorization` header. “Keep token until this tab closes” is explicit opt-in
 `sessionStorage`; same-origin script access can read it while it is stored.
@@ -556,7 +552,7 @@ that `.env` is byte-identical, and then runs:
    reads refused without the token, token entered by keyboard, sample jobs
    enqueued from the dashboard, a job completed by the worker with its
    lifecycle timeline shown, a retry ending dead, cancel, requeue, Forget
-   token, an API failure, a 401, the Submit test job screen with the
+   token, an API failure, a 401, the New job screen with the
    public-domain sample, 375 px and 640 px layouts, and axe in light and dark.
 2. `scripts/smoke.sh` with the token read from `.env`, which prints one
    `PASS` line per check: anonymous writes and reads get 401; the dashboard

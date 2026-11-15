@@ -205,15 +205,29 @@ def test_dashboard_review_fixes(monkeypatch):
             assert response.json()["state"] == "dead"
             leased = submit("review-leased")
             assert claim()["id"] == leased
+            done = submit("review-done", "word_count")
+            lease = claim()
+            assert lease["id"] == done
+            completion = client.post(f"/jobs/{done}/complete", json={
+                "lease_token": lease["lease_token"], "result": {"lines": 2, "words": 10},
+            })
+            assert completion.status_code == 200, completion.text
             queued = submit("review-queued")
+            listed = client.get("/jobs?limit=50")
+            assert listed.status_code == 200, listed.text
+            listed_job = next(job for job in listed.json()["jobs"] if job["id"] == done)
+            assert "result" not in listed_job
+            detail = client.get(f"/jobs/{done}")
+            assert detail.status_code == 200, detail.text
+            assert detail.json()["result"] == {"lines": 2, "words": 10}
         result = subprocess.run(["node", str(E2E.with_name("review_fixes.e2e.js"))],
             capture_output=True, text=True, timeout=180,
             env={**os.environ, "BASE_URL": base, "API_TOKEN": TOKEN,
-                 "EXPECTED": json.dumps({"dead": dead, "leased": leased, "queued": queued})})
+                 "EXPECTED": json.dumps({"dead": dead, "done": done, "leased": leased, "queued": queued})})
         print(result.stdout)
         print(result.stderr)
         report = json.loads(result.stdout.strip().splitlines()[-1])
-        assert len(report["results"]) == 16
+        assert len(report["results"]) == 17
         assert not [r for r in report["results"] if not r["ok"]], report
         assert result.returncode == 0
     finally:

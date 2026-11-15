@@ -59,6 +59,18 @@ async function connect(page) {
         assert.ok((await page.locator("#banner").innerText()).includes(path));
       });
     }
+    await check("list omits result previews while job details show the real result", async (page) => {
+      await connect(page);
+      await go(page, "#/jobs");
+      const link = page.locator(`#rows a[data-job="${EXP.done}"]`);
+      await link.waitFor();
+      const row = link.locator("xpath=ancestor::tr");
+      assert.equal(await row.locator("td.result").innerText(), "Not loaded");
+      await go(page, `#/jobs/${EXP.done}`);
+      await page.waitForFunction(() => document.querySelector("#result")?.textContent.includes('"words": 10'));
+      const result = JSON.parse(await page.locator("#result").innerText());
+      assert.deepEqual(result, { lines: 2, words: 10 });
+    });
     await check("an events network failure names the failed request", async (page) => {
       await connect(page);
       await page.route(`**/jobs/${EXP.dead}/events?*`, (r) => r.abort());
