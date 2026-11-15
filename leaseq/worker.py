@@ -31,6 +31,9 @@ class PermanentJobError(Exception):
     """
 
 
+HANDLER_KINDS = ("fail", "fail_first_n", "noop", "sleep", "word_count")
+
+
 def handle(job: dict, api: httpx.Client, lease_seconds: float) -> dict:
     """Do the job's work. Job kinds are deliberately trivial:
 
@@ -51,10 +54,14 @@ def handle(job: dict, api: httpx.Client, lease_seconds: float) -> dict:
     payload = job["payload"]
     if job["kind"] == "word_count":
         return word_count(payload.get("text"))
+    if job["kind"] == "noop":
+        return {"worker": job["leased_by"]}
     if job["kind"] == "fail":
         raise RuntimeError(payload.get("error", "job kind 'fail' always fails"))
-    if job["kind"] == "fail_first_n" and job["attempts"] <= int(payload.get("n", 1)):
-        raise RuntimeError(f"fail_first_n: attempt {job['attempts']} fails on purpose")
+    if job["kind"] == "fail_first_n":
+        if job["attempts"] <= int(payload.get("n", 1)):
+            raise RuntimeError(f"fail_first_n: attempt {job['attempts']} fails on purpose")
+        return {"worker": job["leased_by"]}
     if job["kind"] == "sleep":
         if job["attempts"] == 1 and payload.get("stall_ms"):
             time.sleep(payload["stall_ms"] / 1000)
@@ -68,7 +75,8 @@ def handle(job: dict, api: httpx.Client, lease_seconds: float) -> dict:
                     "lease_token": job["lease_token"], "lease_seconds": lease_seconds})
                 if r.status_code == 409:
                     raise LeaseLost()
-    return {"worker": job["leased_by"]}
+        return {"worker": job["leased_by"]}
+    raise PermanentJobError(f"no handler is registered for kind {job['kind']!r}")
 
 
 WORD_COUNT_MAX_CHARS = 10_000
@@ -123,13 +131,15 @@ def api_client(api_url: str, token: str | None = None) -> httpx.Client:
 
 
 def run(api_url: str, worker_id: str, lease_seconds: float, poll_seconds: float,
-        unfenced: bool = False, token: str | None = None) -> None:
+        unfenced: bool = False, token: str | None = None,
+        kinds: tuple[str, ...] = HANDLER_KINDS) -> None:
     api = api_client(api_url, token)
     conn = db.connect()
     while True:
         try:
             r = api.post("/jobs/claim", json={"worker_id": worker_id,
-                                              "lease_seconds": lease_seconds})
+                                              "lease_seconds": lease_seconds,
+                                              "kinds": list(kinds)})
             if r.status_code == 204:
                 time.sleep(poll_seconds)
                 continue

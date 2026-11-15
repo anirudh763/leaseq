@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=65"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "leaseq"
+version = "0.1.0"
+description = "A local PostgreSQL-backed recovery queue"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi==0.162.4",
+  "psycopg[binary,pool]==3.3.8",
+  "httpx==0.28.1",
+  "croniter==7.0.0",
+]
+
+[tool.setuptools.packages.find]
+include = ["leaseq*"]
+
+[tool.setuptools.package-data]
+leaseq = ["schema.sql", "dashboard/*.html", "dashboard/assets/*", "console/*.html", "console/assets/*"]

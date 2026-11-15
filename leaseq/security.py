@@ -4,6 +4,7 @@ The token is compared with hmac.compare_digest on SHA-256 digests of both
 sides, so the time taken depends neither on how many leading characters match
 nor on the length of the supplied value.
 """
+import asyncio
 import hashlib
 import hmac
 import os
@@ -12,6 +13,7 @@ from dataclasses import dataclass
 
 MIN_TOKEN_LENGTH = 16
 DEFAULT_MAX_BODY_BYTES = 64 * 1024
+BODY_READ_TIMEOUT_SECONDS = 10
 
 
 @dataclass(frozen=True)
@@ -19,6 +21,8 @@ class Settings:
     api_token: str
     public_read: bool
     max_body_bytes: int
+    rate_limit: int = 60000
+    public_rate_limit: int = 120
 
 
 TOKEN_HELP = ("generate one with: python -c 'import secrets; print(secrets.token_urlsafe(32))'")
@@ -34,10 +38,19 @@ def load_settings() -> Settings:
     if len(token) < MIN_TOKEN_LENGTH:
         raise RuntimeError(f"LEASEQ_API_TOKEN must be at least {MIN_TOKEN_LENGTH} characters; "
                            + TOKEN_HELP)
+    max_body = int(os.environ.get("LEASEQ_MAX_BODY_BYTES", DEFAULT_MAX_BODY_BYTES))
+    rate_limit = int(os.environ.get("LEASEQ_RATE_LIMIT", "60000"))
+    public_rate_limit = int(os.environ.get("LEASEQ_PUBLIC_RATE_LIMIT", "120"))
+    if not 1 <= max_body <= DEFAULT_MAX_BODY_BYTES:
+        raise ValueError("LEASEQ_MAX_BODY_BYTES must be between 1 and 65536")
+    if not 1 <= rate_limit <= 1000000 or not 1 <= public_rate_limit <= 1000000:
+        raise ValueError("LEASEQ_RATE_LIMIT and LEASEQ_PUBLIC_RATE_LIMIT must be between 1 and 1000000")
     return Settings(
         api_token=token,
         public_read=os.environ.get("LEASEQ_PUBLIC_READ") == "1",
-        max_body_bytes=int(os.environ.get("LEASEQ_MAX_BODY_BYTES", DEFAULT_MAX_BODY_BYTES)),
+        max_body_bytes=max_body,
+        rate_limit=rate_limit,
+        public_rate_limit=public_rate_limit,
     )
 
 
@@ -54,6 +67,17 @@ def _bearer(headers: dict) -> str | None:
     scheme, _, value = raw.partition(" ")
     value = value.strip()
     return value if scheme.lower() == "bearer" and value else None
+
+
+def authenticated(scope, settings):
+    """Share one constant-time token check between admission and auth middleware."""
+    checked = scope.get("_leaseq_token_check")
+    if checked is not None and checked[0] is settings:
+        return checked[1]
+    supplied = _bearer(dict(scope["headers"]))
+    accepted = supplied is not None and token_matches(supplied, settings.api_token)
+    scope["_leaseq_token_check"] = (settings, accepted)
+    return accepted
 
 
 # Paths that hold no job data and are served without a token. Everything else
@@ -95,8 +119,7 @@ class Auth:
         if settings is None:
             return await _reply(send, 503, b'{"detail":"starting up"}')
         if access(scope["method"], scope["path"], settings.public_read) == "token":
-            supplied = _bearer(dict(scope["headers"]))
-            if supplied is None or not token_matches(supplied, settings.api_token):
+            if not authenticated(scope, settings):
                 return await _reply(send, 401, b'{"detail":"missing or invalid bearer token"}',
                                     [(b"www-authenticate", b"Bearer")])
         await self.app(scope, receive, send)
@@ -122,16 +145,20 @@ class BodyLimit:
             if int(declared) > limit:
                 return await _reply(send, 413, _too_large(limit))
         chunks, total, more = [], 0, True
-        while more:
-            message = await receive()
-            if message["type"] == "http.disconnect":
-                return
-            body = message.get("body", b"")
-            total += len(body)
-            if total > limit:
-                return await _reply(send, 413, _too_large(limit))
-            chunks.append(body)
-            more = message.get("more_body", False)
+        try:
+            async with asyncio.timeout(BODY_READ_TIMEOUT_SECONDS):
+                while more:
+                    message = await receive()
+                    if message["type"] == "http.disconnect":
+                        return
+                    body = message.get("body", b"")
+                    total += len(body)
+                    if total > limit:
+                        return await _reply(send, 413, _too_large(limit))
+                    chunks.append(body)
+                    more = message.get("more_body", False)
+        except TimeoutError:
+            return await _reply(send, 408, b'{"detail":"request body did not arrive within 10 seconds"}')
         buffered, replayed = b"".join(chunks), False
 
         async def replay():
@@ -177,6 +204,11 @@ class SecurityHeaders:
                 headers = list(message.get("headers", []))
                 headers.append((b"x-content-type-options", b"nosniff"))
                 headers.append((b"referrer-policy", b"no-referrer"))
+                headers.append((b"permissions-policy", b"camera=(), microphone=(), geolocation=()"))
+                if not dashboard:
+                    headers.append((b"cache-control", b"no-store"))
+                if scope.get("scheme") == "https":
+                    headers.append((b"strict-transport-security", b"max-age=31536000"))
                 if dashboard:
                     headers.append((b"content-security-policy", DASHBOARD_CSP.encode()))
                     headers.append((b"x-frame-options", b"DENY"))

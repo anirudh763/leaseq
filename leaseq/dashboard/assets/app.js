@@ -6,7 +6,7 @@
      #/jobs[?state=&kind=&worker=]  Jobs: state lanes (real counts, act as filters) + job table
      #/jobs/<id>                    Job details: why it waits, lifecycle timeline, payload, result,
                                     protected Cancel / Requeue
-     #/submit                       Submit test job: word_count through the real queue and worker
+     #/submit                       Submit a JSON job through the real queue and worker
      #/connection                   Connection & API: token, status, API guide
    Old links (?job=N, ?state=, ?kind=, ?worker=) are rewritten to these routes.
 
@@ -14,9 +14,9 @@
    * Everything the API returns (kinds, payloads, results, error text, worker ids,
      idempotency keys) was written by API clients, so it is untrusted. It reaches the
      page only via textContent / createTextNode, never as HTML.
-   * The API token is kept only in this page's memory (never a cookie, localStorage,
-     sessionStorage or the URL) and sent only in the Authorization header, so there is
-     no CSRF surface. Reloading the page or "Forget token" drops it.
+   * The API token is memory-only by default; explicit opt-in uses tab-scoped
+     sessionStorage. It is sent only in the Authorization header, never a cookie,
+     localStorage or URL. Forget and any 401 clear it.
    * Job data is sensitive. "Forget token" and any 401 clear ALL of it at once: the job
      list, every cached job (payload, result, events) and the Submit result. Screens are
      rendered only from that state, so going Back to a job route afterwards cannot show
@@ -53,10 +53,22 @@ const app = {
   list: null,          // last GET /jobs body (sensitive)
   details: new Map(),  // job id -> { job, events, more } | { notfound: true } (sensitive)
   submit: null,        // { id, job, started } of the last test job (sensitive)
-  submitDraft: "",     // the person's own text; kept across routes
+  submitDraft: '{\n  "text": "to be or not to be"\n}',
+  submitText: "",
+  submitFields: { kind: "word_count", priority: "0", attempts: "3", due: "", delay: "" },
+  submitKey: null,
+  submitKeyExplicit: false,
+  scheduleKey: null,
+  scheduleConfirmed: false,
+  scheduleInFlight: false,
+  keepToken: false,
+  storageNotice: "",
   submitIntent: null,  // text and key kept together so an ambiguous response can be retried
   submitInFlight: false,
   submitTimer: null,
+  ops: { workers: null, metrics: null, schedules: null, result: null },
+  workersFetchedAt: 0,
+  bulkIds: [],
   paused: false,
   inflight: false,
   timer: null,
@@ -207,8 +219,21 @@ function clearSensitive() {
   app.details.clear();
   app.submit = null;
   app.submitDraft = "";
+  app.submitText = "";
+  app.submitFields = { kind: "word_count", priority: "0", attempts: "3", due: "", delay: "" };
+  app.submitKey = null;
+  app.submitKeyExplicit = false;
+  app.scheduleKey = null;
+  app.scheduleConfirmed = false;
+  app.scheduleInFlight = false;
   app.submitIntent = null;
   app.submitInFlight = false;
+  app.keepToken = false;
+  app.storageNotice = "";
+  app.ops = { workers: null, metrics: null, schedules: null, result: null };
+  app.workersFetchedAt = 0;
+  app.bulkIds = [];
+  try { sessionStorage.removeItem("leaseq-api-token"); } catch (e) { /* storage may be blocked */ }
   stopSubmitPoll();
   resetConfirmation();
   $("status").textContent = "";
@@ -279,9 +304,12 @@ function parseHash(hash) {
   const [path, query = ""] = raw.split("?");
   const p = new URLSearchParams(query);
   if (path === "/jobs" || path === "/" || path === "") return { name: "jobs", id: null, params: p };
-  const m = /^\/jobs\/([0-9]{1,19})$/.exec(path);
-  if (m) return { name: "job", id: m[1], params: p };
+  const m = /^\/jobs\/(?:job-)?([0-9]{1,19})$/.exec(path);
+  if (m && BigInt(m[1]) > 0n && BigInt(m[1]) <= 9223372036854775807n)
+    return { name: "job", id: BigInt(m[1]).toString(), params: p };
+  if (path.startsWith("/jobs/")) return { name: "invalidid", id: null, params: p };
   if (path === "/submit") return { name: "submit", id: null, params: p };
+  if (path === "/operations") return { name: "operations", id: null, params: p };
   if (path === "/connection") return { name: "connection", id: null, params: p };
   return { name: "notfound", id: null, params: p };
 }
@@ -343,7 +371,7 @@ function pushJobsFilters() {
   pollNow();
 }
 
-const TITLES = { jobs: "Jobs", submit: "Submit test job", connection: "Connection & API", notfound: "Not found" };
+const TITLES = { jobs: "Jobs", submit: "Submit test job", operations: "Operations", connection: "Connection & API", notfound: "Not found", invalidid: "Invalid job ID" };
 
 function screenTitle() {
   return app.route.name === "job" ? `Job ${app.route.id}` : TITLES[app.route.name];
@@ -375,13 +403,14 @@ function renderChrome() {
 function renderView(moveFocus) {
   renderChrome();
   const view = $("view");
-  const build = { jobs: viewJobs, job: viewJob, submit: viewSubmit, connection: viewConnection,
-                  notfound: viewNotFound }[app.route.name];
+  const build = { jobs: viewJobs, job: viewJob, submit: viewSubmit, operations: viewOperations, connection: viewConnection,
+                  notfound: viewNotFound, invalidid: viewInvalidId }[app.route.name];
   view.replaceChildren(...build().filter((n) => n !== null && n !== undefined && n !== ""));
   app.view = app.route.name;
   if (app.route.name === "jobs") renderJobsData();
   if (app.route.name === "job") renderJobData();
   if (app.route.name === "submit") renderSubmitResult();
+  if (app.route.name === "operations") renderOperations();
   if (moveFocus) {
     window.scrollTo(0, 0);
     focusH1();
@@ -480,7 +509,97 @@ function viewJobs() {
                                             "Idempotency key"].map((t) => el("th", { scope: "col", text: t })))),
           el("tbody", { id: "rows" }))),
       el("div", { class: "table-foot" }, el("span", { id: "shown", class: "muted" }), more)),
+    app.token ? bulkPanel() : null,
   ];
+}
+
+function bulkPanel() {
+  const action = el("select", { id: "bulk-action", "aria-label": "Bulk action" },
+    el("option", { value: "requeue", text: "Requeue dead jobs" }),
+    el("option", { value: "cancel", text: "Cancel queued or running jobs" }));
+  const button = el("button", { type: "button", class: "btn", id: "bulk-run", text: "Snapshot and review" });
+  const result = el("div", { id: "bulk-result", "aria-live": "polite" });
+  button.addEventListener("click", prepareBulk);
+  return el("section", { class: "panel", "aria-labelledby": "bulk-title" },
+    el("div", { class: "panel-body" }, el("h2", { id: "bulk-title", text: "Bulk actions" }),
+      el("p", { class: "hint" }, "The current filters are snapshotted once (up to 1,000 IDs). New matching jobs are not included."),
+      el("div", { class: "form-actions" }, action, button), result));
+}
+
+async function prepareBulk() {
+  const button = $("bulk-run");
+  if (!button || !app.token) return;
+  const action = $("bulk-action").value;
+  const filters = { state: app.filters.state, kind: app.filters.kind, worker: app.filters.worker };
+  const gen = app.authGen;
+  button.disabled = true;
+  $("bulk-result").textContent = "Reading a bounded snapshot…";
+  const ids = [];
+  const all = [];
+  let batchIndex = null;
+  let failure = null;
+  let before = null;
+  try {
+    try {
+    while (ids.length < 1000) {
+      const p = new URLSearchParams({ limit: String(Math.min(200, 1000 - ids.length)) });
+      if (before) p.set("before_id", before);
+      for (const [k, v] of Object.entries(filters)) if (v) p.set(k, v);
+      const r = await api(`/jobs?${p}`);
+      if (gen !== app.authGen) return;
+      if (r.status === 401) { handleUnauthorized(); return; }
+      if (r.status !== 200) throw new Error(`HTTP ${r.status}`);
+      ids.push(...r.body.jobs.map((j) => j.id));
+      before = r.body.next_before_id;
+      if (!before || !r.body.jobs.length) break;
+    }
+    app.bulkIds = [...new Set(ids)].slice(0, 1000);
+    if (!app.bulkIds.length) { $("bulk-result").textContent = "No jobs matched the current filters."; return; }
+    const label = action === "cancel" ? "Cancel" : "Requeue";
+    if (!window.confirm(`${label} ${app.bulkIds.length} snapshotted jobs? This runs in batches of up to 100 and may have partial outcomes.`)) {
+      $("bulk-result").textContent = `${app.bulkIds.length} IDs snapshotted; no changes made.`;
+      return;
+    }
+    for (let i = 0; i < app.bulkIds.length; i += 100) {
+      if (gen !== app.authGen || !app.token) return;
+      batchIndex = i;
+      const r = await api("/jobs/bulk", { method: "POST", body: { action, job_ids: app.bulkIds.slice(i, i + 100) } });
+      if (gen !== app.authGen) return;
+      if (r.status === 401) { handleUnauthorized(); return; }
+      if (r.status !== 200) {
+        all.push(...app.bulkIds.slice(i, i + 100).map((id) => ({ id, status: "uncertain" })));
+        all.push(...app.bulkIds.slice(i + 100).map((id) => ({ id, status: "not_attempted" })));
+        failure = `Bulk request failed (HTTP ${r.status}); the current batch is uncertain.`;
+        batchIndex = null;
+        break;
+      }
+      all.push(...r.body.results);
+      batchIndex = null;
+      if (r.body.remaining) {
+        all.push(...app.bulkIds.slice(i + 100).map((id) => ({ id, status: "not_attempted" })));
+        break;
+      }
+    }
+    } catch (e) {
+      if (batchIndex !== null) {
+        all.push(...app.bulkIds.slice(batchIndex, batchIndex + 100).map((id) => ({ id, status: "uncertain" })));
+        all.push(...app.bulkIds.slice(batchIndex + 100).map((id) => ({ id, status: "not_attempted" })));
+        failure = `Bulk request failed: ${e.message}; the current batch is uncertain and was not retried.`;
+      } else failure = `Snapshot request failed: ${e.message}.`;
+    }
+    if (gen === app.authGen) {
+      if (all.length) {
+        const counts = {};
+        for (const row of all) counts[row.status] = (counts[row.status] || 0) + 1;
+        const summary = `${all.length} outcomes: ${Object.entries(counts).map(([k, v]) => `${v} ${k}`).join(", ")}.`;
+        $("bulk-result").textContent = failure ? `${summary} ${failure}` : summary;
+        announce(`Bulk ${action} stopped with ${all.length} outcomes${failure ? "; no automatic retry was made" : ""}.`);
+        pollNow();
+      } else if (failure) $("bulk-result").textContent = failure;
+    }
+  } finally {
+    if (gen === app.authGen && $("bulk-run")) $("bulk-run").disabled = false;
+  }
 }
 
 function renderLanes() {
@@ -893,105 +1012,131 @@ function confirmAction(kind, job, trigger) {
 /* ---------- Submit test job screen ---------- */
 
 function viewSubmit() {
-  const text = el("textarea", { id: "wc-text", name: "text", spellcheck: "false",
-                                "aria-describedby": "wc-hint wc-count wc-error" });
-  text.value = app.submitDraft;
+  if (!app.submitKey) app.submitKey = `ui-${crypto.randomUUID()}`;
+  const kind = el("input", { class: "input", id: "job-kind", maxlength: 100, required: true });
+  kind.value = app.submitFields.kind;
+  const payload = el("textarea", { id: "job-payload", spellcheck: "false", "aria-describedby": "payload-hint payload-size" });
+  payload.value = app.submitDraft;
+  app.submitDraft = payload.value;
+  const word = el("textarea", { id: "wc-text", spellcheck: "false", "aria-describedby": "wc-hint wc-count wc-error" });
+  word.value = app.submitText;
   const count = el("p", { class: "hint", id: "wc-count" });
-  const setCount = () => { count.textContent = `${text.value.length.toLocaleString("en-US")} of 10,000 characters`; };
+  const setCount = () => { count.textContent = `${word.value.length.toLocaleString("en-US")} of 10,000 characters`; };
   setCount();
-  text.addEventListener("input", () => {
-    app.submitDraft = text.value;
-    if (app.submitIntent && app.submitIntent.text !== text.value) app.submitIntent = null;
-    setCount();
-  });
-  const sample = el("button", { type: "button", class: "btn", id: "load-text", text: "Load sample text" });
+  const key = el("input", { class: "input mono", id: "job-key", maxlength: 200, required: true }); key.value = app.submitKey;
+  const priority = el("input", { class: "input", id: "job-priority", type: "number", min: -100, max: 100, step: 1 }); priority.value = app.submitFields.priority;
+  const attempts = el("input", { class: "input", id: "job-attempts", type: "number", min: 1, max: 100, step: 1 }); attempts.value = app.submitFields.attempts;
+  const due = el("input", { class: "input", id: "job-due", placeholder: "2026-11-14T15:30:00Z" }); due.value = app.submitFields.due;
+  const delay = el("input", { class: "input", id: "job-delay", type: "number", min: 0, max: 31536000, step: "any" }); delay.value = app.submitFields.delay;
+  const size = el("p", { class: "hint", id: "payload-size" });
+  const update = () => {
+    app.submitDraft = payload.value;
+    app.submitFields = { kind: kind.value, priority: priority.value, attempts: attempts.value, due: due.value, delay: delay.value };
+    let p; try { p = kind.value === "word_count" ? { text: word.value } : JSON.parse(payload.value); } catch { p = payload.value; }
+    const body = {kind: kind.value, payload: p, max_attempts: Number(attempts.value), priority: Number(priority.value)};
+    if (due.value.trim()) body.run_after = due.value.trim();
+    if (delay.value !== "") body.delay_seconds = Number(delay.value);
+    const content = JSON.stringify(body);
+    if (app.submitIntent && app.submitIntent.content !== content) {
+      app.submitIntent = null;
+      if (!app.submitKeyExplicit) { app.submitKey = `ui-${crypto.randomUUID()}`; key.value = app.submitKey; }
+    }
+    size.textContent = `${new TextEncoder().encode(content).length.toLocaleString()} of 65,536 request-body bytes`;
+  };
+  for (const c of [kind, payload, priority, attempts, due, delay]) c.addEventListener("input", update);
+  word.addEventListener("input", () => { app.submitText = word.value; setCount(); update(); });
+  key.addEventListener("input", () => { app.submitKey = key.value; app.submitKeyExplicit = true; app.submitIntent = null; });
+  const wordFields = el("div", { id: "word-fields" },
+    el("label", { for: "wc-text", text: "Text to count" }),
+    el("p", { class: "hint", id: "wc-hint", text: "The word_count handler accepts up to 10,000 characters. Longer text remains editable and cannot be submitted." }),
+    word, count, el("p", { class: "hint" }, "Sample text: Jane Austen, ", el("cite", { text: "Pride and Prejudice" }), ", chapter 1; see ", el("a", { href: "assets/sample/SOURCE.txt", text: "source and licence note" }), "."));
+  const jsonFields = el("div", { id: "json-fields" },
+    el("label", { for: "job-payload", text: "JSON object payload" }), payload,
+    el("p", { class: "hint", id: "payload-hint", text: "No silent truncation. Encoded request bodies are limited to 65,536 bytes." }), size);
+  const mode = () => {
+    wordFields.hidden = kind.value !== "word_count"; jsonFields.hidden = kind.value === "word_count";
+    sample.hidden = kind.value !== "word_count"; clear.hidden = kind.value === "word_count"; clearWord.hidden = kind.value !== "word_count";
+    update();
+  };
+  kind.addEventListener("input", mode);
+  const preset = (label, k, p) => { const b = el("button", { type: "button", class: "btn", text: label }); b.addEventListener("click", () => { kind.value = k; if (k === "word_count") { word.value = p.text; app.submitText = word.value; setCount(); } else payload.value = JSON.stringify(p, null, 2); mode(); }); return b; };
+  const generate = el("button", { type: "button", class: "btn", text: "Generate key" });
+  generate.addEventListener("click", () => { app.submitKey = `ui-${crypto.randomUUID()}`; app.submitKeyExplicit = false; key.value = app.submitKey; app.submitIntent = null; });
+  const sample = el("button", { type: "button", class: "btn", text: "Load sample text" });
   sample.addEventListener("click", async () => {
-    const gen = app.authGen;
     try {
       const r = await fetch(SAMPLE_TEXT, { credentials: "omit" });
       if (!r.ok) throw new Error(String(r.status));
-      const value = await r.text();
-      if (gen !== app.authGen || $("wc-text") !== text) return;
-      text.value = value;
-      app.submitDraft = text.value;
-      if (app.submitIntent && app.submitIntent.text !== text.value) app.submitIntent = null;
-      setCount();
-      text.removeAttribute("aria-invalid");
-      $("wc-error").textContent = "";
+      kind.value = "word_count"; word.value = await r.text(); app.submitText = word.value; setCount(); mode();
       announce("Sample text loaded: Pride and Prejudice, chapter 1.");
-    } catch (e) {
-      if (gen !== app.authGen || $("wc-text") !== text) return;
-      $("wc-error").textContent = "The sample text could not be loaded from this server.";
-    }
+    } catch { $("wc-error").textContent = "The sample text could not be loaded from this server."; }
   });
-  const clear = el("button", { type: "button", class: "btn", text: "Clear text" });
-  clear.addEventListener("click", () => { text.value = ""; app.submitDraft = ""; app.submitIntent = null; setCount(); text.focus(); });
+  const clear = el("button", { type: "button", class: "btn", text: "Clear payload" });
+  clear.addEventListener("click", () => { payload.value = ""; update(); payload.focus(); });
+  const clearWord = el("button", { type: "button", class: "btn", text: "Clear text" });
+  clearWord.addEventListener("click", () => { word.value = ""; app.submitText = ""; setCount(); update(); word.focus(); });
   const form = el("form", { id: "submit-form", class: "form-stack", novalidate: true },
-    el("label", { for: "wc-text", text: "Text to count" }),
-    el("p", { class: "hint", id: "wc-hint", text: "The handler accepts up to 10,000 characters. Longer text stays " +
-      "here for editing and cannot be submitted. Submitted text is stored as the job's payload on this server." }),
-    text, count,
-    el("p", { class: "field-error", id: "wc-error" }),
-    el("p", { class: "hint" }, "Sample text: Jane Austen, ", el("cite", { text: "Pride and Prejudice" }),
-       ", chapter 1, from Project Gutenberg eBook #1342. The novel is in the public domain; see ",
-       el("a", { href: "assets/sample/SOURCE.txt", text: "source and licence note" }), "."),
-    el("div", { class: "form-actions" },
-       el("button", { type: "submit", class: "btn primary", id: "submit-job", text: "Submit job",
-                      disabled: app.submitInFlight }), sample, clear));
-  form.addEventListener("submit", submitJob);
-  return [
-    h1("Submit test job"),
-    el("p", { class: "lede", text: "Submit text for word and line counts. The server queues the task; a worker processes it and returns its recorded result." }),
-    app.token ? null : (connectionNotice("Submitting needs the API token.") ||
-      el("section", { class: "notice", "aria-labelledby": "notice-title" },
-        el("h2", { id: "notice-title", text: "Token needed to submit" }),
-        el("p", {}, "Reading may be open on this server, but submitting always needs the API token. ",
-           el("a", { href: "#/connection", text: "Enter it on Connection & API" })))),
-    el("section", { class: "panel", "aria-label": "word_count job" },
-      el("div", { class: "panel-body" }, form,
-         el("div", { id: "submit-result", class: "result-box", "aria-live": "polite" }))),
-  ];
+    el("label", { for: "job-kind", text: "Job kind" }), kind,
+    el("p", { class: "hint", id: "kind-observed", text: app.ops.workers ? `Observed worker kinds: ${[...new Set(app.ops.workers.workers.flatMap((w) => w.kinds || []))].join(", ") || "none reported"}. A kind without an observed handler may remain queued.` : "Worker registry observations have not loaded. A kind without a matching handler may remain queued." }),
+    el("div", { class: "form-actions" }, preset("word_count", "word_count", { text: "" }), preset("sleep", "sleep", { ms: 1000 }), sample, clear, clearWord),
+    wordFields, jsonFields,
+    el("label", { for: "job-priority", text: "Priority (-100 to 100)" }), priority,
+    el("label", { for: "job-attempts", text: "Maximum attempts (1 to 100)" }), attempts,
+    el("label", { for: "job-due", text: "UTC due time (ISO 8601 ending in Z, optional)" }), due,
+    el("label", { for: "job-delay", text: "Delay seconds (optional)" }), delay,
+    el("label", { for: "job-key", text: "Idempotency key" }), el("div", { class: "form-actions" }, key, generate),
+    el("p", { class: "hint", text: "Reuse the same key when retrying an ambiguous request." }),
+    el("p", { class: "field-error", id: "submit-error", "aria-live": "polite" }, el("span", { id: "wc-error" })),
+    el("div", { class: "form-actions" }, el("button", { type: "submit", class: "btn primary", id: "submit-job", text: "Submit job", disabled: app.submitInFlight })));
+  form.addEventListener("submit", submitJob); mode();
+  return [h1("Submit test job"), el("p", { class: "lede", text: "Submit jobs to the local LeaseQ API. The word_count and sleep presets use their matching worker handlers; generic payloads are queued as JSON." }),
+    app.token ? null : (connectionNotice("Submitting needs the API token.") || el("p", {}, "Submitting requires a token; enter it on Connection & API.")),
+    el("section", { class: "panel", "aria-label": "Job composer" }, el("div", { class: "panel-body" }, form, el("div", { id: "submit-result", class: "result-box", "aria-live": "polite" })))];
 }
 
 async function submitJob(e) {
   e.preventDefault();
   if (app.submitInFlight) return;
-  const text = $("wc-text");
-  const err = $("wc-error");
-  const fail = (msg) => { err.textContent = msg; text.setAttribute("aria-invalid", "true"); text.focus(); };
-  const v = text.value;
-  if (v.trim() === "") return fail("Enter some text to count.");
-  if (v.length > WC_MAX) return fail(`The text has ${v.length.toLocaleString("en-US")} characters; the limit is 10,000.`);
-  if (!app.token) return fail("Enter the API token on Connection & API first: submitting needs it.");
-  text.removeAttribute("aria-invalid");
-  err.textContent = "";
-  if (!app.submitIntent || app.submitIntent.text !== v) {
-    app.submitIntent = { text: v, key: `ui-word-count-${crypto.randomUUID()}` };
-  }
-  const intent = app.submitIntent;
-  const gen = app.authGen;
-  app.submitInFlight = true;
-  $("submit-job").disabled = true;
+  const form = $("submit-form");
+  const fail = (msg, id = $("job-kind").value === "word_count" ? "wc-text" : "job-payload") => {
+    $("wc-error").textContent = msg;
+    $(id).setAttribute("aria-invalid", "true"); $(id).focus();
+  };
+  const kind = $("job-kind").value.trim(); let payload;
+  if (kind === "word_count") {
+    const text = $("wc-text").value;
+    if (!text.trim()) return fail("Enter some text to count.");
+    if (text.length > WC_MAX) return fail(`The text has ${text.length.toLocaleString("en-US")} characters; the limit is 10,000.`);
+    payload = { text };
+  } else try { payload = JSON.parse($("job-payload").value); } catch { return fail("Payload must be valid JSON."); }
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return fail("Payload must be a JSON object.");
+  if (!KIND_RE.test(kind)) return fail("Enter a valid job kind.", "job-kind");
+  const priority = Number($("job-priority").value), max_attempts = Number($("job-attempts").value);
+  if (!Number.isInteger(priority) || priority < -100 || priority > 100) return fail("Priority must be from -100 to 100.", "job-priority");
+  if (!Number.isInteger(max_attempts) || max_attempts < 1 || max_attempts > 100) return fail("Attempts must be from 1 to 100.", "job-attempts");
+  const due = $("job-due").value.trim(), delay = $("job-delay").value;
+  if (due && delay !== "") return fail("Choose a UTC due time or delay, not both.", "job-due");
+  if (due && (!/^\d{4}-\d\d-\d\dT\d\d:\d\d(?::\d\d(?:\.\d+)?)?Z$/.test(due) || !Number.isFinite(Date.parse(due)))) return fail("Use a valid timezone-aware UTC ISO time ending in Z.", "job-due");
+  if (delay !== "" && (!Number.isFinite(Number(delay)) || Number(delay) < 0 || Number(delay) > 31536000)) return fail("Delay must be 0 to 31,536,000 seconds.", "job-delay");
+  if (!app.token) return fail("Enter the API token on Connection & API first.", "job-kind");
+  const body = { kind, payload, max_attempts, priority }; if (due) body.run_after = due; if (delay !== "") body.delay_seconds = Number(delay);
+  const serialized = JSON.stringify(body);
+  if (new TextEncoder().encode(serialized).length > 65536) return fail("Request exceeds the 65,536-byte API limit; no content was removed.");
+  const idem = $("job-key").value.trim(); if (!idem || idem.length > 200) return fail("Enter an idempotency key up to 200 characters.", "job-key");
+  const signature = `${idem}\n${serialized}`; if (!app.submitIntent || app.submitIntent.signature !== signature) app.submitIntent = { signature, content: serialized, key: idem };
+  const gen = app.authGen; app.submitInFlight = true; $("submit-job").disabled = true;
   let r;
-  try {
-    r = await api("/jobs", { method: "POST", headers: { "Idempotency-Key": intent.key },
-                             body: { kind: "word_count", payload: { text: intent.text }, max_attempts: 3 } });
-  } catch (x) {
-    if (gen !== app.authGen) return;
-    return fail("Cannot reach the API. Check Connection & API and try again.");
-  } finally {
-    if (gen === app.authGen) {
-      app.submitInFlight = false;
-      const button = $("submit-job");
-      if (button) button.disabled = false;
-    }
-  }
-  if (gen !== app.authGen) return;
+  try { r = await api("/jobs", { method: "POST", headers: { "Idempotency-Key": app.submitIntent.key }, body }); }
+  catch { if (gen === app.authGen) $("wc-error").textContent = "Cannot reach the API. Retry with the same idempotency key."; }
+  finally { if (gen === app.authGen) { app.submitInFlight = false; const button = form.querySelector("#submit-job"); if (button) button.disabled = false; } }
+  if (!r || gen !== app.authGen) return;
   if (r.status === 401) { handleUnauthorized(); return; }
-  if (r.status !== 201 && r.status !== 200) return fail(`The API refused the job (HTTP ${r.status}). ${detailText(r.body)}`);
+  if (r.status !== 201 && r.status !== 200) { $("wc-error").textContent = `The API refused the job (HTTP ${r.status}). ${detailText(r.body)}`; return; }
   app.submit = { id: String(r.body.id), job: r.body, started: Date.now() };
-  renderSubmitResult();
-  startSubmitPoll();
+  if (form !== $("submit-form")) { startSubmitPoll(); return; }
+  $("job-payload").removeAttribute("aria-invalid"); $("wc-text").removeAttribute("aria-invalid");
+  $("wc-error").textContent = "";
+  renderSubmitResult(); startSubmitPoll();
 }
 
 function startSubmitPoll() {
@@ -1024,7 +1169,7 @@ function renderSubmitResult() {
   const job = s.job;
   const link = el("a", { href: `#/jobs/${s.id}`, text: `Open job ${s.id}` });
   const waited = Math.round((Date.now() - s.started) / 1000);
-  if (job.state === "done" && job.result) {
+  if (job.state === "done" && job.result && job.kind === "word_count" && Number.isInteger(job.result.words) && Number.isInteger(job.result.lines)) {
     box.replaceChildren(
       el("h2", { text: `Job ${s.id} is done` }),
       el("div", { class: "result-figures" },
@@ -1033,6 +1178,10 @@ function renderSubmitResult() {
       el("p", { class: "sr-only", text: `${job.result.words} words, ${job.result.lines} lines.` }),
       el("p", {}, `Counted by worker `, el("span", { class: "mono", text: job.leased_by || "" }),
          ` on attempt ${job.attempts}. `, link));
+  } else if (job.state === "done") {
+    box.replaceChildren(el("h2", { text: `Job ${s.id} is done` }),
+      el("pre", { class: "json", "aria-label": "Recorded job result", text: JSON.stringify(job.result, null, 2) }),
+      el("p", {}, "Result recorded by worker ", el("span", { class: "mono", text: job.leased_by || "unknown" }), ". ", link));
   } else if (job.state === "dead") {
     box.replaceChildren(el("h2", { text: `Job ${s.id} failed` }),
       el("p", {}, "The handler could not finish it. The error is in the job's lifecycle. ", link));
@@ -1062,18 +1211,27 @@ function viewConnection() {
   if (app.token) {
     const forget = el("button", { type: "button", class: "btn", text: "Forget token" });
     forget.addEventListener("click", forgetToken);
-    tokenPart = [el("p", { id: "token-ok" }, "A token is in this page's memory. It is sent only in the Authorization " +
-                    "header and never stored; reloading the page forgets it. ", el("a", { href: app.lastJobsHash, id: "go-jobs", text: "Go to Jobs" })),
+    tokenPart = [el("p", { id: "token-ok" }, app.keepToken
+                    ? "The token is stored in sessionStorage for this tab and sent only in the Authorization header. Forget token or a 401 clears it. "
+                    : "The token is in this page's memory only and is sent only in the Authorization header; reloading forgets it. ",
+                    el("a", { href: app.lastJobsHash, id: "go-jobs", text: "Go to Jobs" })),
+                 app.storageNotice ? el("p", { class: "field-error", text: app.storageNotice }) : null,
                  el("div", { class: "form-actions" }, forget)];
   } else {
     const input = el("input", { class: "input", id: "token-input", type: "password", autocomplete: "off",
                                 spellcheck: "false", "aria-describedby": "token-hint token-error", required: true });
+    const keep = el("input", { id: "keep-token", type: "checkbox" });
+    keep.checked = app.keepToken;
+    keep.addEventListener("change", () => { app.keepToken = keep.checked; });
     const form = el("form", { id: "token-form", class: "form-stack", novalidate: true },
       el("label", { for: "token-input", text: "API token" }),
       el("p", { class: "hint", id: "token-hint" }, "The value of ", el("code", { text: "LEASEQ_API_TOKEN" }),
          " on the server (", el("code", { text: "scripts/up.sh" }), " writes it to ", el("code", { text: ".env" }),
          "). Kept in this page's memory only."),
       input,
+      el("label", { class: "check-row", for: "keep-token" }, keep, " Keep token until this tab closes"),
+      el("p", { class: "hint", text: "Opt-in session storage persists on this shared device until the tab closes. Anyone with same-origin script access can read it. Forget token and 401 clear it." }),
+      app.storageNotice ? el("p", { class: "field-error", text: app.storageNotice }) : null,
       el("p", { class: "field-error", id: "token-error" }),
       el("div", { class: "form-actions" }, el("button", { type: "submit", class: "btn primary", text: "Use token" })));
     form.addEventListener("submit", submitToken);
@@ -1088,6 +1246,11 @@ function viewConnection() {
     ["POST", "/jobs/{id}/fail", "Worker reports an error; retry with backoff or dead", "yes"],
     ["POST", "/jobs/{id}/requeue", "Operator: dead job back to the queue", "yes"],
     ["POST", "/jobs/{id}/cancel", "Operator: mark dead and revoke its lease; does not stop previously claimed work", "yes"],
+    ["POST", "/jobs/bulk", "Operator: bounded requeue or cancel batches", "yes"],
+    ["GET", "/workers", "Observed worker reports and actual heartbeats", "yes"],
+    ["GET", "/operations/metrics", "Sampled 15-minute queue events and wait percentiles", "yes"],
+    ["GET/POST", "/schedules", "List or create durable UTC cron schedules", "yes"],
+    ["PATCH", "/schedules/{id}", "Enable or disable a durable schedule", "yes"],
     ["GET", "/jobs", "List jobs, newest first, with state counts", "unless public read"],
     ["GET", "/jobs/{id}", "One job", "unless public read"],
     ["GET", "/jobs/{id}/events", "A job's audit log", "unless public read"],
@@ -1157,8 +1320,14 @@ async function submitToken(e) {
   if (r.status === 401) return fail("The server rejected this token.");
   if (r.status !== 200) return fail(`Unexpected answer from the server (HTTP ${r.status}).`);
   input.value = "";
-  app.token = value;
   clearSensitive();          // nothing read without the token survives into the new session
+  app.token = value;
+  app.keepToken = Boolean($("keep-token") && $("keep-token").checked);
+  app.storageNotice = "";
+  try {
+    if (app.keepToken) sessionStorage.setItem("leaseq-api-token", value);
+    else sessionStorage.removeItem("leaseq-api-token");
+  } catch (e) { app.storageNotice = "This browser blocked session storage. The token is active in memory only."; app.keepToken = false; }
   setConn("token");
   hideBanner();
   renderView(false);
@@ -1172,6 +1341,159 @@ function viewNotFound() {
   return [h1("Not found"),
           el("p", { class: "lede", text: "There is no screen at this address." }),
           el("p", {}, el("a", { href: "#/jobs", text: "Go to Jobs" }))];
+}
+
+function viewInvalidId() {
+  return [h1("Invalid job ID"), el("p", { class: "lede", text: "Job IDs must be positive 64-bit integers. Check the link and try again." }),
+    el("p", {}, el("a", { href: "#/jobs", text: "Go to Jobs" }))];
+}
+
+function viewOperations() {
+  const name = el("input", { class: "input", id: "schedule-name", maxlength: 200, required: true });
+  const kind = el("input", { class: "input", id: "schedule-kind", maxlength: 100, required: true });
+  const cron = el("input", { class: "input", id: "schedule-cron", placeholder: "*/5 * * * *", required: true, "aria-describedby": "cron-hint" });
+  const payload = el("textarea", { id: "schedule-payload", "aria-describedby": "schedule-payload-hint" }); payload.value = "{}";
+  if (!app.scheduleKey) app.scheduleKey = `ui-schedule-${crypto.randomUUID()}`;
+  const key = el("input", { class: "input mono", id: "schedule-key", maxlength: 200, required: true }); key.value = app.scheduleKey;
+  key.addEventListener("input", () => { app.scheduleKey = key.value; });
+  const priority = el("input", { class: "input", id: "schedule-priority", type: "number", min: -100, max: 100, value: "0" });
+  const attempts = el("input", { class: "input", id: "schedule-attempts", type: "number", min: 1, max: 100, value: "5" });
+  const error = el("p", { class: "field-error", id: "schedule-error", "aria-live": "polite" });
+  const form = el("form", { class: "form-stack", id: "schedule-form", novalidate: true },
+    el("label", { for: "schedule-name", text: "Schedule name" }), name,
+    el("label", { for: "schedule-kind", text: "Job kind" }), kind,
+    el("label", { for: "schedule-payload", text: "JSON object payload" }), payload,
+    el("p", { class: "hint", id: "schedule-payload-hint", text: "Enter a JSON object to use as the payload for each scheduled job." }),
+    el("label", { for: "schedule-cron", text: "Five-field UTC cron" }), cron,
+    el("p", { class: "hint", id: "cron-hint", text: "Numeric minute hour day month weekday fields only. UTC; no seconds, names, random or year syntax." }),
+    el("label", { for: "schedule-priority", text: "Priority (-100 to 100)" }), priority,
+    el("label", { for: "schedule-attempts", text: "Maximum attempts" }), attempts,
+    el("label", { for: "schedule-key", text: "Idempotency key (reuse on ambiguous retry)" }), key,
+    error, el("button", { class: "btn primary", id: "schedule-submit", type: "submit",
+      text: app.scheduleConfirmed ? "Start new schedule" : "Create schedule", disabled: app.scheduleInFlight }));
+  form.addEventListener("submit", createSchedule);
+  return [h1("Operations"), el("p", { class: "lede", text: "Observed workers, bounded recent queue measurements, and durable UTC schedules from this API." }),
+    el("p", { class: "hint" }, "LeaseQ core is MIT licensed and local. Paid tiers at $49–$149/month are proposed only; nothing here is purchasable."),
+    el("p", { class: "field-error", id: "ops-error", role: "status", "aria-live": "polite" }),
+    app.token ? null : connectionNotice("Operator observations and schedule changes need an API token."),
+    el("section", { class: "panel", "aria-labelledby": "workers-title" }, el("div", { class: "panel-body" }, el("h2", { id: "workers-title", text: "Observed workers" }), el("p", { class: "hint" }, "Seen reports and actual lease heartbeats are distinct; neither proves a process is alive."), el("div", { id: "workers-data" }, el("p", { class: "muted", text: "Loading worker observations…" })))),
+    el("section", { class: "panel", "aria-labelledby": "metrics-title" }, el("div", { class: "panel-body" }, el("h2", { id: "metrics-title", text: "Recent queue measurements" }), el("div", { id: "metrics-data" }, el("p", { class: "muted", text: "Loading sampled metrics…" })))),
+    app.token ? el("section", { class: "panel", "aria-labelledby": "schedules-title" }, el("div", { class: "panel-head" }, el("h2", { id: "schedules-title", text: "Durable schedules" })), el("div", { class: "panel-body" }, el("div", { id: "schedules-data" }, el("p", { class: "muted", text: "Loading schedules…" })), form)) : null];
+}
+
+function renderOperations() {
+  if (!$("workers-data")) return;
+  const focusedSchedule = document.activeElement && document.activeElement.dataset
+    ? document.activeElement.dataset.schedule : null;
+  $("ops-error").textContent = app.ops.error || "";
+  const workers = app.ops.workers;
+  $("workers-data").replaceChildren(...(!app.token ? [el("p", { class: "muted", text: "Connect with an API token to read worker observations." })] : !workers ? [el("p", { class: "muted", text: app.ops.error || "Loading worker observations…" })] : workers.workers.length ? [
+    el("p", { class: "hint" }, `Observed as of ${fmtAbs(workers.as_of)}${workers.truncated ? "; list truncated" : ""}.`),
+    el("ul", {}, ...workers.workers.map((w) => {
+      const seenAge = new Date(workers.as_of).getTime() - new Date(w.last_seen_at).getTime();
+      const recent = seenAge >= 0 && seenAge <= 30000;
+      return el("li", {}, el("strong", { text: w.worker_id }), ` — ${recent ? "seen recently" : "no recent report"} (last report ${fmtAbs(w.last_seen_at)}); active leases ${w.active_jobs}; last actual heartbeat ${w.last_heartbeat_at ? fmtAbs(w.last_heartbeat_at) : "not observed"}; kinds ${(w.kinds || []).join(", ") || "none reported"}`);
+    }))
+  ] : [el("p", { class: "muted", text: "No worker reports have been observed." })]));
+  const m = app.ops.metrics;
+  $("metrics-data").replaceChildren(...(!app.token ? [el("p", { class: "muted", text: "Connect with an API token to read sampled metrics." })] : !m ? [el("p", { class: "muted", text: app.ops.error || "Loading sampled metrics…" })] : [
+    el("p", { class: "hint" }, `15-minute window as of ${fmtAbs(m.as_of)}; sample cap ${m.sample_limit}${m.truncated ? " (truncated)" : ""}. No capacity estimate is implied.`),
+    el("p", {}, `First-claim wait: p50 ${m.wait_ms.p50 === null ? "unavailable" : `${m.wait_ms.p50} ms`}, p95 ${m.wait_ms.p95 === null ? "unavailable" : `${m.wait_ms.p95} ms`} from ${m.wait_ms.samples} known samples.`),
+    el("ul", {}, ...m.buckets.map((b) => el("li", {}, `${new Date(b.start).toISOString()} — ${b.completed} completed, ${b.failed} failed`)))
+  ]));
+  const s = app.ops.schedules;
+  if ($("schedules-data")) $("schedules-data").replaceChildren(...(!s ? [el("p", { class: "muted", text: app.ops.error || "Loading schedules…" })] : s.schedules.length ? [
+    el("p", { class: "hint" }, `${s.schedules.length} schedules${s.truncated ? "; list truncated" : ""}. Execution requires a running API polling worker.`),
+    el("ul", {}, ...s.schedules.map((x) => {
+      const b = el("button", { type: "button", class: "btn", text: x.enabled ? "Disable" : "Enable", "data-schedule": x.id });
+      b.addEventListener("click", () => setScheduleEnabled(x.id, !x.enabled));
+      return el("li", {}, el("strong", { text: x.name }), ` — ${x.kind}; ${x.cron} UTC; next ${fmtAbs(x.next_run_at)}; ${x.enabled ? "enabled" : "disabled"}. `, b);
+    }))
+  ] : [el("p", { class: "muted", text: "No durable schedules yet." })]));
+  if (focusedSchedule) {
+    const again = document.querySelector(`#schedules-data [data-schedule="${CSS.escape(focusedSchedule)}"]`);
+    if (again) again.focus();
+  }
+}
+
+async function refreshOperations() {
+  if (!app.token) return;
+  const gen = app.authGen;
+  const paths = ["/workers?limit=100", "/operations/metrics", "/schedules?limit=100"];
+  const answers = await Promise.all(paths.map((p) => api(p)));
+  if (gen !== app.authGen) return;
+  if (answers.some((r) => r.status === 401)) { handleUnauthorized(); return; }
+  const bad = answers.find((r) => r.status !== 200);
+  if (bad) app.ops.error = `Operations request failed (HTTP ${bad.status}).`;
+  else { app.ops.error = ""; [app.ops.workers, app.ops.metrics, app.ops.schedules] = answers.map((r) => r.body); app.workersFetchedAt = Date.now(); }
+  if (app.route.name === "operations") renderOperations();
+}
+
+async function refreshWorkerObservations() {
+  if (!app.token || Date.now() - app.workersFetchedAt < 5000) return;
+  const gen = app.authGen;
+  const r = await api("/workers?limit=100");
+  if (gen !== app.authGen) return;
+  if (r.status === 401) { handleUnauthorized(); return; }
+  if (r.status !== 200) { app.ops.error = `Worker observations failed (HTTP ${r.status}).`; return; }
+  app.ops.workers = r.body;
+  app.workersFetchedAt = Date.now();
+  const kinds = [...new Set(r.body.workers.flatMap((w) => w.kinds || []))];
+  const note = $("kind-observed");
+  if (note) note.textContent = `Observed worker kinds: ${kinds.join(", ") || "none reported"}. A kind without an observed handler may remain queued.`;
+}
+
+async function createSchedule(e) {
+  e.preventDefault();
+  const error = $("schedule-error"); error.textContent = "";
+  if (app.scheduleInFlight) return;
+  if (app.scheduleConfirmed) {
+    app.scheduleKey = `ui-schedule-${crypto.randomUUID()}`;
+    app.scheduleConfirmed = false;
+    $("schedule-key").value = app.scheduleKey;
+    $("schedule-submit").textContent = "Create schedule";
+    error.textContent = "A fresh idempotency key is ready. Review the schedule details and submit again.";
+    return;
+  }
+  let payload; try { payload = JSON.parse($("schedule-payload").value); } catch { error.textContent = "Payload must be valid JSON."; return; }
+  const cron = $("schedule-cron").value.trim();
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) { error.textContent = "Payload must be a JSON object."; return; }
+  if (!/^\s*[\d*,\/-]+(?:\s+[\d*,\/-]+){4}\s*$/.test(cron)) { error.textContent = "Enter five numeric UTC cron fields."; $("schedule-cron").focus(); return; }
+  const body = { name: $("schedule-name").value, kind: $("schedule-kind").value, payload, cron, priority: Number($("schedule-priority").value), max_attempts: Number($("schedule-attempts").value) };
+  if (new TextEncoder().encode(JSON.stringify(body)).length > 65536) { error.textContent = "The schedule request exceeds 65,536 bytes."; return; }
+  const gen = app.authGen;
+  app.scheduleInFlight = true;
+  $("schedule-submit").disabled = true;
+  try {
+    const r = await api("/schedules", { method: "POST", headers: { "Idempotency-Key": $("schedule-key").value.trim() }, body });
+    if (gen !== app.authGen) return;
+    if (r.status === 401) { handleUnauthorized(); return; }
+    if (r.status !== 200 && r.status !== 201) { error.textContent = `Schedule rejected (HTTP ${r.status}). ${detailText(r.body)}`; return; }
+    app.scheduleConfirmed = true;
+    $("schedule-submit").textContent = "Start new schedule";
+    error.textContent = r.status === 201
+      ? `Schedule created: ${r.body.name} (ID ${r.body.id}).`
+      : `Existing schedule returned: ${r.body.name} (ID ${r.body.id}).`;
+    app.ops.schedules = null; await refreshOperations();
+  } catch { if (gen === app.authGen) error.textContent = "Could not reach the API; retry with the same idempotency key."; }
+  finally {
+    if (gen === app.authGen) {
+      app.scheduleInFlight = false;
+      const button = $("schedule-submit");
+      if (button) button.disabled = false;
+    }
+  }
+}
+
+async function setScheduleEnabled(id, enabled) {
+  const gen = app.authGen;
+  try {
+    const r = await api(`/schedules/${id}`, { method: "PATCH", body: { enabled } });
+    if (gen !== app.authGen) return;
+    if (r.status === 401) { handleUnauthorized(); return; }
+    if (r.status !== 200) { showBanner(`Schedule update failed (HTTP ${r.status}).`, false); return; }
+    await refreshOperations();
+  } catch { if (gen === app.authGen) showBanner("Could not reach the API while updating the schedule.", false); }
 }
 
 /* ---------- polling ---------- */
@@ -1250,6 +1572,8 @@ async function refresh() {
     const r = app.route;
     if (r.name === "jobs") await refreshJobs();
     else if (r.name === "job") await refreshJob(r.id);
+    else if (r.name === "operations") await refreshOperations();
+    else if (r.name === "submit") { await refreshWorkerObservations(); await probe(); }
     else await probe();
   } catch (e) {
     if (gen !== app.authGen || key !== app.routeKey) return;
@@ -1359,7 +1683,9 @@ function init() {
   renderThemeButtons();
   for (const b of document.querySelectorAll("[data-theme-toggle]")) b.addEventListener("click", toggleTheme);
   $("forget-token").addEventListener("click", forgetToken);
-  setConn("unknown");
+  try { app.token = sessionStorage.getItem("leaseq-api-token") || null; app.keepToken = Boolean(app.token); }
+  catch { app.token = null; app.storageNotice = "This browser blocks session storage; tokens remain in memory only."; }
+  setConn(app.token ? "token" : "unknown");
   window.addEventListener("hashchange", onLocationChange);
   window.addEventListener("popstate", onLocationChange);
   document.addEventListener("visibilitychange", onVisibilityChange);

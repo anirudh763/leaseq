@@ -45,9 +45,9 @@ SABOTAGE = [
                                 "app.add_middleware(security.Auth)\napp.add_middleware(security.BodyLimit)\n")], FAST),
     ("body limit removed", [(API, "app.add_middleware(security.BodyLimit)\n", "")], FAST),
     ("Content-Length not checked up front", [(SEC, "            if int(declared) > limit:\n                return await _reply(send, 413, _too_large(limit))\n", "")], FAST),
-    ("chunked bodies not counted", [(SEC, "            if total > limit:\n                return await _reply(send, 413, _too_large(limit))\n            chunks.append(body)", "            chunks.append(body)")], FAST),
+    ("chunked bodies not counted", [(SEC, "                    if total > limit:\n                        return await _reply(send, 413, _too_large(limit))\n                    chunks.append(body)", "                    chunks.append(body)")], FAST),
     ("413 only after the whole body is read", [
-        (SEC, "            if total > limit:\n                return await _reply(send, 413, _too_large(limit))\n            chunks.append(body)", "            chunks.append(body)"),
+        (SEC, "                    if total > limit:\n                        return await _reply(send, 413, _too_large(limit))\n                    chunks.append(body)", "                    chunks.append(body)"),
         (SEC, "        buffered, replayed = b\"\".join(chunks), False", "        if total > limit:\n            return await _reply(send, 413, _too_large(limit))\n        buffered, replayed = b\"\".join(chunks), False")], FAST),
     ("kind allow-list removed", [(API, "kind: str = Field(min_length=1, max_length=100, pattern=KIND_PATTERN)",
                                   "kind: str = Field(min_length=1)")], FAST),
@@ -102,7 +102,7 @@ SABOTAGE = [
     ("permanent flag not a strict boolean", [(API, "    permanent: StrictBool = False", "    permanent: bool = False")], FAST),
     ("permanent dead row without reason", [(QUEUE, '{"error": error, "permanent": True, "reason": "permanent error: not retried"}', '{"error": error}')], FAST),
     # Install and release hygiene (tests/test_usability.py)
-    ("version missing from /healthz", [(API, 'return {"ok": True, "version": __version__}', 'return {"ok": True}')], FAST),
+    ("version missing from /healthz", [(API, '        conn.execute("SELECT 1")\n    return {"ok": True, "version": __version__}', '        conn.execute("SELECT 1")\n    return {"ok": True}')], FAST),
     # Not listed: dropping FastAPI(version=...) cannot be caught while the
     # version is 0.1.0, because that is FastAPI's own default version.
     ("up.sh overwrites an existing token", [("scripts/up.sh", 'if [ "$count" = 1 ] && ! blank "$current"; then', "if false; then")], FAST),

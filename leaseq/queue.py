@@ -18,7 +18,7 @@ BACKOFF_CAP = float(os.environ.get("LEASEQ_BACKOFF_CAP", "300"))    # seconds
 
 # Columns returned to clients. lease_token is left out on purpose: the token
 # is only ever handed to the worker that claimed the job.
-PUBLIC = ("id, kind, payload, state, attempts, max_attempts, run_after, "
+PUBLIC = ("id, kind, payload, state, attempts, max_attempts, run_after, priority, available_at, "
           "lease_expires_at, leased_by, idempotency_key, result, created_at, updated_at")
 
 
@@ -41,16 +41,27 @@ def _event(conn, job_id, event, attempt, worker_id=None, detail=None):
 
 
 def enqueue(conn: Connection, kind: str, payload: dict, idempotency_key: str,
-            max_attempts: int = 5) -> tuple[dict, bool]:
+            max_attempts: int = 5, priority: int = 0, run_after=None,
+            delay_seconds: float | None = None) -> tuple[dict, bool]:
     """Insert a job, or return the existing one with this key. -> (job, created)"""
     with conn.transaction():
         # ON CONFLICT DO NOTHING waits for a concurrent insert of the same key
         # to commit, then inserts nothing; the SELECT below then sees that row.
+        if delay_seconds is not None:
+            availability = "now() + make_interval(secs => %s)"
+            timing = (delay_seconds,)
+        elif run_after is not None:
+            availability = "%s"
+            timing = (run_after,)
+        else:
+            availability = "now()"
+            timing = ()
         job = conn.execute(
-            f"INSERT INTO jobs (kind, payload, idempotency_key, max_attempts) "
-            f"VALUES (%s, %s, %s, %s) ON CONFLICT (idempotency_key) DO NOTHING "
+            f"INSERT INTO jobs (kind, payload, idempotency_key, max_attempts, priority, run_after, available_at) "
+            f"VALUES (%s, %s, %s, %s, %s, {availability}, {availability}) "
+            f"ON CONFLICT (idempotency_key) DO NOTHING "
             f"RETURNING {PUBLIC}",
-            (kind, Jsonb(payload), idempotency_key, max_attempts)).fetchone()
+            (kind, Jsonb(payload), idempotency_key, max_attempts, priority, *timing, *timing)).fetchone()
         if job is not None:
             _event(conn, job["id"], "enqueued", 0)
             return job, True
@@ -59,7 +70,8 @@ def enqueue(conn: Connection, kind: str, payload: dict, idempotency_key: str,
     return job, False
 
 
-def claim(conn: Connection, worker_id: str, lease_seconds: float) -> dict | None:
+def claim(conn: Connection, worker_id: str, lease_seconds: float,
+          kinds: list[str] | None = None) -> dict | None:
     """Lease the oldest runnable job, or return None if there is none.
 
     Runnable means: queued and due, or leased with an expired lease (its worker
@@ -67,12 +79,19 @@ def claim(conn: Connection, worker_id: str, lease_seconds: float) -> dict | None
     another claimer is holding instead of waiting for it.
     """
     with conn.transaction():
+        conn.execute(
+            "INSERT INTO worker_observations(worker_id, kinds, last_seen_at) "
+            "VALUES (%s, %s, now()) ON CONFLICT (worker_id) DO UPDATE "
+            "SET kinds = EXCLUDED.kinds, last_seen_at = now()",
+            (worker_id, Jsonb(kinds or [])))
         while True:
             job = conn.execute(
                 "SELECT id, state, attempts, max_attempts, leased_by FROM jobs "
-                "WHERE (state = 'queued' AND run_after <= now()) "
-                "   OR (state = 'leased' AND lease_expires_at <= now()) "
-                "ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED").fetchone()
+                "WHERE ((state = 'queued' AND run_after <= now()) "
+                "   OR (state = 'leased' AND lease_expires_at <= now())) "
+                + (" AND kind = ANY(%s) " if kinds is not None else "") +
+                "ORDER BY priority DESC, id LIMIT 1 FOR UPDATE SKIP LOCKED",
+                (kinds,) if kinds is not None else ()).fetchone()
             if job is None:
                 return None
             if job["attempts"] >= job["max_attempts"]:
@@ -106,6 +125,9 @@ def heartbeat(conn: Connection, job_id: int, token: str, lease_seconds: float) -
         f"RETURNING {PUBLIC}", (lease_seconds, job_id, token)).fetchone()
     if job is None:
         _require_exists(conn, job_id)
+    else:
+        conn.execute("UPDATE worker_observations SET last_heartbeat_at = now() "
+                     "WHERE worker_id = %s", (job["leased_by"],))
     return job
 
 
@@ -195,7 +217,7 @@ MAX_EVENTS_PAGE = 500
 
 # The list leaves out payload and result (each can be up to the body limit);
 # GET /jobs/{id} returns them for one job.
-SUMMARY = ("id, kind, state, attempts, max_attempts, run_after, lease_expires_at, "
+SUMMARY = ("id, kind, state, attempts, max_attempts, run_after, priority, available_at, lease_expires_at, "
            "leased_by, idempotency_key, created_at, updated_at")
 
 STATE_FILTERS = {

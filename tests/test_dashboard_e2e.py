@@ -219,3 +219,24 @@ def test_dashboard_review_fixes(monkeypatch):
     finally:
         proc.terminate()
         proc.wait()
+
+
+@pytest.mark.parametrize("script", ["operator_upgrade.e2e.js", "operator_review_regressions.e2e.js"])
+def test_operator_workflows(monkeypatch, script, tmp_path):
+    db_url = harness.scratch_database("leaseq_e2e_operator")
+    monkeypatch.setenv("LEASEQ_API_TOKEN", TOKEN)
+    monkeypatch.delenv("LEASEQ_PUBLIC_READ", raising=False)
+    proc, base = harness.start_api(db_url)
+    try:
+        result = subprocess.run(["node", str(E2E.with_name(script))],
+            capture_output=True, text=True, timeout=180,
+            env={**os.environ, "BASE_URL": base, "API_TOKEN": TOKEN,
+                 "AXE_PATH": _axe_path(), "ARTIFACT_DIR": str(tmp_path)})
+        assert result.returncode == 0, result.stderr
+        report = json.loads(result.stdout.strip().splitlines()[-1])
+        assert report["ok"] is True
+        if "axe" in report:
+            assert all(entry["violations"] == 0 for entry in report["axe"])
+    finally:
+        proc.terminate()
+        proc.wait()

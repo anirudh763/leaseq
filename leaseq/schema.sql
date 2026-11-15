@@ -9,6 +9,8 @@ CREATE TABLE IF NOT EXISTS jobs (
     attempts         INT         NOT NULL DEFAULT 0,   -- number of times claimed
     max_attempts     INT         NOT NULL DEFAULT 5 CHECK (max_attempts >= 1),
     run_after        TIMESTAMPTZ NOT NULL DEFAULT now(),
+    available_at     TIMESTAMPTZ,
+    priority         INT         NOT NULL DEFAULT 0 CHECK (priority BETWEEN -100 AND 100),
     lease_token      TEXT,                              -- fencing token of the current lease
     lease_expires_at TIMESTAMPTZ,
     leased_by        TEXT,
@@ -50,6 +52,27 @@ CREATE TABLE IF NOT EXISTS effects (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS worker_observations (
+    worker_id         TEXT PRIMARY KEY,
+    kinds             JSONB NOT NULL DEFAULT '[]',
+    last_seen_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_heartbeat_at TIMESTAMPTZ
+);
+
+CREATE TABLE IF NOT EXISTS schedules (
+    id            BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    name          TEXT NOT NULL,
+    kind          TEXT NOT NULL,
+    payload       JSONB NOT NULL,
+    cron          TEXT NOT NULL,
+    priority      INT NOT NULL CHECK (priority BETWEEN -100 AND 100),
+    max_attempts  INT NOT NULL CHECK (max_attempts BETWEEN 1 AND 100),
+    enabled       BOOLEAN NOT NULL DEFAULT TRUE,
+    next_run_at   TIMESTAMPTZ NOT NULL,
+    idempotency_key TEXT NOT NULL UNIQUE,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- Every statement in this block runs only when what it creates is missing,
 -- because each one takes a table lock that conflicts with queue writes:
 -- CREATE INDEX a SHARE lock, CREATE TRIGGER a SHARE ROW EXCLUSIVE lock,
@@ -74,6 +97,36 @@ BEGIN
     END IF;
     IF to_regclass('effects_job') IS NULL THEN
         CREATE INDEX effects_job ON effects (job_id);
+    END IF;
+    -- Existing databases get nullable availability: historic initial due time is unknown.
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'jobs'
+                   AND column_name = 'available_at') THEN
+        ALTER TABLE jobs ADD COLUMN available_at TIMESTAMPTZ;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'jobs'
+                   AND column_name = 'priority') THEN
+        ALTER TABLE jobs ADD COLUMN priority INT NOT NULL DEFAULT 0 CHECK (priority BETWEEN -100 AND 100);
+    END IF;
+    IF to_regclass('jobs_priority_runnable') IS NULL THEN
+        CREATE INDEX jobs_priority_runnable ON jobs (priority DESC, id)
+            WHERE state IN ('queued', 'leased');
+    END IF;
+    -- Kind-filtered workers with sparse due jobs need not scan future or other-kind jobs.
+    IF to_regclass('jobs_kind_queued_due') IS NULL THEN
+        CREATE INDEX jobs_kind_queued_due ON jobs (kind, run_after) WHERE state = 'queued';
+    END IF;
+    IF to_regclass('jobs_active_worker') IS NULL THEN
+        CREATE INDEX jobs_active_worker ON jobs (leased_by, lease_expires_at) WHERE state = 'leased';
+    END IF;
+    IF to_regclass('job_events_metrics') IS NULL THEN
+        CREATE INDEX job_events_metrics ON job_events (created_at, id, job_id, attempt)
+            WHERE event IN ('claimed', 'completed', 'failed');
+    END IF;
+    IF to_regclass('worker_observations_seen') IS NULL THEN
+        CREATE INDEX worker_observations_seen ON worker_observations (last_seen_at DESC, worker_id);
+    END IF;
+    IF to_regclass('schedules_due') IS NULL THEN
+        CREATE INDEX schedules_due ON schedules (next_run_at, id) WHERE enabled;
     END IF;
     IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid = 'job_events'::regclass
                    AND tgname = 'job_events_no_update_delete') THEN

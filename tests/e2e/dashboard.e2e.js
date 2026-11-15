@@ -87,7 +87,7 @@ async function enterToken(page, token) {
 }
 
 (async () => {
-  const browser = await chromium.launch();
+  const browser = await chromium.launch(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : {});
   try {
     // ---- 1. read-only view (public reads): counts, job details, no operator buttons --
     for (const theme of ["light", "dark"]) {

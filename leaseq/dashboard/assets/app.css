@@ -197,6 +197,14 @@ h2.spaced{margin-top:24px}
 textarea{width:100%;min-height:12em;resize:vertical;font:inherit}
 .hint{color:var(--muted);font-size:.9375rem;margin:0}
 .form-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
+.form-actions .input{flex:1 1 18em;max-width:100%;min-width:0}
+.check-row{display:flex;align-items:center;gap:8px;min-height:44px}
+.check-row input{width:20px;height:20px;accent-color:var(--primary)}
+.form-stack > textarea{width:100%;min-width:0}
+.form-stack > input,.form-stack > select{width:min(100%,34rem)}
+.field-error{max-width:72ch}
+.panel-body ul{padding-left:24px;overflow-wrap:anywhere}
+.panel-body li{overflow-wrap:anywhere}
 .result-box{margin-top:16px}
 .result-box:empty{display:none}
 .result-figures{display:flex;flex-wrap:wrap;gap:24px;margin:8px 0}
