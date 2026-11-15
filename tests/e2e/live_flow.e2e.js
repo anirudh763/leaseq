@@ -32,10 +32,10 @@ async function tabTo(page, predicate, max = 40) {
   }
   throw new Error("could not reach the element with Tab");
 }
-// Keyboard only: open Connection & API from the Menu or rail, type the token, press Enter.
+// Keyboard only: open Settings from the Menu or rail, type the token, press Enter.
 async function enterTokenByKeyboard(page) {
   await page.evaluate(() => { window.location.hash = "#/connection"; });
-  await page.locator("h1").filter({ hasText: "Connection & API" }).waitFor();
+  await page.locator("h1").filter({ hasText: "Settings" }).waitFor();
   await tabTo(page, (a) => a.id === "token-input");
   await page.keyboard.type(TOKEN);
   await page.keyboard.press("Enter");
@@ -72,7 +72,7 @@ const openJobById = async (page, id) => {
 
     // 2. Keyboard only: submit the token form empty, then the real token.
     await page.evaluate(() => { window.location.hash = "#/connection"; });
-    await page.locator("h1").filter({ hasText: "Connection & API" }).waitFor();
+    await page.locator("h1").filter({ hasText: "Settings" }).waitFor();
     await tabTo(page, (a) => a.id === "token-input");
     await page.keyboard.press("Enter");                                   // empty input
     await page.locator("#token-error").filter({ hasText: "at least 16 characters" }).waitFor();
@@ -91,7 +91,7 @@ const openJobById = async (page, id) => {
     await page.keyboard.press("Enter");
     await page.waitForFunction(() => document.querySelector('[data-count="all"]').textContent === "16");
     await page.locator("#demo-note").waitFor({ state: "visible" });
-    assert.match(await page.locator("#demo-note").innerText(), /no email is sent and nothing is\s+rendered/);
+    assert.match(await page.locator("#demo-note").innerText(), /do not send email or render pages/);
     step("'Load sample jobs' enqueued 16 jobs through POST /demo/jobs; the sample-data note says demo jobs do no real work");
 
     // 4. Cancel the last job while it is still queued (job 16 of 16).
@@ -205,7 +205,7 @@ const openJobById = async (page, id) => {
     }
     step("375 px and 640 px (200% zoom), light and dark: no sideways scroll");
 
-    // 11. Submit test job with the public-domain sample through the real workers.
+    // 11. New job with the public-domain sample through the real workers.
     {
       const c = await browser.newContext({ viewport: { width: 1280, height: 900 }, bypassCSP: true });
       const p = await c.newPage();
@@ -220,7 +220,7 @@ const openJobById = async (page, id) => {
       await p.locator("#submit-result").filter({ hasText: /849 words, 114 lines/ }).waitFor({ timeout: 60000 });
       report.axe["submit-done"] = await axeViolations(p);
       await c.close();
-      step("Submit test job: Pride and Prejudice ch. 1 (public domain) -> word_count on a real worker -> 849 words, 114 lines");
+      step("New job: Pride and Prejudice ch. 1 (public domain) -> word_count on a real worker -> 849 words, 114 lines");
     }
 
     report.axe_total = Object.values(report.axe).reduce((n, v) => n + v.length, 0);

@@ -52,3 +52,8 @@ These interface and acceptance requirements supersede decorative-number guidance
 - Separate implemented, proposed and externally blocked services. Do not send/store keys, payloads, private paths or issue text in telemetry. No paid provisioning under the current$0hosting authorization.
 - Preserve core algorithms, format/data contracts and existing tests unless a validated requirement needs a deliberate change. Label observed bugs versus limitations and fix causes rather than hiding assertions.
 - Run applicable native/Python/Node/browser/domain checks before claiming success. Record exact commands, counts, workloads, failures and untested paths. Two independent critics and green current-head CI precede release.
+
+
+## Owner UI copy rule — November 15, 2026
+
+Use concise domain labels and actions. Remove taglines, hero/tutorial paragraphs, decorative numbered badges, and text that narrates how the visible interface works. Do not add desk/workbench metaphors or internal-framework explanations to product screens. Keep necessary field labels, actionable errors, factual statuses, privacy/cost/trust notices brief; put detailed methods and limitations in Help or a disclosure. Preserve meaningful IDs, version numbers, measurements, data and accessibility names. Empty space is not a reason to add prose.

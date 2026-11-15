@@ -240,7 +240,7 @@ async function enterToken(page, token) {
       assert.equal(kept.mutations, 0, "the banner changed although its content did not");
       assert.equal(await banner.count(), 1);
       // The disconnected state is a real screen state that points to Connection.
-      assert.ok(await page.locator("#conn-notice").getByRole("link", { name: /Connection/ }).isVisible());
+      assert.ok(await page.locator("#conn-notice").getByRole("link", { name: /Settings/ }).isVisible());
       assert.deepEqual(await page.$$eval("[data-count]", (els) => els.map((e) => e.textContent)), Array(6).fill("\u2013"));
       step("401 banner: after 3 polls focus stays on its link and the live-region text node is not replaced; Not connected state links to Connection");
 

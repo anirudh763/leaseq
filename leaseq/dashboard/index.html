@@ -19,18 +19,16 @@
   <section class="rail" aria-label="LeaseQ commands">
     <div class="dispatch-brand">
       <p class="wordmark"><a href="#/jobs">LeaseQ</a></p>
-      <p class="purpose">Dispatch &amp; recovery</p>
     </div>
     <nav aria-label="Main" class="nav" data-nav>
-      <p class="nav-group" id="rail-work">Work</p>
+      <p class="nav-group" id="rail-work">Queue</p>
       <ul aria-labelledby="rail-work">
         <li><a href="#/jobs" data-route="jobs">Jobs</a></li>
-        <li><a href="#/submit" data-route="submit">Submit test job</a></li>
-        <li><a href="#/operations" data-route="operations">Operations</a></li>
+        <li><a href="#/submit" data-route="submit">New job</a></li>
+        <li><a href="#/operations" data-route="operations">Workers</a></li>
       </ul>
-      <p class="nav-group" id="rail-setup">Setup</p>
-      <ul aria-labelledby="rail-setup">
-        <li><a href="#/connection" data-route="connection">Connection &amp; API</a></li>
+      <ul>
+        <li><a href="#/connection" data-route="connection">Settings</a></li>
       </ul>
     </nav>
     <div class="rail-foot">
@@ -59,8 +57,8 @@
     </main>
 
     <footer class="app-footer muted">
-      Manage background jobs and inspect their execution history. The API token stays in this page’s memory only.
-      Font: Atkinson Hyperlegible, <a href="assets/OFL.txt">SIL Open Font License 1.1</a>.
+      API token stays in this page’s memory only.
+      <a href="assets/OFL.txt">Font license</a>.
       <a class="repo" href="https://github.com/anirudh763/leaseq">Source on GitHub</a>
       <span id="version">leaseq</span>
     </footer>
@@ -73,15 +71,14 @@
     <button type="button" class="btn" id="menu-close">Close menu</button>
   </div>
   <nav aria-label="Menu links" class="nav" data-nav>
-    <p class="nav-group" id="sheet-work">Work</p>
+    <p class="nav-group" id="sheet-work">Queue</p>
     <ul aria-labelledby="sheet-work">
       <li><a href="#/jobs" data-route="jobs">Jobs</a></li>
-      <li><a href="#/submit" data-route="submit">Submit test job</a></li>
-        <li><a href="#/operations" data-route="operations">Operations</a></li>
+      <li><a href="#/submit" data-route="submit">New job</a></li>
+        <li><a href="#/operations" data-route="operations">Workers</a></li>
     </ul>
-    <p class="nav-group" id="sheet-setup">Setup</p>
-    <ul aria-labelledby="sheet-setup">
-      <li><a href="#/connection" data-route="connection">Connection &amp; API</a></li>
+    <ul>
+      <li><a href="#/connection" data-route="connection">Settings</a></li>
     </ul>
   </nav>
   <button type="button" class="btn quiet" data-theme-toggle>Use dark theme</button>
