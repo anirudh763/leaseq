@@ -10,9 +10,9 @@ import { evidenceExport, formatMetric, summarize, validateAction, validateCreate
 
 const API = '/sandbox/runs';
 const views = [
-  { id: 'operations', label: 'Operations', Icon: Activity },
-  { id: 'chaos', label: 'Chaos', Icon: Skull },
-  { id: 'dlq', label: 'DLQ', Icon: PackageOpen },
+  { id: 'operations', label: 'Jobs', Icon: Activity },
+  { id: 'chaos', label: 'Recovery', Icon: Skull },
+  { id: 'dlq', label: 'Dead letters', Icon: PackageOpen },
 ];
 const metricIcons = [HeartPulse, Layers3, Clock3, ShieldCheck, Database];
 const num = formatMetric;
@@ -110,7 +110,7 @@ function App() {
           const observed = snapshotRef.current?.observed_at ? ` Last successful snapshot: ${date(snapshotRef.current.observed_at)}.` : ' No successful snapshot is available.';
           setError(`GET ${API}/${run.run_id} timed out after 7 seconds.${observed} Retry the snapshot.`);
         } else if (e.status === 401 || e.status === 410) {
-          clearRun(e.status === 410 ? 'Gateway reports that this run expired. Local run data and capability were cleared.' : 'Gateway rejected this run capability. Local run data and capability were cleared.');
+          clearRun(e.status === 410 ? 'Run expired. Local data and access were cleared.' : 'Run access rejected. Local data and access were cleared.');
         } else if (e.name !== 'AbortError') {
           snapshotFailure.current = true;
           if (e.message.includes('invalid run snapshot')) { setSnapshot(null); snapshotRef.current = null; }
@@ -179,7 +179,7 @@ function App() {
       }
     } catch (e) {
       if (mine === epoch.current) {
-        if (e.status === 401 || e.status === 410) clearRun(e.status === 410 ? 'Gateway reports that this run expired. Local run data and capability were cleared.' : 'Gateway rejected this run capability. Local run data and capability were cleared.');
+        if (e.status === 401 || e.status === 410) clearRun(e.status === 410 ? 'Run expired. Local data and access were cleared.' : 'Run access rejected. Local data and access were cleared.');
         else setError(e.message);
       }
     }
@@ -199,12 +199,12 @@ function App() {
       await request(`${API}/${encodeURIComponent(target.run_id)}`, { method: 'DELETE', capability: target.capability, timeoutMs: 30000 });
       if (mine === epoch.current) {
         cleanupRun.current = null; setPendingCleanup(false);
-        setNotice('Run stopped. The gateway confirmed owned process and database cleanup.');
+        setNotice('Run cleanup confirmed.');
       }
     } catch (e) {
       if (mine === epoch.current && e.status === 410) {
         cleanupRun.current = null; setPendingCleanup(false);
-        setNotice('Gateway reports that the run expired or closed; its cleanup path has resolved.');
+        setNotice('Run expired or closed; cleanup finished.');
       } else if (mine === epoch.current) setError(`Cleanup is unconfirmed: ${e.message}. Retry cleanup before starting another run.`);
     }
     finally { if (mine === epoch.current) setLoading(false); }
@@ -219,12 +219,12 @@ function App() {
       await request(`${API}/${encodeURIComponent(target.run_id)}`, { method: 'DELETE', capability: target.capability, timeoutMs: 30000 });
       if (mine === epoch.current) {
         cleanupRun.current = null; setPendingCleanup(false);
-        setNotice('Gateway confirmed owned process and database cleanup.');
+        setNotice('Run cleanup confirmed.');
       }
     } catch (e) {
       if (mine === epoch.current && e.status === 410) {
         cleanupRun.current = null; setPendingCleanup(false);
-        setNotice('Gateway reports that the run expired or closed; its cleanup path has resolved.');
+        setNotice('Run expired or closed; cleanup finished.');
       } else if (mine === epoch.current) setError(`Cleanup is unconfirmed: ${e.message}. Retry cleanup before starting another run.`);
     } finally { if (mine === epoch.current) setLoading(false); }
   }
@@ -241,7 +241,7 @@ function App() {
       setSelected({ ...detail, id: job.id });
     } catch (e) {
       if (mine !== epoch.current || detailMine !== detailRequest.current) return;
-      if (e.status === 401 || e.status === 410) clearRun(e.status === 410 ? 'Gateway reports that this run expired. Local run data and capability were cleared.' : 'Gateway rejected this run capability. Local run data and capability were cleared.');
+      if (e.status === 401 || e.status === 410) clearRun(e.status === 410 ? 'Run expired. Local data and access were cleared.' : 'Run access rejected. Local data and access were cleared.');
       else setSelected({ id: job.id, error: e.message });
     }
   }
@@ -267,7 +267,6 @@ function App() {
     <a className="skip-link" href="#main-content" onClick={(event) => { event.preventDefault(); headingRef.current?.closest('main')?.focus(); }}>Skip to main content</a>
     <header className="topbar">
       <a className="brand" href="#/operations" aria-label="LeaseQ console home"><span className="brand-mark"><Layers3 size={21} aria-hidden="true"/></span><span>Lease<span>Q</span></span></a>
-      <span className="product-context">Recovery lab <span className="context-dot"/> Local sandbox</span>
       <nav className="primary-nav" aria-label="Main navigation">
         {views.map(({ id, label, Icon }) => <a key={id} href={`#/${id}`} aria-current={view === id ? 'page' : undefined} onClick={() => setMenuOpen(false)}><Icon size={17} aria-hidden="true"/><span>{label}</span></a>)}
       </nav>
@@ -276,12 +275,12 @@ function App() {
     {menuOpen && <div className="mobile-menu"><nav id="mobile-navigation" aria-label="Mobile navigation">{views.map(({id,label,Icon}) => <a href={`#/${id}`} key={id} onClick={() => setMenuOpen(false)}><Icon size={18} aria-hidden="true"/>{label}</a>)}</nav></div>}
 
     <main className="main-content" id="main-content" tabIndex={-1}>
-      <div className="page-heading"><div><p className="eyebrow">LEASEQ / RECOVERY LAB</p><h1 ref={headingRef} tabIndex={-1}>{current.label}</h1><p className="subtitle">Observe real leases, retries, and worker recovery in an isolated local run.</p></div><div className="run-controls">
-        {!run ? <button className="button button-primary" onClick={startRun} disabled={loading || pendingCleanup}><Plus size={17} aria-hidden="true"/>{loading ? pendingCleanup ? 'Cleaning up…' : 'Starting run…' : 'Start sandbox run'}</button> : <><span className="run-pill"><span className="live-dot"/>Run {run.run_id}</span><button className="button button-outline" onClick={downloadEvidence} disabled={!snapshot}><ArrowDownToLine size={16} aria-hidden="true"/>Evidence JSON</button><button className="button button-danger-outline" onClick={stopRun}><Square size={15} aria-hidden="true"/>Stop run</button></>}
+      <div className="page-heading"><div><h1 ref={headingRef} tabIndex={-1}>{current.label}</h1></div><div className="run-controls">
+        {!run ? <button className="button button-primary" onClick={startRun} disabled={loading || pendingCleanup}><Plus size={17} aria-hidden="true"/>{loading ? pendingCleanup ? 'Cleaning up…' : 'Starting run…' : 'Start run'}</button> : <><span className="run-pill"><span className="live-dot"/>Run {run.run_id}</span><button className="button button-outline" onClick={downloadEvidence} disabled={!snapshot}><ArrowDownToLine size={16} aria-hidden="true"/>Evidence JSON</button><button className="button button-danger-outline" onClick={stopRun}><Square size={15} aria-hidden="true"/>Stop run</button></>}
       </div></div>
 
       <div className={`connection-strip ${error ? 'strip-error' : ''}`} role="status" aria-live="polite">
-        {error ? <><AlertTriangle size={17} aria-hidden="true"/><span>{error}</span>{cleanupRun.current ? <button className="text-button" onClick={retryCleanup} disabled={loading}>Retry cleanup</button> : run ? <button className="text-button" onClick={() => refresh(epoch.current, { force: true })}>Retry snapshot</button> : <button className="text-button" onClick={startRun} disabled={loading || pendingCleanup}>Retry start</button>}</> : run ? snapshot ? <><HeartPulse size={17} aria-hidden="true"/><span>Snapshot observed {date(snapshot.observed_at)}</span><button className="text-button" onClick={() => refresh(epoch.current, { force: true })} aria-label="Refresh gateway snapshot"><RefreshCw size={15} aria-hidden="true"/></button></> : <><LoaderCircle className="spin" size={17} aria-hidden="true"/><span>Sandbox started · waiting for the first gateway snapshot.</span></> : cleanupRun.current ? <><AlertTriangle size={17} aria-hidden="true"/><span>Previous run cleanup is not confirmed. Starting another run is blocked.</span><button className="text-button" onClick={retryCleanup} disabled={loading}>Retry cleanup</button></> : <><CircleHelp size={17} aria-hidden="true"/><span>No sandbox run active. Starting a run creates isolated workers and a disposable database.</span></>}
+        {error ? <><AlertTriangle size={17} aria-hidden="true"/><span>{error}</span>{cleanupRun.current ? <button className="text-button" onClick={retryCleanup} disabled={loading}>Retry cleanup</button> : run ? <button className="text-button" onClick={() => refresh(epoch.current, { force: true })}>Retry snapshot</button> : <button className="text-button" onClick={startRun} disabled={loading || pendingCleanup}>Retry start</button>}</> : run ? snapshot ? <><HeartPulse size={17} aria-hidden="true"/><span>Snapshot observed {date(snapshot.observed_at)}</span><button className="text-button" onClick={() => refresh(epoch.current, { force: true })} aria-label="Refresh snapshot"><RefreshCw size={15} aria-hidden="true"/></button></> : <><LoaderCircle className="spin" size={17} aria-hidden="true"/><span>Waiting for first snapshot.</span></> : cleanupRun.current ? <><AlertTriangle size={17} aria-hidden="true"/><span>Previous run cleanup is not confirmed. Starting another run is blocked.</span><button className="text-button" onClick={retryCleanup} disabled={loading}>Retry cleanup</button></> : <><CircleHelp size={17} aria-hidden="true"/><span>No run active.</span></>}
       </div>
       {notice && <div className="notice" role="status"><Check size={16} aria-hidden="true"/>{notice}<button aria-label="Dismiss notice" className="dismiss" onClick={() => setNotice('')}><X size={16} aria-hidden="true"/></button></div>}
 
@@ -289,27 +288,27 @@ function App() {
         {counts.map(([label, value], i) => { const MetricIcon = metricIcons[i]; return <article className="metric-card" key={label}><div className="metric-label">{label}<span className="metric-icon"><MetricIcon aria-hidden="true"/></span></div><div className="metric-value tabular">{run ? num(value) : '—'}</div></article>; })}
       </section>
 
-      {view === 'operations' && <section className="panel" aria-labelledby="workers-title"><div className="panel-heading"><div><h2 id="workers-title">Worker pool</h2><p>Registered processes and their current lease assignment.</p></div><button className="button button-outline" onClick={() => mutate('batch','POST','/batch')} disabled={!run || !!busy || batchesRemaining === 0}><Plus size={16} aria-hidden="true"/>{busy === 'batch' ? 'Enqueuing…' : batchesRemaining === 0 ? 'Batch limit reached' : 'Add batch'}</button></div>
-        <div className="table-wrap" role="region" aria-label="Worker pool table" tabIndex="0"><table><thead><tr><th>Worker</th><th>Status</th><th>Generation</th><th>Current job</th><th>Lease expires</th></tr></thead><tbody>{workers.length ? workers.map((worker) => <tr key={worker.id}><td className="mono">{worker.id}</td><td><Status state={worker.status}/></td><td className="tabular">{safe(worker.generation)}</td><td className="mono">{safe(worker.job_id)}</td><td className="tabular">{date(worker.lease_expires_at)}</td></tr>) : <tr><td colSpan="5" className="empty-cell">{run ? 'No worker records returned yet.' : 'Start a sandbox run to observe workers.'}</td></tr>}</tbody></table></div>
+      {view === 'operations' && <section className="panel" aria-labelledby="workers-title"><div className="panel-heading"><div><h2 id="workers-title">Workers</h2></div><button className="button button-outline" onClick={() => mutate('batch','POST','/batch')} disabled={!run || !!busy || batchesRemaining === 0}><Plus size={16} aria-hidden="true"/>{busy === 'batch' ? 'Enqueuing…' : batchesRemaining === 0 ? 'Batch limit reached' : 'Add batch'}</button></div>
+        <div className="table-wrap" role="region" aria-label="Workers table" tabIndex="0"><table><thead><tr><th>Worker</th><th>Status</th><th>Generation</th><th>Current job</th><th>Lease expires</th></tr></thead><tbody>{workers.length ? workers.map((worker) => <tr key={worker.id}><td className="mono">{worker.id}</td><td><Status state={worker.status}/></td><td className="tabular">{safe(worker.generation)}</td><td className="mono">{safe(worker.job_id)}</td><td className="tabular">{date(worker.lease_expires_at)}</td></tr>) : <tr><td colSpan="5" className="empty-cell">{run ? 'No worker records returned yet.' : 'Start a run to load workers.'}</td></tr>}</tbody></table></div>
       </section>}
 
-      {view === 'chaos' && <section className="panel chaos-panel"><div className="panel-heading"><div><h2>Recovery actions</h2><p>Each action runs against the isolated database and registered processes.</p></div><span className="protected-label"><ShieldCheck size={16} aria-hidden="true"/> Gateway controlled</span></div>
-        <div className="action-grid"><Action title="Kill a leased worker" detail="Sends SIGKILL to one currently leased worker. The gateway reaps and replaces it." Icon={Skull} button="Kill random leased worker" disabled={!run || !!busy || !workers.some((w) => w.job_id)} busy={busy === 'kill'} onClick={() => mutate('kill','POST','/kill')}/><Action title="Enqueue another batch" detail="Adds the gateway’s fixed synthetic workload, within the run’s batch cap." Icon={Plus} button={batchesRemaining === 0 ? 'Batch limit reached' : 'Add fixed batch'} disabled={!run || !!busy || batchesRemaining === 0} busy={busy === 'batch'} onClick={() => mutate('batch','POST','/batch')}/><Action title="Repeat idempotency key" detail="Submits the original first-job key and reports whether it already exists." Icon={Copy} button="Check duplicate key" disabled={!run || !!busy} busy={busy === 'duplicate'} onClick={() => mutate('duplicate','POST','/duplicate')}/></div>
-        <div className="evidence-box"><div><h3><ShieldCheck size={17}/> Invariant evidence</h3><p>Outcomes are reported by the gateway from observed database state.</p></div><Evidence evidence={snapshot?.evidence}/></div>
+      {view === 'chaos' && <section className="panel chaos-panel"><div className="panel-heading"><div><h2>Recovery actions</h2></div></div>
+        <div className="action-grid"><Action title="Kill a leased worker" Icon={Skull} button="Kill random leased worker" disabled={!run || !!busy || !workers.some((w) => w.job_id)} busy={busy === 'kill'} onClick={() => mutate('kill','POST','/kill')}/><Action title="Enqueue another batch" Icon={Plus} button={batchesRemaining === 0 ? 'Batch limit reached' : 'Add fixed batch'} disabled={!run || !!busy || batchesRemaining === 0} busy={busy === 'batch'} onClick={() => mutate('batch','POST','/batch')}/><Action title="Repeat idempotency key" Icon={Copy} button="Check duplicate key" disabled={!run || !!busy} busy={busy === 'duplicate'} onClick={() => mutate('duplicate','POST','/duplicate')}/></div>
+        <div className="evidence-box"><div><h3><ShieldCheck size={17}/> Results</h3></div><Evidence evidence={snapshot?.evidence}/></div>
       </section>}
 
-      {(view === 'operations' || view === 'dlq') && <section className="panel jobs-panel"><div className="panel-heading"><div><h2>{view === 'dlq' ? 'Dead letter queue' : 'Job activity'}</h2><p>{view === 'dlq' ? 'Inspect safe summaries for jobs that reached the dead state.' : 'Current queue rows and committed effect counts.'}</p></div><span className="count-label">{snapshot ? view === 'dlq' ? `${deadJobs.length} observed` : `${jobs.length} observed` : '—'}</span></div>
-        <div className="table-wrap" role="region" aria-label={view === 'dlq' ? 'Dead letter queue table' : 'Job activity table'} tabIndex="0"><table><thead><tr><th>Job</th><th>Kind</th><th>State</th><th>Attempts</th><th>Effects</th><th>Updated</th></tr></thead><tbody>{(view === 'dlq' ? deadJobs : jobs).length ? (view === 'dlq' ? deadJobs : jobs).map((job) => <tr key={job.id}><td><button className="link-button mono" onClick={() => showDetail(job)}>{job.id}<ChevronRight size={14} aria-hidden="true"/></button></td><td>{safe(job.kind)}</td><td><Status state={job.state ?? job.status}/></td><td className="tabular">{safe(job.attempts)}</td><td className="tabular">{num(job.effect_count)}</td><td className="tabular">{date(job.updated_at ?? job.created_at)}</td></tr>) : <tr><td colSpan="6" className="empty-cell">{run ? view === 'dlq' ? 'No dead letter jobs observed.' : 'No jobs returned yet.' : 'Start a run to observe real job rows.'}</td></tr>}</tbody></table></div>
+      {(view === 'operations' || view === 'dlq') && <section className="panel jobs-panel"><div className="panel-heading"><div><h2>{view === 'dlq' ? 'Dead letters' : 'Jobs'}</h2></div><span className="count-label">{snapshot ? view === 'dlq' ? `${deadJobs.length} observed` : `${jobs.length} observed` : '—'}</span></div>
+        <div className="table-wrap" role="region" aria-label={view === 'dlq' ? 'Dead letters table' : 'Jobs table'} tabIndex="0"><table><thead><tr><th>Job</th><th>Kind</th><th>State</th><th>Attempts</th><th>Effects</th><th>Updated</th></tr></thead><tbody>{(view === 'dlq' ? deadJobs : jobs).length ? (view === 'dlq' ? deadJobs : jobs).map((job) => <tr key={job.id}><td><button className="link-button mono" onClick={() => showDetail(job)}>{job.id}<ChevronRight size={14} aria-hidden="true"/></button></td><td>{safe(job.kind)}</td><td><Status state={job.state ?? job.status}/></td><td className="tabular">{safe(job.attempts)}</td><td className="tabular">{num(job.effect_count)}</td><td className="tabular">{date(job.updated_at ?? job.created_at)}</td></tr>) : <tr><td colSpan="6" className="empty-cell">{run ? view === 'dlq' ? 'No dead letters.' : 'No jobs.' : 'Start a run to load jobs.'}</td></tr>}</tbody></table></div>
       </section>}
 
-      {(view === 'operations' || view === 'chaos') && <section className="panel timeline-panel"><div className="panel-heading"><div><h2>Event timeline</h2><p>Actual bounded audit events from this run.</p></div><span className="count-label">{snapshot?.events?.length ?? '—'} events</span></div>
-        <ol className="timeline">{(snapshot?.events ?? []).length ? snapshot.events.map((event, i) => <li key={event.id ?? `${event.created_at}-${i}`}><span className="timeline-node"/><div className="timeline-content"><strong>{eventLabel(event)}</strong>{eventLabel(event) !== event.event && <span className="raw-code">{event.event}</span>}<span>{safe(event.job_id)}{event.worker_id ? ` · ${event.worker_id}` : ''}</span><time>{date(event.created_at ?? event.observed_at)}</time></div></li>) : <li className="timeline-empty">{run ? 'No audit events returned yet.' : 'Events will appear after a run starts.'}</li>}</ol>
+      {(view === 'operations' || view === 'chaos') && <section className="panel timeline-panel"><div className="panel-heading"><div><h2>Events</h2></div><span className="count-label">{snapshot?.events?.length ?? '—'} events</span></div>
+        <ol className="timeline">{(snapshot?.events ?? []).length ? snapshot.events.map((event, i) => <li key={event.id ?? `${event.created_at}-${i}`}><span className="timeline-node"/><div className="timeline-content"><strong>{eventLabel(event)}</strong>{eventLabel(event) !== event.event && <span className="raw-code">{event.event}</span>}<span>{safe(event.job_id)}{event.worker_id ? ` · ${event.worker_id}` : ''}</span><time>{date(event.created_at ?? event.observed_at)}</time></div></li>) : <li className="timeline-empty">{run ? 'No events yet.' : 'Start a run to load events.'}</li>}</ol>
       </section>}
-      <footer className="footer"><span>LeaseQ local recovery reference lab</span><a href="https://github.com/anirudh763/leaseq" target="_blank" rel="noreferrer"><ExternalLink size={14} aria-hidden="true"/> Public project repository</a><span>Run data is disposable</span></footer>
+      <footer className="footer"><span>Local runs use synthetic data and a disposable database.</span><a href="https://github.com/anirudh763/leaseq" target="_blank" rel="noreferrer"><ExternalLink size={14} aria-hidden="true"/> Project repository</a></footer>
     </main>
 
-    {selected && <Modal className="drawer-dialog" labelledby="detail-title" onClose={closeDetail}><div className="drawer-head"><div><p className="eyebrow">SAFE JOB DETAIL</p><h2 id="detail-title">Job {selected.id}</h2></div><button data-dialog-close className="icon-button" aria-label="Close job details"><X aria-hidden="true"/></button></div>{selected.loading ? <p>Loading safe job detail…</p> : selected.error ? <p role="alert">{selected.error}</p> : <><p className="drawer-summary">Synthetic job fields and audit history returned by the gateway.</p><JobDetail detail={selected}/></>}</Modal>}
-    {planOpen && <Modal className="plans-dialog" labelledby="plans-title" onClose={() => setPlanOpen(false)}><div className="drawer-head"><div><p className="eyebrow">PROPOSED PACKAGING</p><h2 id="plans-title">Plans under consideration</h2></div><button data-dialog-close className="icon-button" aria-label="Close plans"><X aria-hidden="true"/></button></div><p className="drawer-summary">These are pricing proposals, not available subscriptions. This local lab has no checkout or account signup.</p><div className="plans-grid"><Plan name="Free" price="50K" detail="Proposed monthly jobs"/><Plan name="Pro" price="$19/mo" detail="Proposed monthly price"/><Plan name="Team" price="$79/mo" detail="Proposed monthly price"/></div><div className="tradeoffs"><h3>Infrastructure tradeoffs</h3><p><strong>Amazon SQS:</strong> managed operations with usage-based cost and cloud dependency.</p><p><strong>PostgreSQL:</strong> familiar transactional queue semantics with database operations and lease tuning to own.</p></div><a className="button button-outline public-link" href="https://github.com/anirudh763/leaseq" target="_blank" rel="noreferrer"><ExternalLink size={16} aria-hidden="true"/> View public project repository</a></Modal>}
+    {selected && <Modal className="drawer-dialog" labelledby="detail-title" onClose={closeDetail}><div className="drawer-head"><div><h2 id="detail-title">Job {selected.id}</h2></div><button data-dialog-close className="icon-button" aria-label="Close job details"><X aria-hidden="true"/></button></div>{selected.loading ? <p>Loading job details…</p> : selected.error ? <p role="alert">{selected.error}</p> : <JobDetail detail={selected}/>}</Modal>}
+    {planOpen && <Modal className="plans-dialog" labelledby="plans-title" onClose={() => setPlanOpen(false)}><div className="drawer-head"><h2 id="plans-title">Plans</h2><button data-dialog-close className="icon-button" aria-label="Close plans"><X aria-hidden="true"/></button></div><p className="drawer-summary">Plans are not available; prices and quotas are proposals.</p><div className="plans-grid"><Plan name="Free" price="50K jobs/month"/><Plan name="Pro" price="$19/mo"/><Plan name="Team" price="$79/mo"/></div><a className="button button-outline public-link" href="https://github.com/anirudh763/leaseq" target="_blank" rel="noreferrer"><ExternalLink size={16} aria-hidden="true"/> Project repository</a></Modal>}
   </div>;
 }
 
@@ -317,7 +316,7 @@ function Status({ state }) {
   const value = String(state ?? 'unknown').toLowerCase();
   const tone = /done|complete|pass/.test(value) ? 'good' : /dead|fail|error/.test(value) ? 'bad' : /run|claim|lease/.test(value) ? 'active' : /retry|wait|inconclusive/.test(value) ? 'warn' : 'neutral';
   const Icon = tone === 'good' ? Check : tone === 'bad' ? AlertTriangle : tone === 'active' ? Activity : tone === 'warn' ? Clock3 : CircleHelp;
-  const label = ({ done: 'Completed', dead: 'DLQ', dead_letter: 'DLQ', dlq: 'DLQ', leased: 'Leased', queued: 'Queued', running: 'Running', stopped: 'Stopped', pass: 'Passed', fail: 'Failed', inconclusive: 'Inconclusive', observed: 'Observed' })[value] ?? safe(state);
+  const label = ({ done: 'Completed', dead: 'Dead', dead_letter: 'Dead', dlq: 'Dead', leased: 'Leased', queued: 'Queued', running: 'Running', stopped: 'Stopped', pass: 'Passed', fail: 'Failed', inconclusive: 'Inconclusive', observed: 'Observed' })[value] ?? safe(state);
   return <span className={`status status-${tone}`}><Icon size={14} aria-hidden="true"/><span>{label}</span>{label !== safe(state) && <span className="raw-code">{safe(state)}</span>}</span>;
 }
 function eventLabel(event) {
@@ -325,7 +324,7 @@ function eventLabel(event) {
   const detail = event?.detail;
   if (raw === 'claimed' && detail && typeof detail === 'object' && Object.hasOwn(detail, 'took_over_expired_lease_of')) return 'Expired lease retried';
   if (raw === 'rejected' && detail?.op === 'complete') return 'Stale result rejected';
-  return ({ enqueued: 'Job enqueued', claimed: 'Lease claimed', completed: 'Job completed', failed: 'Attempt failed', dead: 'Moved to DLQ', rejected: 'Operation rejected', requeued: 'Job requeued', cancelled: 'Job cancelled' })[raw] ?? safe(event?.event);
+  return ({ enqueued: 'Job enqueued', claimed: 'Lease claimed', completed: 'Job completed', failed: 'Attempt failed', dead: 'Moved to dead letters', rejected: 'Operation rejected', requeued: 'Job requeued', cancelled: 'Job cancelled' })[raw] ?? safe(event?.event);
 }
 function Modal({ className, labelledby, onClose, children }) {
   const dialog = useRef(null);
@@ -363,16 +362,16 @@ function JobDetail({ detail }) {
       <div><dt>Lease expires</dt><dd className="tabular">{date(job.lease_expires_at)}</dd></div>
       <div><dt>Updated</dt><dd className="tabular">{date(job.updated_at)}</dd></div>
     </dl>
-    <section className="result-section" aria-labelledby="job-result-title"><h3 id="job-result-title">Job result</h3>{result ? <dl className="result-fields">{typeof job.result === 'object' && !Array.isArray(job.result) ? Object.entries(job.result).map(([key, value]) => <div key={key}><dt>{key.replaceAll('_', ' ')}</dt><dd>{safe(typeof value === 'object' ? JSON.stringify(value) : value)}</dd></div>) : <div><dt>Value</dt><dd>{safe(job.result)}</dd></div>}</dl> : <p>No result value was included in this gateway response.</p>}</section>
-    <section className="detail-timeline" aria-labelledby="job-timeline-title"><h3 id="job-timeline-title">Job event timeline</h3><ol className="timeline">{detail.events.length ? detail.events.map((event, index) => <li key={event.id ?? `${event.created_at}-${index}`}><span className="timeline-node"/><div className="timeline-content"><strong>{eventLabel(event)}</strong>{eventLabel(event) !== event.event && <span className="raw-code">{event.event}</span>}<span>Attempt {safe(event.attempt)}{event.worker_id ? ` · ${event.worker_id}` : ''}</span><time>{date(event.created_at)}</time>{event.detail && <span className="event-detail">{typeof event.detail === 'string' ? event.detail : Object.entries(event.detail).map(([key, value]) => `${key.replaceAll('_', ' ')}: ${typeof value === 'object' ? JSON.stringify(value) : safe(value)}`).join(' · ')}</span>}</div></li>) : <li className="timeline-empty">No audit events were returned for this job.</li>}</ol></section>
-    <details className="raw-evidence"><summary>Raw safe response</summary><pre>{JSON.stringify(detail, null, 2)}</pre></details>
+    <section className="result-section" aria-labelledby="job-result-title"><h3 id="job-result-title">Job result</h3>{result ? <dl className="result-fields">{typeof job.result === 'object' && !Array.isArray(job.result) ? Object.entries(job.result).map(([key, value]) => <div key={key}><dt>{key.replaceAll('_', ' ')}</dt><dd>{safe(typeof value === 'object' ? JSON.stringify(value) : value)}</dd></div>) : <div><dt>Value</dt><dd>{safe(job.result)}</dd></div>}</dl> : <p>No result returned.</p>}</section>
+    <section className="detail-timeline" aria-labelledby="job-timeline-title"><h3 id="job-timeline-title">Events</h3><ol className="timeline">{detail.events.length ? detail.events.map((event, index) => <li key={event.id ?? `${event.created_at}-${index}`}><span className="timeline-node"/><div className="timeline-content"><strong>{eventLabel(event)}</strong>{eventLabel(event) !== event.event && <span className="raw-code">{event.event}</span>}<span>Attempt {safe(event.attempt)}{event.worker_id ? ` · ${event.worker_id}` : ''}</span><time>{date(event.created_at)}</time>{event.detail && <span className="event-detail">{typeof event.detail === 'string' ? event.detail : Object.entries(event.detail).map(([key, value]) => `${key.replaceAll('_', ' ')}: ${typeof value === 'object' ? JSON.stringify(value) : safe(value)}`).join(' · ')}</span>}</div></li>) : <li className="timeline-empty">No events for this job.</li>}</ol></section>
+    <details className="raw-evidence"><summary>Raw response</summary><pre>{JSON.stringify(detail, null, 2)}</pre></details>
   </div>;
 }
 function Evidence({ evidence }) {
   const values = evidence && typeof evidence === 'object' ? Object.entries(evidence) : [];
-  return values.length ? <ul className="evidence-list">{values.map(([name, item]) => { const result = typeof item === 'object' ? item.status ?? item.outcome : item; return <li key={name}><span>{name.replaceAll('_',' ')}</span><Status state={result}/></li>; })}</ul> : <p className="evidence-empty">{evidence ? 'Gateway returned no invariant outcomes.' : 'No run evidence available yet.'}</p>;
+  return values.length ? <ul className="evidence-list">{values.map(([name, item]) => { const result = typeof item === 'object' ? item.status ?? item.outcome : item; return <li key={name}><span>{name.replaceAll('_',' ')}</span><Status state={result}/></li>; })}</ul> : <p className="evidence-empty">{evidence ? 'No results returned.' : 'No results yet.'}</p>;
 }
-function Action({ title, detail, Icon, button, disabled, busy, onClick }) { return <article className="action-card"><span className="action-icon"><Icon size={20} aria-hidden="true"/></span><h3>{title}</h3><p>{detail}</p><button className="button button-outline" onClick={onClick} disabled={disabled}>{busy ? <LoaderCircle className="spin" size={16} aria-hidden="true"/> : <ArrowLeftRight size={16} aria-hidden="true"/>} {busy ? 'Working…' : button}</button></article>; }
-function Plan({ name, price, detail }) { return <article className="plan-card"><h3>{name}</h3><p className="plan-price">{price}</p><span>{detail}</span><span className="proposed-tag">Proposed</span></article>; }
+function Action({ title, Icon, button, disabled, busy, onClick }) { return <article className="action-card"><span className="action-icon"><Icon size={20} aria-hidden="true"/></span><h3>{title}</h3><button className="button button-outline" onClick={onClick} disabled={disabled}>{busy ? <LoaderCircle className="spin" size={16} aria-hidden="true"/> : <ArrowLeftRight size={16} aria-hidden="true"/>} {busy ? 'Working…' : button}</button></article>; }
+function Plan({ name, price }) { return <article className="plan-card"><h3>{name}</h3><p className="plan-price">{price}</p></article>; }
 
 createRoot(document.getElementById('root')).render(<App/>);

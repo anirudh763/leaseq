@@ -74,10 +74,11 @@ let browser;
   assert.equal(cancelled.state, "dead");
 
   await page.goto(`${BASE}/dashboard/#/operations`);
-  await page.getByRole("heading", { name: "Observed workers" }).waitFor();
-  await page.getByRole("heading", { name: "Recent queue measurements" }).waitFor();
-  await page.getByRole("heading", { name: "Durable schedules" }).waitFor();
-  await page.waitForFunction(() => !document.querySelector("#metrics-data")?.textContent.includes("Loading sampled metrics"));
+  await page.getByRole("heading", { level: 1, name: "Workers" }).waitFor();
+  await page.getByRole("heading", { level: 2, name: "Worker status" }).waitFor();
+  await page.getByRole("heading", { level: 2, name: "Metrics" }).waitFor();
+  await page.getByRole("heading", { level: 2, name: "Schedules" }).waitFor();
+  await page.waitForFunction(() => !document.querySelector("#metrics-data")?.textContent.includes("Loading metrics"));
   const metricText = await page.locator("#metrics-data").innerText();
   assert.match(metricText, /15-minute window/);
   assert.match(metricText, /p50 .* p95/);
@@ -125,7 +126,7 @@ let browser;
     const remaining = (await (await fetch(scheduleUrl, { headers: auth })).json()).schedules;
     assert.equal(remaining.some((s) => scheduleNames.includes(s.name) && s.enabled), false, "synthetic schedules remain enabled");
     await page.reload();
-    await page.getByRole("heading", { name: "Durable schedules" }).waitFor();
+    await page.getByRole("heading", { level: 2, name: "Schedules" }).waitFor();
     await page.waitForFunction(() => !document.querySelector("#metrics-data")?.textContent.includes("Loading sampled metrics"));
   }
 

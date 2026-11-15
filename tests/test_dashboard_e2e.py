@@ -173,7 +173,7 @@ def test_root_visual_gate(monkeypatch):
         report = json.loads(r.stdout.strip().splitlines()[-1])
         failed = [x for x in report["results"] if not x["ok"]]
         assert not failed, json.dumps(failed, indent=1)
-        assert report["axe_scans"] == 20 and report["axe_total"] == 0
+        assert report["axe_scans"] == 22 and report["axe_total"] == 0
         assert r.returncode == 0
     finally:
         for p in (worker, proc):

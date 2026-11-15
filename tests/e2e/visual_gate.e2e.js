@@ -32,8 +32,8 @@ async function check(name, fn) {
 const SCREENS = [
   { route: "#/jobs", h1: /^Jobs$/ },
   { route: `#/jobs/${EXP.dead}`, h1: new RegExp(`^Job ${EXP.dead}$`) },
-  { route: "#/submit", h1: /^Submit test job$/ },
-  { route: "#/connection", h1: /^Connection & API$/ },
+  { route: "#/submit", h1: /^New job$/ },
+  { route: "#/connection", h1: /^Settings$/ },
 ];
 
 async function newPage(browser, opts = {}) {
@@ -70,7 +70,7 @@ async function waitH1(page, re) {
 // Enter the token on the Connection screen (it is kept in memory only).
 async function connect(page) {
   await page.goto(`${DASH}#/connection`);
-  await waitH1(page, /^Connection & API$/);
+  await waitH1(page, /^Settings$/);
   await page.getByLabel("API token", { exact: true }).fill(TOKEN);
   await page.getByRole("button", { name: "Use token" }).click();
   await page.getByRole("button", { name: "Forget token" }).first().waitFor();
@@ -90,6 +90,17 @@ async function axeViolations(page) {
     });
     return r.violations.map((v) => ({ id: v.id, nodes: v.nodes.map((n) => n.target.join(" ")).slice(0, 5) }));
   });
+}
+function contrastRatio(foreground, background) {
+  const luminance = (value) => {
+    const rgb = value.match(/[\d.]+/g).slice(0, 3).map(Number).map((channel) => {
+      const normalized = channel / 255;
+      return normalized <= 0.04045 ? normalized / 12.92 : ((normalized + 0.055) / 1.055) ** 2.4;
+    });
+    return 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2];
+  };
+  const values = [luminance(foreground), luminance(background)].sort((a, b) => b - a);
+  return (values[0] + 0.05) / (values[1] + 0.05);
 }
 
 (async () => {
@@ -125,7 +136,7 @@ async function axeViolations(page) {
       await menu.click();
       const sheet = page.getByRole("dialog", { name: "Menu" });
       await sheet.waitFor({ state: "visible" });
-      assert.ok(await sheet.getByRole("link", { name: "Submit test job" }).isVisible());
+      assert.ok(await sheet.getByRole("link", { name: "New job" }).isVisible());
       assert.ok(await page.evaluate(() => document.activeElement.closest("dialog") !== null),
                 "focus is not inside the open sheet");
       await page.keyboard.press("Escape");
@@ -134,8 +145,8 @@ async function axeViolations(page) {
                                              document.activeElement.textContent.trim()), "Menu");
       // A link in the sheet navigates and closes the sheet.
       await menu.click();
-      await sheet.getByRole("link", { name: "Connection & API" }).click();
-      await waitH1(page, /^Connection & API$/);
+      await sheet.getByRole("link", { name: "Settings" }).click();
+      await waitH1(page, /^Settings$/);
       await sheet.waitFor({ state: "hidden" });
       await page.context().close();
     });
@@ -162,11 +173,11 @@ async function axeViolations(page) {
       const page = await newPage(browser);
       await connect(page);
       await go(page, "#/jobs", /^Jobs$/);
-      await page.getByRole("navigation", { name: "Main" }).first().getByRole("link", { name: "Submit test job" }).click();
-      await waitH1(page, /^Submit test job$/);
+      await page.getByRole("navigation", { name: "Main" }).first().getByRole("link", { name: "New job" }).click();
+      await waitH1(page, /^New job$/);
       const f = await page.evaluate(() => ({ tag: document.activeElement.tagName, text: document.activeElement.textContent.trim() }));
-      assert.deepEqual(f, { tag: "H1", text: "Submit test job" });
-      assert.equal(await page.title(), "Submit test job – LeaseQ");
+      assert.deepEqual(f, { tag: "H1", text: "New job" });
+      assert.equal(await page.title(), "New job – LeaseQ");
       await go(page, "#/jobs", /^Jobs$/);
       await page.getByRole("link", { name: `Job ${EXP.dead}`, exact: true }).click();
       await waitH1(page, new RegExp(`^Job ${EXP.dead}$`));
@@ -197,12 +208,12 @@ async function axeViolations(page) {
     await check("Submit text survives navigating away and browser Back", async () => {
       const page = await newPage(browser);
       await connect(page);
-      await go(page, "#/submit", /^Submit test job$/);
+      await go(page, "#/submit", /^New job$/);
       await page.getByLabel("Text to count").fill("draft kept across routes");
       await page.getByRole("navigation", { name: "Main" }).first().getByRole("link", { name: "Jobs" }).click();
       await waitH1(page, /^Jobs$/);
       await page.goBack();
-      await waitH1(page, /^Submit test job$/);
+      await waitH1(page, /^New job$/);
       assert.equal(await page.getByLabel("Text to count").inputValue(), "draft kept across routes");
       await page.context().close();
     });
@@ -211,7 +222,7 @@ async function axeViolations(page) {
       await page.goto(`${DASH}#/jobs/${EXP.dead}`);
       await waitH1(page, new RegExp(`^Job ${EXP.dead}$`));
       // Fresh page: no token in memory, so the screen says so and points to Connection.
-      assert.ok(await page.getByRole("link", { name: /Connection/ }).first().isVisible());
+      assert.ok(await page.getByRole("link", { name: /Settings/ }).first().isVisible());
       await page.goto(`${DASH}#/nope`);
       await waitH1(page, /^Not found$/);
       assert.ok(await page.locator("main").getByRole("link", { name: /Jobs/ }).first().isVisible());
@@ -273,6 +284,33 @@ async function axeViolations(page) {
       await page.context().close();
     });
 
+    await check("mobile Menu controls keep contrast in light and dark themes", async () => {
+      const page = await newPage(browser, { viewport: { width: 320, height: 900 } });
+      await page.goto(`${DASH}#/jobs`);
+      await waitH1(page, /^Jobs$/);
+      await page.getByRole("button", { name: "Menu", exact: true }).click();
+      const menu = page.getByRole("dialog", { name: "Menu" });
+      await menu.waitFor();
+      const inspect = async (theme) => {
+        const colors = await page.evaluate(() => ["#menu-close", "#menu-sheet [data-theme-toggle]"].map((selector) => {
+          const style = getComputedStyle(document.querySelector(selector));
+          return { selector, foreground: style.color, background: style.backgroundColor };
+        }));
+        for (const item of colors) {
+          const ratio = contrastRatio(item.foreground, item.background);
+          assert.ok(ratio >= 4.5, `${theme} ${item.selector}: ${item.foreground} on ${item.background} is ${ratio.toFixed(2)}:1`);
+        }
+        const violations = await axeViolations(page);
+        assert.deepEqual(violations, [], `${theme} menu axe violations`);
+        axe[`menu-${theme}-320`] = violations;
+      };
+      await inspect("light");
+      await menu.getByRole("button", { name: "Use dark theme" }).click();
+      await inspect("dark");
+      await menu.getByRole("button", { name: "Close menu" }).click();
+      await page.context().close();
+    });
+
     // ---- 7. console, CSP, noscript ------------------------------------------------------
     await check("CSP unchanged and enforced: no violations, no console errors", async () => {
       const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
@@ -286,7 +324,7 @@ async function axeViolations(page) {
       page.on("console", (m) => { if (m.type() === "error" && !EXPECTED_401.test(m.text())) errors.push(m.text()); });
       const res = await page.goto(`${DASH}#/connection`);
       assert.equal(res.headers()["content-security-policy"], CSP);
-      await waitH1(page, /^Connection & API$/);
+      await waitH1(page, /^Settings$/);
       await page.getByLabel("API token", { exact: true }).fill(TOKEN);
       await page.getByRole("button", { name: "Use token" }).click();
       await page.getByRole("button", { name: "Forget token" }).first().waitFor();
@@ -363,7 +401,7 @@ async function axeViolations(page) {
       page.on("request", (r) => { if (r.method() === "POST" && /requeue|cancel/.test(r.url())) posts.push(r.url()); });
       await connect(page);
       await go(page, `#/jobs/${EXP.dead}`, new RegExp(`^Job ${EXP.dead}$`));
-      const tl = page.getByRole("list", { name: "Lifecycle" });
+      const tl = page.getByRole("list", { name: "Timeline" });
       await tl.getByText("Dead").first().waitFor();
       const steps = await tl.locator("[data-step]").evaluateAll((els) => els.map((e) => e.dataset.step));
       assert.deepEqual(steps, ["enqueued", "claimed", "dead"]);
@@ -377,11 +415,11 @@ async function axeViolations(page) {
       await page.context().close();
     });
 
-    // ---- 9. Submit test job: bounded word_count through the real handler ---------------
-    await check("Submit test job runs word_count through a worker and shows the real result", async () => {
+    // ---- 9. New job: bounded word_count through the real handler ---------------
+    await check("New job runs word_count through a worker and shows the real result", async () => {
       const page = await newPage(browser);
       await connect(page);
-      await go(page, "#/submit", /^Submit test job$/);
+      await go(page, "#/submit", /^New job$/);
       await page.getByRole("button", { name: "Submit job" }).click();
       await page.getByText(/Enter some text/).waitFor();
       assert.equal(await page.getByLabel("Text to count").getAttribute("aria-invalid"), "true");
@@ -405,7 +443,7 @@ async function axeViolations(page) {
       for (const loss of ["forget", "401"]) {
         const page = await newPage(browser);
         await connect(page);
-        await go(page, "#/submit", /^Submit test job$/);
+        await go(page, "#/submit", /^New job$/);
         await page.getByLabel("Text to count").fill(`private-draft-${loss}`);
         if (loss === "forget") await page.getByRole("button", { name: "Forget token" }).first().click();
         else {
@@ -416,7 +454,7 @@ async function axeViolations(page) {
         assert.equal(await page.getByLabel("Text to count").inputValue(), "");
         await go(page, "#/jobs", /^Jobs$/);
         await page.goBack();
-        await waitH1(page, /^Submit test job$/);
+        await waitH1(page, /^New job$/);
         assert.equal(await page.getByLabel("Text to count").inputValue(), "");
         await page.context().close();
       }
@@ -464,7 +502,7 @@ async function axeViolations(page) {
     await check("Submit retries an ambiguous commit once with the same body and key", async () => {
       const page = await newPage(browser);
       await connect(page);
-      await go(page, "#/submit", /^Submit test job$/);
+      await go(page, "#/submit", /^New job$/);
       const attempts = [];
       await page.route("**/jobs", async (route) => {
         if (route.request().method() !== "POST") return route.continue();

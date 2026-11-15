@@ -132,7 +132,7 @@ async function connect(page) {
     await check("every route focuses its H1 including Not found", async (page) => {
       await connect(page);
       for (const [route, title] of [["#/jobs", "Jobs"], [`#/jobs/${EXP.dead}`, `Job ${EXP.dead}`],
-        ["#/submit", "Submit test job"], ["#/connection", "Connection & API"], ["#/missing", "Not found"]]) {
+        ["#/submit", "New job"], ["#/connection", "Settings"], ["#/missing", "Not found"]]) {
         await go(page, route);
         assert.deepEqual(await page.evaluate(() => ({ tag: document.activeElement.tagName,
           text: document.activeElement.textContent.trim() })), { tag: "H1", text: title });
@@ -158,7 +158,7 @@ async function connect(page) {
       await page.waitForFunction(() => !document.querySelector("#menu-sheet").open);
       await assertFocused({ tag: "BUTTON", text: "Menu" });
       for (const [route, title] of [["jobs", "Jobs"], ["jobs", "Jobs"],
-        ["submit", "Submit test job"], ["connection", "Connection & API"]]) {
+        ["submit", "New job"], ["connection", "Settings"]]) {
         await menu.click();
         await page.locator(`#menu-sheet a[data-route="${route}"]`).click();
         await page.waitForFunction((expected) => !document.querySelector("#menu-sheet").open &&
@@ -180,7 +180,7 @@ async function connect(page) {
       await page.goForward();
       await page.waitForFunction(() => location.hash === "#/submit" && !document.querySelector("#menu-sheet").open);
       await page.waitForTimeout(100);
-      await assertFocused({ tag: "H1", text: "Submit test job" });
+      await assertFocused({ tag: "H1", text: "New job" });
     }, 320);
     for (const state of ["queued", "leased"]) {
       await check(`Cancel ${state} explains lease revocation without promising to stop work`, async (page) => {

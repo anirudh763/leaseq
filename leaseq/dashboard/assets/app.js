@@ -371,7 +371,7 @@ function pushJobsFilters() {
   pollNow();
 }
 
-const TITLES = { jobs: "Jobs", submit: "Submit test job", operations: "Operations", connection: "Connection & API", notfound: "Not found", invalidid: "Invalid job ID" };
+const TITLES = { jobs: "Jobs", submit: "New job", operations: "Workers", connection: "Settings", notfound: "Not found", invalidid: "Invalid job ID" };
 
 function screenTitle() {
   return app.route.name === "job" ? `Job ${app.route.id}` : TITLES[app.route.name];
@@ -428,13 +428,13 @@ function connectionNotice(what) {
       el("h2", { id: "notice-title", text: "Not connected" }),
       el("p", { text: `${what} This server needs its API token, and this page holds none ` +
                       "(it keeps the token in memory only, so a reload or Forget token removes it)." }),
-      el("p", {}, el("a", { href: "#/connection", text: "Go to Connection & API to enter the token" })));
+      el("p", {}, el("a", { href: "#/connection", text: "Go to Settings to enter the token" })));
   }
   if (app.conn === "offline") {
     return el("section", { class: "notice", "aria-labelledby": "notice-title", id: "conn-notice" },
       el("h2", { id: "notice-title", text: "API unreachable" }),
       el("p", { text: "This page cannot reach the leaseq API that served it. It tries again every 2 seconds." }),
-      el("p", {}, el("a", { href: "#/connection", text: "See Connection & API for how to start it" })));
+      el("p", {}, el("a", { href: "#/connection", text: "See Settings for server status and API details" })));
   }
   return null;
 }
@@ -488,19 +488,16 @@ function viewJobs() {
 
   return [
     h1("Jobs"),
-    el("p", { class: "lede", text: "Review background jobs, filter by state, and open a job to inspect its attempts, payload, result and history." }),
     connectionNotice("Job data cannot be shown."),
     el("div", { class: "console-bar" }, el("span", { id: "updated", text: "Waiting for the first update" }), pause),
     lanes,
     el("p", { id: "expired-note", class: "note", hidden: true }),
     el("p", { id: "demo-note", class: "demo-note", hidden: true },
-       "Sample data. Jobs with keys starting ", el("code", { text: "demo-" }), " come from ",
-       el("code", { text: "leaseq.demo" }), ", and the bundled worker does no real work for them: no email is sent " +
-       "and nothing is rendered. ", el("code", { text: "sleep" }), " jobs only wait and ",
-       el("code", { text: "fail" }), " jobs only fail. The queue itself (claim, heartbeat, complete, retry, audit log) is real."),
+       "Sample jobs (", el("code", { text: "demo-*" }), ") use bundled handlers; they do not send email or render pages. ",
+       el("code", { text: "sleep" }), " waits; ", el("code", { text: "fail" }), " fails. Queue processing uses the real API."),
     el("section", { class: "panel", "aria-labelledby": "queue-title" },
       el("div", { class: "panel-head" }, el("h2", { id: "queue-title", text: "Job queue" }),
-         el("a", { class: "btn primary", href: "#/submit", text: "Submit test job" })),
+         el("a", { class: "btn primary", href: "#/submit", text: "New job" })),
       filters,
       el("div", { class: "table-wrap", tabindex: "0", role: "region", "aria-label": "Job table, scrolls sideways" },
         el("table", { class: "jobs-table" },
@@ -522,7 +519,7 @@ function bulkPanel() {
   button.addEventListener("click", prepareBulk);
   return el("section", { class: "panel", "aria-labelledby": "bulk-title" },
     el("div", { class: "panel-body" }, el("h2", { id: "bulk-title", text: "Bulk actions" }),
-      el("p", { class: "hint" }, "The current filters are snapshotted once (up to 1,000 IDs). New matching jobs are not included."),
+      el("p", { class: "hint" }, "Uses one snapshot of up to 1,000 matching job IDs; later matches are excluded."),
       el("div", { class: "form-actions" }, action, button), result));
 }
 
@@ -806,10 +803,9 @@ function renderJobData() {
     el("div", { class: "detail-grid" },
       el("section", { class: "panel", "aria-labelledby": "life-title" },
         el("div", { class: "panel-body" },
-          el("h2", { id: "life-title", text: "Lease lifecycle" }),
-          el("p", { class: "hint", text: "From the append-only audit log (job_events). Heartbeats extend a lease " +
-                                          "but are not logged, so the lease expiry shown is the latest one." }),
-          el("h3", { id: "timeline-label", text: "Lifecycle" }),
+          el("h2", { id: "life-title", text: "Events" }),
+          el("p", { class: "hint", text: "Heartbeats are not logged; expired leases are inferred from claims." }),
+          el("h3", { id: "timeline-label", text: "Timeline" }),
           timeline(job, events),
           more ? el("p", { class: "hint", id: "events-more", text: "Showing the first 500 events." }) : null)),
       el("div", {},
@@ -937,7 +933,7 @@ function timeline(job, events) {
 function actions(job) {
   if (!app.token) {
     return [el("p", {}, "Requeue and cancel need the API token. ",
-               el("a", { href: "#/connection", text: "Enter it on Connection & API" }))];
+               el("a", { href: "#/connection", text: "Enter it in Settings" }))];
   }
   const out = [];
   if (job.state === "dead") {
@@ -1077,7 +1073,7 @@ function viewSubmit() {
   clearWord.addEventListener("click", () => { word.value = ""; app.submitText = ""; setCount(); update(); word.focus(); });
   const form = el("form", { id: "submit-form", class: "form-stack", novalidate: true },
     el("label", { for: "job-kind", text: "Job kind" }), kind,
-    el("p", { class: "hint", id: "kind-observed", text: app.ops.workers ? `Observed worker kinds: ${[...new Set(app.ops.workers.workers.flatMap((w) => w.kinds || []))].join(", ") || "none reported"}. A kind without an observed handler may remain queued.` : "Worker registry observations have not loaded. A kind without a matching handler may remain queued." }),
+    el("p", { class: "hint", id: "kind-observed", text: app.ops.workers ? `Worker kinds: ${[...new Set(app.ops.workers.workers.flatMap((w) => w.kinds || []))].join(", ") || "none reported"}. Unhandled kinds may remain queued.` : "Worker kinds not loaded. Unhandled kinds may remain queued." }),
     el("div", { class: "form-actions" }, preset("word_count", "word_count", { text: "" }), preset("sleep", "sleep", { ms: 1000 }), sample, clear, clearWord),
     wordFields, jsonFields,
     el("label", { for: "job-priority", text: "Priority (-100 to 100)" }), priority,
@@ -1085,12 +1081,12 @@ function viewSubmit() {
     el("label", { for: "job-due", text: "UTC due time (ISO 8601 ending in Z, optional)" }), due,
     el("label", { for: "job-delay", text: "Delay seconds (optional)" }), delay,
     el("label", { for: "job-key", text: "Idempotency key" }), el("div", { class: "form-actions" }, key, generate),
-    el("p", { class: "hint", text: "Reuse the same key when retrying an ambiguous request." }),
+    el("p", { class: "hint", text: "Reuse this key after an ambiguous request." }),
     el("p", { class: "field-error", id: "submit-error", "aria-live": "polite" }, el("span", { id: "wc-error" })),
     el("div", { class: "form-actions" }, el("button", { type: "submit", class: "btn primary", id: "submit-job", text: "Submit job", disabled: app.submitInFlight })));
   form.addEventListener("submit", submitJob); mode();
-  return [h1("Submit test job"), el("p", { class: "lede", text: "Submit jobs to the local LeaseQ API. The word_count and sleep presets use their matching worker handlers; generic payloads are queued as JSON." }),
-    app.token ? null : (connectionNotice("Submitting needs the API token.") || el("p", {}, "Submitting requires a token; enter it on Connection & API.")),
+  return [h1("New job"),
+    app.token ? null : (connectionNotice("Submitting needs the API token.") || el("p", {}, "Enter an API token in Settings.")),
     el("section", { class: "panel", "aria-label": "Job composer" }, el("div", { class: "panel-body" }, form, el("div", { id: "submit-result", class: "result-box", "aria-live": "polite" })))];
 }
 
@@ -1118,7 +1114,7 @@ async function submitJob(e) {
   if (due && delay !== "") return fail("Choose a UTC due time or delay, not both.", "job-due");
   if (due && (!/^\d{4}-\d\d-\d\dT\d\d:\d\d(?::\d\d(?:\.\d+)?)?Z$/.test(due) || !Number.isFinite(Date.parse(due)))) return fail("Use a valid timezone-aware UTC ISO time ending in Z.", "job-due");
   if (delay !== "" && (!Number.isFinite(Number(delay)) || Number(delay) < 0 || Number(delay) > 31536000)) return fail("Delay must be 0 to 31,536,000 seconds.", "job-delay");
-  if (!app.token) return fail("Enter the API token on Connection & API first.", "job-kind");
+  if (!app.token) return fail("Enter an API token in Settings.", "job-kind");
   const body = { kind, payload, max_attempts, priority }; if (due) body.run_after = due; if (delay !== "") body.delay_seconds = Number(delay);
   const serialized = JSON.stringify(body);
   if (new TextEncoder().encode(serialized).length > 65536) return fail("Request exceeds the 65,536-byte API limit; no content was removed.");
@@ -1225,12 +1221,12 @@ function viewConnection() {
     keep.addEventListener("change", () => { app.keepToken = keep.checked; });
     const form = el("form", { id: "token-form", class: "form-stack", novalidate: true },
       el("label", { for: "token-input", text: "API token" }),
-      el("p", { class: "hint", id: "token-hint" }, "The value of ", el("code", { text: "LEASEQ_API_TOKEN" }),
-         " on the server (", el("code", { text: "scripts/up.sh" }), " writes it to ", el("code", { text: ".env" }),
-         "). Kept in this page's memory only."),
+      el("p", { class: "hint", id: "token-hint" }, "Use the server's ", el("code", { text: "LEASEQ_API_TOKEN" }),
+         ". ", el("code", { text: "scripts/up.sh" }), " writes it to ", el("code", { text: ".env" }),
+         ". Stored in this page's memory only."),
       input,
       el("label", { class: "check-row", for: "keep-token" }, keep, " Keep token until this tab closes"),
-      el("p", { class: "hint", text: "Opt-in session storage persists on this shared device until the tab closes. Anyone with same-origin script access can read it. Forget token and 401 clear it." }),
+      el("p", { class: "hint", text: "Opt-in session storage lasts until this tab closes. Same-origin scripts can read it. Forget token or a 401 clears it." }),
       app.storageNotice ? el("p", { class: "field-error", text: app.storageNotice }) : null,
       el("p", { class: "field-error", id: "token-error" }),
       el("div", { class: "form-actions" }, el("button", { type: "submit", class: "btn primary", text: "Use token" })));
@@ -1268,9 +1264,7 @@ function viewConnection() {
        el("tbody", {}, ...rows.map((r) => el("tr", {}, ...r.map((c, i) => el("td", { class: i < 2 && head[0] === "Method" ? "mono" : null, text: c })))))));
 
   return [
-    h1("Connection & API"),
-    el("p", { class: "lede", text: "LeaseQ runs on your own machine. This page talks only to the leaseq API that " +
-                                   "served it. It is a local recovery and reference queue, not a hosted service." }),
+    h1("Settings"),
     el("section", { class: "panel", "aria-labelledby": "tok-title" },
       el("div", { class: "panel-body" }, el("h2", { id: "tok-title", text: "Token" }), ...tokenPart)),
     el("section", { class: "panel", "aria-labelledby": "st-title" },
@@ -1372,13 +1366,12 @@ function viewOperations() {
     error, el("button", { class: "btn primary", id: "schedule-submit", type: "submit",
       text: app.scheduleConfirmed ? "Start new schedule" : "Create schedule", disabled: app.scheduleInFlight }));
   form.addEventListener("submit", createSchedule);
-  return [h1("Operations"), el("p", { class: "lede", text: "Observed workers, bounded recent queue measurements, and durable UTC schedules from this API." }),
-    el("p", { class: "hint" }, "LeaseQ core is MIT licensed and local. Paid tiers at $49–$149/month are proposed only; nothing here is purchasable."),
+  return [h1("Workers"),
     el("p", { class: "field-error", id: "ops-error", role: "status", "aria-live": "polite" }),
     app.token ? null : connectionNotice("Operator observations and schedule changes need an API token."),
-    el("section", { class: "panel", "aria-labelledby": "workers-title" }, el("div", { class: "panel-body" }, el("h2", { id: "workers-title", text: "Observed workers" }), el("p", { class: "hint" }, "Seen reports and actual lease heartbeats are distinct; neither proves a process is alive."), el("div", { id: "workers-data" }, el("p", { class: "muted", text: "Loading worker observations…" })))),
-    el("section", { class: "panel", "aria-labelledby": "metrics-title" }, el("div", { class: "panel-body" }, el("h2", { id: "metrics-title", text: "Recent queue measurements" }), el("div", { id: "metrics-data" }, el("p", { class: "muted", text: "Loading sampled metrics…" })))),
-    app.token ? el("section", { class: "panel", "aria-labelledby": "schedules-title" }, el("div", { class: "panel-head" }, el("h2", { id: "schedules-title", text: "Durable schedules" })), el("div", { class: "panel-body" }, el("div", { id: "schedules-data" }, el("p", { class: "muted", text: "Loading schedules…" })), form)) : null];
+    el("section", { class: "panel", "aria-labelledby": "workers-title" }, el("div", { class: "panel-body" }, el("h2", { id: "workers-title", text: "Worker status" }), el("p", { class: "hint" }, "Reports and heartbeats are separate observations; neither confirms a process is alive."), el("div", { id: "workers-data" }, el("p", { class: "muted", text: "Loading workers…" })))),
+    el("section", { class: "panel", "aria-labelledby": "metrics-title" }, el("div", { class: "panel-body" }, el("h2", { id: "metrics-title", text: "Metrics" }), el("div", { id: "metrics-data" }, el("p", { class: "muted", text: "Loading metrics…" })))),
+    app.token ? el("section", { class: "panel", "aria-labelledby": "schedules-title" }, el("div", { class: "panel-head" }, el("h2", { id: "schedules-title", text: "Schedules" })), el("div", { class: "panel-body" }, el("div", { id: "schedules-data" }, el("p", { class: "muted", text: "Loading schedules…" })), form)) : null];
 }
 
 function renderOperations() {

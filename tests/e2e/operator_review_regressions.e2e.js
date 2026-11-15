@@ -16,7 +16,7 @@ if (!BASE || !TOKEN) throw new Error("Set BASE_URL and API_TOKEN");
     await page.getByLabel("API token", { exact: true }).fill(TOKEN);
     await page.getByRole("button", { name: "Use token" }).click();
     await page.goto(`${BASE}/dashboard/#/operations`);
-    await page.getByRole("heading", { name: "Durable schedules" }).waitFor();
+    await page.getByRole("heading", { level: 2, name: "Schedules" }).waitFor();
 
     const scheduleRequests = [];
     const first = { id: 900001, name: "mock-first", kind: "noop", payload: {}, cron: "0 0 * * *", priority: 0,
