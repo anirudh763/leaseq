@@ -11,6 +11,7 @@ permissions:
 jobs:
   secret-scan:
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -27,7 +28,8 @@ jobs:
           python3 tools/check_secret_allowlist.py /tmp/gitleaks
 
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     services:
       postgres:
         image: postgres:16
@@ -65,7 +67,8 @@ jobs:
       - run: python -m pytest -v
 
   console-sandbox:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     services:
       postgres:
         image: postgres:16
@@ -121,7 +124,8 @@ jobs:
 
   # Browser tests of /dashboard (Playwright + axe-core, light and dark themes).
   dashboard-e2e:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     services:
       postgres:
         image: postgres:16
@@ -157,7 +161,8 @@ jobs:
   # The real Docker stack (postgres, API, worker) end to end. The demo feeder is
   # scaled to 0 so the browser test starts from an empty queue.
   compose:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     env:
       COMPOSE_PROJECT_NAME: leaseq-ci-${{ github.run_id }}-${{ github.run_attempt }}
       AXE_PATH: node_modules/axe-core/axe.min.js

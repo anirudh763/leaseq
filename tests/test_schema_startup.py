@@ -12,7 +12,7 @@ import psycopg
 
 from leaseq import db
 
-INDEXES = ("jobs_unfinished", "job_events_job", "effects_job")
+INDEXES = ("jobs_unfinished", "job_events_job", "effects_job", "jobs_priority_runnable", "jobs_kind_queued_due", "jobs_active_worker", "job_events_metrics", "worker_observations_seen", "schedules_due")
 TRIGGERS = ("job_events_no_update_delete", "job_events_no_truncate")
 
 
@@ -122,3 +122,60 @@ def test_ddl_that_must_wait_fails_start_with_a_clear_error(db_url, conn, monkeyp
         db.apply_schema(c)
         assert c.execute("SELECT count(*) AS n FROM pg_trigger "
                          "WHERE tgname = 'job_events_no_truncate'").fetchone()["n"] == 1
+
+
+def test_missing_kind_due_index_creation_is_lock_timeout_bounded(db_url, conn, monkeypatch):
+    monkeypatch.setattr(db, "SCHEMA_LOCK_TIMEOUT", "300ms")
+    _seed_two_jobs(conn)
+    conn.execute("DROP INDEX jobs_kind_queued_due")
+    writer = psycopg.connect(db_url)
+    writer.execute("UPDATE jobs SET updated_at = now() WHERE idempotency_key = 'k1'")
+    outcome = []
+
+    def start():
+        try:
+            with db.connect(db_url) as c:
+                db.apply_schema(c)
+            outcome.append(None)
+        except Exception as exc:  # noqa: BLE001  collected and asserted below
+            outcome.append(exc)
+
+    thread = threading.Thread(target=start, daemon=True)
+    try:
+        thread.start()
+        thread.join(3)
+        assert not thread.is_alive(), "index creation waited beyond lock_timeout"
+        assert isinstance(outcome[0], db.SchemaLockTimeout), outcome
+        with db.connect(db_url) as other:
+            other.execute("SET lock_timeout = '1s'")
+            other.execute("UPDATE jobs SET updated_at = now() WHERE idempotency_key = 'k2'")
+    finally:
+        writer.rollback()
+        writer.close()
+        thread.join(10)
+
+    with db.connect(db_url) as c:
+        db.apply_schema(c)
+        assert c.execute("SELECT count(*) AS n FROM pg_indexes WHERE schemaname = 'public' "
+                         "AND indexname = 'jobs_kind_queued_due'").fetchone()["n"] == 1
+
+
+def test_operator_migration_runs_twice_and_preserves_history(db_url, conn):
+    job_id = conn.execute("INSERT INTO jobs(kind,idempotency_key) VALUES ('old','old-key') RETURNING id").fetchone()["id"]
+    conn.execute("INSERT INTO effects(job_id,worker_id) VALUES (%s,'existing')", (job_id,))
+    conn.execute("INSERT INTO job_events(job_id,event,attempt) VALUES (%s,'enqueued',0)", (job_id,))
+    conn.execute("DROP INDEX jobs_priority_runnable")
+    conn.execute("DROP INDEX jobs_kind_queued_due")
+    conn.execute("DROP INDEX jobs_active_worker")
+    conn.execute("ALTER TABLE jobs DROP COLUMN priority, DROP COLUMN available_at")
+    conn.execute("DROP INDEX job_events_metrics; DROP INDEX worker_observations_seen; DROP INDEX schedules_due")
+    conn.execute("DROP TABLE schedules, worker_observations")
+    with db.connect(db_url) as legacy:
+        db.apply_schema(legacy)
+        db.apply_schema(legacy)
+        row = legacy.execute("SELECT priority,available_at FROM jobs WHERE id=%s", (job_id,)).fetchone()
+        assert row == {"priority": 0, "available_at": None}
+        assert legacy.execute("SELECT count(*) AS n FROM effects WHERE job_id=%s", (job_id,)).fetchone()["n"] == 1
+        assert legacy.execute("SELECT count(*) AS n FROM job_events WHERE job_id=%s", (job_id,)).fetchone()["n"] == 1
+        assert legacy.execute("SELECT count(*) AS n FROM pg_indexes WHERE schemaname = 'public' "
+                             "AND indexname = 'jobs_kind_queued_due'").fetchone()["n"] == 1

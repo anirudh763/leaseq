@@ -8,7 +8,7 @@ completion rejection and committed database effects in the browser.
 
 ## Try the recovery console
 
-With Python 3 and Docker Compose v2, run:
+With Python 3.11 or newer and Docker Compose v2, run:
 
 ```sh
 python3 scripts/sandbox_up.py
@@ -126,8 +126,9 @@ your existing database before changing the mount, then restore it into the
 new volume. The old database used an anonymous volume; it is not migrated
 automatically. Keep the old volume until the restored data is verified.
 
-Without Docker: requires Python 3 and a PostgreSQL server (tested with Python
-3.13 and PostgreSQL 16 only).
+Without Docker: requires Python 3.11 or newer and a PostgreSQL server. The current full
+Python suite was verified with Python 3.13.1 and PostgreSQL 16.16; this is the
+verified local matrix, not a claim about every version.
 
 ```
 pip install -r requirements.txt
@@ -169,8 +170,8 @@ well. A missing or wrong token gets `401` with a JSON body and
 
 | Request | Behaviour |
 |---|---|
-| `POST /jobs` + `Idempotency-Key` header, body `{kind, payload, max_attempts}` | 201 with the new job, or 200 with the existing job if the key was used before. Never a second row. |
-| `POST /jobs/claim` `{worker_id, lease_seconds}` | 200 with the oldest runnable job and a fresh random `lease_token`, or 204 if nothing is runnable. |
+| `POST /jobs` + `Idempotency-Key` header, body `{kind, payload, max_attempts, priority?, run_after?, delay_seconds?}` | Priority is an integer from -100 to 100, default 0. `run_after` must include a timezone; `delay_seconds` is finite, 0 to 31,536,000, and cannot be combined with `run_after`. Relative time uses PostgreSQL time. Reusing a key returns the original job unchanged (201 new, 200 existing); changed bodies do not replace it. |
+| `POST /jobs/claim` `{worker_id, lease_seconds, kinds?}` | 200 with a fresh random `lease_token`, or 204 if nothing matches. Runnable jobs order by priority descending, then id ascending; priority 0 remains FIFO. `kinds` is optional for API compatibility; when present it is 1–64 unique valid names. |
 | `POST /jobs/{id}/heartbeat` `{lease_token, lease_seconds}` | Extends the lease. 409 if the token is not the current one. |
 | `POST /jobs/{id}/complete` `{lease_token, result}` | Marks the job done. 409 if the token is not the current one. |
 | `POST /jobs/{id}/fail` `{lease_token, error, permanent}` | Requeues with exponential backoff (2 s, 4 s, 8 s ... capped at 300 s), or marks the job `dead` once `attempts` reaches `max_attempts`. With `"permanent": true` (optional, default false) the job is marked `dead` at once, whatever attempts are left, and its `dead` audit row records `permanent: true` and the error. 409 on a stale token. |
@@ -180,6 +181,10 @@ well. A missing or wrong token gets `401` with a JSON body and
 | `GET /jobs/{id}/events?after_id=&limit=` | The job's audit rows, oldest first, at most 500 per page. |
 | `POST /jobs/{id}/requeue` `{extra_attempts}` | Dead job back to `queued` with more attempts (default 3). `attempts` is kept; `max_attempts` is raised. 409 if the job is not dead. |
 | `POST /jobs/{id}/cancel` `{reason}` | Queued or leased job to `dead` and its lease token cleared, so a worker still running it gets 409: its result is refused (logged as `rejected`) and no effect is written. 409 otherwise. |
+| `POST /jobs/bulk` `{action, job_ids}` | Authenticated `requeue` or `cancel` of 1–100 unique positive safe IDs per request; returns per-ID `changed`, `conflict`, `not_found`, `error` or `not_attempted` plus `processed` and `remaining`. This is bounded and can be partial. |
+| `GET /workers?limit=100` | Up to 100 observed worker reports, including reported kinds, last-seen time, actual lease heartbeats and current active leases. This is not process-health detection. |
+| `GET /operations/metrics` | Cached for 5 seconds; a 15-minute window sampled to at most 5,000 events/first claims, with truncation, UTC-minute completion/failure buckets and first-claim wait percentiles. |
+| `GET /schedules?limit=100`, `POST /schedules`, `PATCH /schedules/{id}` | List, create idempotently, enable or disable durable schedules. Creation uses `Idempotency-Key`. |
 | `GET /auth/check` | 200 if the token is right, 401 if not. |
 | `POST /demo/jobs` | Enqueues the 16 sample jobs that `python -m leaseq.demo` sends. |
 
@@ -187,12 +192,48 @@ A job is runnable when it is `queued` and its `run_after` has passed, or when
 it is `leased` and the lease has expired. Every state change inserts one row
 into `job_events` in the same transaction.
 
+The authenticated Operations screen records worker observations on every claim,
+including empty polls. “Seen recently” reflects a recent report; `active_jobs`
+counts current unexpired leases, and `last_heartbeat_at` is set only by an
+actual valid heartbeat. None of these proves that a process or host is alive.
+Queue measurements cover a 15-minute database-time window, sample at most 5,000
+events/first claims, and are cached for 5 seconds. Wait time is first claim
+minus initial availability; pre-migration jobs with unknown `available_at` do
+not enter the percentile sample. Empty samples produce null percentiles. These
+measurements do not estimate capacity or promise an SLO.
+
+Bulk actions snapshot the current filters once, up to 1,000 job IDs, then ask
+for confirmation and send sequential batches of at most 100. New matching jobs
+are excluded. The server can return partial outcomes; `error` means the server
+attempted that item and hit an error, while `not_attempted` means the deadline
+left it untouched. If the response to a batch is lost or rejected, the UI marks
+that batch `uncertain`, marks later batches `not_attempted`, and does not retry
+automatically: some or all of the uncertain batch may already have changed.
+
+Schedules accept strict numeric five-field UTC cron syntax using pinned
+`croniter` 7.0.0. Names, seconds, random/hash syntax and year fields are not
+accepted; the next-match search is bounded to five years. Schedule state and
+the next run time live in PostgreSQL. The API process polls once per second and
+dispatches at most ten due schedules per tick under row locks. Dispatch creates
+one job and advances the schedule atomically; missed runs coalesce into one
+overdue occurrence, then advance past database time rather than backfilling an
+unbounded outage. A running API is required for polling and a worker is required
+to execute the jobs. Occurrence keys use the reserved `_leaseq_schedule/`
+prefix; ordinary `POST /jobs` rejects that prefix.
+
+An idempotency key identifies one enqueue or schedule intent: a repeated key
+returns the original object even if the new body differs. For an ambiguous
+network result, retry with the same key. After schedule creation succeeds, the
+dashboard prepares a fresh key only when the operator starts another schedule,
+so a new intent cannot silently reuse the previous key.
+
 ## Dashboard
 
 `/dashboard/` is an operations console for this local queue: plain HTML, CSS
 and JavaScript inside the package, no build step, no CDN, no third-party code.
 It is light by default (also when the operating system prefers dark); "Use dark
-theme" switches it, and that choice is the only thing the page stores. Each
+theme" switches it. The theme preference is stored locally; the API token is
+memory-only by default, with a separate opt-in session-storage choice. Each
 task is its own screen with its own URL (hash routes, so links can be shared
 and Back/Forward work):
 
@@ -202,6 +243,7 @@ and Back/Forward work):
 | `#/jobs/<id>` | Job details | `?job=<id>` |
 | `#/submit` | Submit test job | |
 | `#/connection` | Connection & API (token, status, API guide) | |
+| `#/operations` | Observed workers, sampled metrics, durable schedules | |
 
 - **Jobs**: one lane per state (All, Queued, Running, Retrying, Done, Dead)
   with the server's counts; a lane is a toggle that filters the table. Kind
@@ -230,12 +272,19 @@ and Back/Forward work):
 - **Connection & API**: the token form, the API address and version, the
   connection state, example `curl` calls, the endpoints and the error
   answers (401, 404, 409, 413, 422).
+- **Operations**: recent worker reports, active lease counts, bounded sampled
+  queue measurements, schedule creation and enable/disable controls. A schedule
+  submit retries an ambiguous result with the same idempotency key; after a
+  successful create, “Start new schedule” generates a new key for the next
+  intent. Schedules run only while an API poller and workers are running.
 
 Without the token (and without `LEASEQ_PUBLIC_READ=1`) the data screens show
 a "Not connected" state that links to Connection & API. The token is checked
-with `GET /auth/check`, kept in the page's memory only (not in a cookie, local
-or session storage, or the URL) and sent only in the `Authorization` header, so
-another site cannot make the browser send it: there is no CSRF surface. With a
+with `GET /auth/check`, kept in memory by default and sent only in the
+`Authorization` header. “Keep token until this tab closes” is explicit opt-in
+`sessionStorage`; same-origin script access can read it while it is stored.
+The token is never put in a cookie, `localStorage` or the URL. Forget and 401
+clear the token and sensitive job/schedule state. With a
 token, "Requeue job" and "Cancel job" appear; each asks for confirmation that
 names the job and the effect, and Cancel uses the danger style with "Keep job"
 focused. Job payloads are shown as text, never as HTML, and the page is served
@@ -247,31 +296,29 @@ to a job's URL after either one cannot show the old payload.
 When the table contains jobs from `python -m leaseq.demo` (keys starting
 `demo-`), the dashboard says so: those jobs do no real work.
 
-Accessibility: passes automated axe-core checks (WCAG 2.2 A/AA and
-best-practice rules) with 0 violations in 38 scanned states across the three
-browser tests: every screen in light (default) and dark at 1280 and 320 px,
-the Not connected state, dialogs, an API failure, and 375 px and 640 px widths
-(640 px is a 1280 px window at 200% zoom). The tests also check that no screen
-scrolls sideways at 320, 768 and 1440 px, that every route change moves focus
-to the screen's H1, that the Menu sheet closes with Escape and returns focus to
-the Menu button, and they drive the main flows with the keyboard only. A
-manual screen-reader check has not been run.
+Earlier browser evidence reported zero axe-core violations across 38 scanned
+states. The current dashboard browser gate is not green (see Tests below), so
+that earlier result is not a current-head accessibility pass. A manual
+screen-reader check has not been run.
 
 ## The demo worker, and writing your own handler
 
 The bundled worker (`leaseq/worker.py`) is a test harness for the queue, not an
-email sender or report renderer. It knows four kinds: `sleep` waits (and
-heartbeats), `fail` raises, `fail_first_n` raises on its first n attempts, and
-`word_count`, a small demo handler that does real, deterministic work on
-bounded input: it returns `{"words": N, "lines": M}` for `payload.text`.
+email sender or report renderer. It claims only its registered kinds:
+`fail`, `fail_first_n`, `noop`, `sleep` and `word_count`. `sleep` waits (and
+heartbeats), `fail` raises, `fail_first_n` raises on its first n attempts,
+`noop` completes without application work, and `word_count` does real,
+deterministic work on bounded input: it returns `{"words": N, "lines": M}` for
+`payload.text`.
 Text over 10,000 characters (or not a string) raises `PermanentJobError`: the
 same input would fail again, so the job is `dead` after that one attempt, and
 its audit log records the reason. Any other exception from a handler is a
-normal failed attempt and is retried with backoff until `max_attempts`. Any other kind, including the demo's `email.send`, `report.render`,
-`thumbnail.resize` and `index.rebuild`, is a no-op that is marked done at once:
-no email is sent and nothing is rendered. What is real is the queue contract
-around it: claim with a lease, heartbeat, complete or fail with the lease
-token, retry with backoff, dead-lettering, and the audit log.
+normal failed attempt and is retried with backoff until `max_attempts`. The
+default worker does not claim unregistered kinds; they remain queued until a
+worker registers a matching handler. The API still accepts generic kinds when
+their worker is offline. What is real is the queue contract around them: claim
+with a lease, heartbeat, complete or fail with the lease token, retry with
+backoff, dead-lettering and the audit log.
 
 How a job is completed depends on who runs it:
 
@@ -321,6 +368,25 @@ idempotent handler avoids that, for example by passing the job's
 `idempotency_key` to a provider that de-duplicates on it, or by recording what
 was sent in the same database transaction as the completion.
 
+### Local Python and Node clients
+
+The Python client and registry are in `leaseq.sdk`; the dependency-free Node
+client and TypeScript declarations are in `sdks/node/`. Runnable worker
+examples are `examples/python_task.py` and `examples/node_task.js`. These are
+source-tree clients, not published PyPI or npm packages. Both claim only the
+registered kinds (up to 64), heartbeat while handlers run, use bounded HTTP
+timeouts and request/response sizes, reject credential-forwarding redirects,
+and report a distinct 401 authentication error. The handler context exposes
+the stable job idempotency key as `job_key` in Python and `jobKey` in Node; use
+it for external idempotency or an outbox. Fenced completion protects LeaseQ's
+database state, not an external action already performed.
+
+Install the local Python project with `python -m pip install -e .`. For either
+example, start the API, export its `LEASEQ_API_TOKEN`, and create a `greet` job
+with an `Idempotency-Key`; then run the Python example or `node
+examples/node_task.js`. The Node client is imported directly from the checked-in
+`sdks/node` folder; no package publication is implied.
+
 ## Security
 
 What was checked on this branch, and what was found:
@@ -359,13 +425,17 @@ What was checked on this branch, and what was found:
 - Lease tokens are compared inside PostgreSQL (`WHERE lease_token = %s`), not in
   Python. That was left as it is: a token is 128 random bits, every wrong guess
   writes a `rejected` audit row, and callers now need the API token first.
+- Per-process token buckets default to 60,000 authenticated and 120 public
+  requests per minute/address; health has a separate bounded 120/minute/address
+  map. These are admission controls per API process, not global quotas.
 
 ## Results
 
-All numbers below were produced in a shared cloud container (2 CPU cores,
-8 GB RAM, Python 3.13.18, PostgreSQL 16.15 with default settings, everything
-on one machine). Timings will differ elsewhere and between runs. Each command
-was run with `LEASEQ_DATABASE_URL` set as in the quick start.
+The historical chaos and dashboard evidence below was collected on a shared
+2-core cloud container (Python 3.13.18, PostgreSQL 16.15). The current full
+Python-suite result and claim-index measurements use separate local
+environments described in their sections. None of these results is a hosted
+service SLA or capacity guarantee.
 
 ### Fault injection
 
@@ -417,71 +487,54 @@ run of seed 1 on the same machine gave 63 retried jobs in 29.7 s.
 python -m pytest -q
 ```
 
-131 tests passed in 209 s, none skipped (on this branch, on the same kind of
-2-core container as the results above). This includes a reduced chaos run (300
-jobs, 12 kills), the negative control (40 jobs), the authentication and
-input-limit tests in `tests/test_security.py`, `word_count` run by a real
-worker process (`tests/test_word_count_flow.py`), `scripts/up.sh` with a stub
-`docker` (`tests/test_usability.py`, including the unchanged `smoke.sh`
-passing against a real API and worker with the token read from a copied
-`.env.example`), and three Playwright browser tests
-in `tests/test_dashboard_e2e.py`. The third, `tests/e2e/visual_gate.e2e.js`,
-is the dashboard's layout and routing gate: 38 named checks (page width at
-320/768/1440 px, Menu sheet, H1 focus, Back/Forward and deep links, old
-links, axe light and dark, light default under an OS dark preference, CSP,
-noscript, the state lanes against the API's counts, the lifecycle timeline,
-the confirmation text, the Submit flow with a real worker, and that Back to a
-job URL after "Forget token" or a 401 cannot show its old payload). Four
-regressions also cover draft/dialog cleanup, responses received after Forget,
-and safe submission retries. In the original 34-check rebuild comparison,
-33 failed against the old dashboard (only noscript passed). The browser tests need Node, the `playwright`
-package and axe-core (`AXE_PATH`); without them they are skipped. One of them
-runs real worker processes: the dashboard enqueues jobs, a worker completes
-them, a failing job retries with backoff until it is dead, one job is
-cancelled and one requeued, an API failure and a 401 are simulated, and the
-token and job data are checked to be gone after "Forget token" (no cookie,
-localStorage or sessionStorage entries). One browser context runs with the
-Content-Security-Policy enforced (the others bypass it only to inject axe): it
-opens a job whose idempotency key, payload and error text are hostile markup
-and checks that no script ran and no CSP violation was reported.
+The latest full Python run collected 200 tests: 196 passed, 4 skipped, none
+failed, using Python 3.13.1 and PostgreSQL 16.16. It included the operator
+endpoints, migration/startup checks, Python and Node SDK clients against the
+local API, and the sandbox runtime with real PostgreSQL and four worker
+processes. The four browser skips in that backend run were tested separately:
+all six dashboard cases (including the two new operator workflows) passed across
+the final targeted runs. The visual gate checked 38 behaviors and 20 axe states.
+The React sandbox passed its six unit tests, production build, real worker
+recovery/browser flow at 320/768/1440 and four abuse-boundary checks, with no
+unexpected console errors. These runs used private local task databases and do
+not establish cloud capacity or a manual screen-reader result.
 
-`python tools/sabotage.py` breaks one protection at a time (auth, body limits,
-input checks, paging caps, lease fencing on cancel and requeue, CSP, the
-dashboard's text-only rendering and token handling, clearing of cached job data
-on Forget and 401, the light default, H1 focus, the Menu sheet, old-link
-redirects, the state lanes, the lifecycle timeline, the confirmation text, the
-Submit bound and result, the `word_count` bounds, `scripts/up.sh` token handling
-and health wait, the noscript message and the footer version), runs the tests
-and restores the code. On this branch: 83 of 83 sabotages were caught by a
-failing test, none skipped.
+The 83/83 sabotage result in earlier branch evidence predates the current
+operator and dashboard changes; it is historical, not current-head verification.
 
 ### Benchmark
 
-```
-python scripts/bench.py
-```
+The current priority and kind-filtered claim path was measured directly via
+`queue.claim` (not HTTP) on local PostgreSQL 16.16, at 10k, 100k and 1M small
+rows. The host was macOS 26.5.2 arm64, 8 logical CPUs and 16 GiB RAM; PostgreSQL
+used 128 MiB shared buffers, 4 GiB effective cache, 4 MiB work memory and
+`synchronous_commit=on`. The test used loopback, 15-second statement timeouts,
+warm-ish analyzed data, and capped samples. These numbers are local
+measurements, not cloud throughput or a capacity SLA.
 
-Each client process loops `POST /jobs/claim` then `POST /jobs/{id}/complete`
-with no work in between, against one uvicorn process. 2,000 jobs per run;
-each figure is the median of 5 runs. Latency is the client-side round trip of
-the claim request.
+| Rows | Ready noop p50/p95 | Future high / due low | Rare kind | Absent kind | Four-worker mix, max per-worker p50/p95 |
+|---:|---:|---:|---:|---:|---:|
+| 10,000 | 3.108/9.745 ms | 4.840/6.092 ms | 4.804/8.133 ms | 3.239/4.907 ms | 3.947/10.161 ms |
+| 100,000 | 2.873/3.370 ms | 21.889/22.876 ms | 18.902/20.920 ms | 13.095/14.686 ms | 3.896/6.521 ms |
+| 1,000,000 baseline | 3.203/7.279 ms | 200.115/242.452 ms | 180.524/667.495 ms | 226.245/513.212 ms | 5.554/32.189 ms |
+| 1,000,000 with kind/due index | 3.456/7.413 ms | 3.320/5.841 ms | 3.269/8.421 ms | 2.573/4.000 ms | existing ordered-index plan |
 
-| Client processes | Throughput (jobs/s) | Claim p50 (ms) | Claim p99 (ms) |
-|---|---|---|---|
-| 1 | 143 | 3.66 | 8.70 |
-| 4 | 270 | 7.08 | 16.92 |
-| 8 | 277 | 13.36 | 34.28 |
-
-These figures were measured before authentication and the body limit were
-added and have not been re-measured under comparable conditions. One run on
-this branch (3 runs per setting, while other jobs kept the 2-core machine at a
-load average of 2.5 to 6.3) gave 106, 164 and 215 jobs/s for 1, 4 and 8
-clients; the load makes it unsuitable for a before/after comparison.
-
-Throughput stops rising between 4 and 8 clients. The container has 2 cores
-shared by PostgreSQL, the API process and the benchmark clients themselves; I
-did not profile which of them is the limit, so these numbers describe this
-setup, not PostgreSQL's ceiling.
+Ready workload: every row is due `noop`, priority 0, filter `['noop']`.
+Future-priority workload: N−1 `noop` jobs at priority 100 due tomorrow and one
+due priority-0 job at the final id. Rare-kind workload: N−1 due alternating
+`legacy_a`/`legacy_b` rows and one final `word_count`; absent-kind workload has
+no `word_count` match. Four-worker workload has equal due, priority-0 shares of
+`word_count`, `sleep`, `noop`, and `custom`; each worker filters to one kind
+and makes 50 claims. At 1M rows, baseline EXPLAIN plans for future, rare, and
+absent filters scanned and sorted the table, filtering 999,999, 999,999, and
+1,000,000 rows. A scratch-only partial index on `(kind, run_after)` for queued
+rows changed those plans to bitmap heap scans with three shared blocks read;
+the measured index used about 7.1 MB per million small rows. The query itself
+was unchanged. Ready and mixed workloads continued to use the existing ordered
+priority index. Measurements came from separate scratch runs, not paired
+statistical trials. The index's sustained write cost was not measured. Full
+plans, distributions, and limits are in the local task artifact `operator-load/report.md`;
+that artifact path is outside this repository and may not exist in other copies.
 
 ### Docker
 
@@ -588,8 +641,9 @@ repository, recommended in real use: adding the constraint as a second guard.
 - The chaos test is evidence, not proof. It ran three seeds on one machine and
   kills only worker processes. It does not kill the API server or PostgreSQL,
   cut the network, or fill the disk.
-- The tests and the chaos runs were only run on PostgreSQL 16.15 and
-  Python 3.13, and the browser tests only in Chromium (Playwright 1.63).
+- The current Python full-suite run used PostgreSQL 16.16 and Python 3.13.1;
+  historical chaos runs used PostgreSQL 16.15. Browser gates on the current
+  head have 4 passes and 2 failures, so they are not currently green.
 - Reusing an idempotency key with a different body returns the original job
   and ignores the new body. No error is raised.
 - One shared token for everyone: no users, roles or audit of who requeued or
@@ -597,11 +651,13 @@ repository, recommended in real use: adding the constraint as a second guard.
   workers. Anyone with the token can submit, claim and cancel. Use TLS (a
   reverse proxy) if the API is reached over a network; leaseq itself serves
   plain HTTP.
-- No rate limiting. `LEASEQ_PUBLIC_READ=1` exposes job payloads to anyone who
-  can reach the port.
-- The claim query orders unfinished jobs by id. Jobs waiting on a long backoff
-  are scanned and skipped on every claim, so a large backlog of delayed jobs
-  would slow claiming. Not measured.
+- Rate limits are in-memory token buckets per API process, not global quotas.
+  `LEASEQ_PUBLIC_READ=1` opens GET `/stats` and `/jobs`, including job-list
+  fields, to anyone who can reach the port.
+- The claim path orders due runnable jobs by priority descending then id
+  ascending. The measured partial kind/due index improved the specified local
+  sparse and absent-kind workloads; distributions, writes, cold cache and
+  multi-host contention may differ.
 - Finished jobs and events are never deleted, and the append-only trigger
   blocks deleting events. There is no retention or archiving.
 - A database superuser or the table owner can disable the audit trigger. It
@@ -610,8 +666,9 @@ repository, recommended in real use: adding the constraint as a second guard.
   misbehaving client that has the API token can grow the audit log.
 - A job whose worker is killed on every attempt ends up `dead` only when the
   next claim notices the expired lease; there is no background sweeper.
-- Benchmarks are from a 2-core shared container with client, API and database
-  competing for the same cores.
+- The direct claim benchmark excludes HTTP/API overhead and handler time; it is
+  not comparable to older HTTP throughput figures. No cloud capacity or
+  unlimited-scale claim is supported by these local results.
 - The dashboard is built for demo-scale queues. Its counts are still a
   `count(*)` over all jobs (95-145 ms at 520,010 jobs in four local EXPLAIN
   ANALYZE runs). The API runs it at most once per 5 seconds per API process
@@ -620,8 +677,8 @@ repository, recommended in real use: adding the constraint as a second guard.
   scan the table; they are not indexed yet. With
   a job open, each refresh fetches up to 500 of that job's events. The job table shows at most the newest 200
   jobs per filter; older jobs are reached with the filters or "Open job" by id.
-  The token is kept in page memory only, so reloading the page asks for it
-  again.
+  The token is memory-only by default; explicit sessionStorage opt-in keeps it
+  until the tab closes and exposes it to same-origin scripts while stored.
 
 ## Contributing and security
 

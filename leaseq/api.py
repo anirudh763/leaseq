@@ -9,7 +9,11 @@ Access control (security.Auth, applied to every request before its body is read)
     worker calls and operator actions always need the token.
 """
 import logging
+import asyncio
+import math
+import re
 from contextlib import asynccontextmanager
+from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
@@ -18,9 +22,9 @@ from fastapi import FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field, StrictBool, field_validator
+from pydantic import BaseModel, Field, StrictBool, StrictInt, field_validator, model_validator
 
-from . import __version__, db, demo, queue, security, observability
+from . import __version__, db, demo, queue, security, observability, operations, scheduling
 
 log = logging.getLogger("leaseq.api")
 
@@ -44,12 +48,32 @@ async def lifespan(app: FastAPI):
     app.state.probe_limiter = observability.RateBuckets(
         auth_limit=120, public_limit=120, max_clients=256)
     app.state.metrics = observability.Metrics()
-    app.state.pool = db.make_pool()
+    pool = db.make_pool()
+    app.state.pool = pool
     app.state.counts_cache = queue.CountsCache(queue.COUNTS_MAX_AGE)
-    with app.state.pool.connection() as conn:
+    app.state.operations_metrics_cache = operations.MetricsCache()
+    with pool.connection() as conn:
         db.apply_schema(conn)
+    async def scheduler_loop():
+        while True:
+            try:
+                await asyncio.to_thread(_dispatch_schedules, pool)
+            except Exception:
+                log.warning("schedule dispatch failed")
+            await asyncio.sleep(1)
+    scheduler_task = asyncio.create_task(scheduler_loop())
     yield
-    app.state.pool.close()
+    scheduler_task.cancel()
+    try:
+        await scheduler_task
+    except asyncio.CancelledError:
+        pass
+    pool.close()
+
+
+def _dispatch_schedules(pool):
+    with pool.connection() as conn:
+        scheduling.dispatch_due(conn, 10)
 
 
 app = FastAPI(title="leaseq", version=__version__, lifespan=lifespan)
@@ -89,11 +113,71 @@ class JobIn(BaseModel):
 
     _payload_depth = field_validator("payload")(check_json_depth)
     max_attempts: int = Field(default=5, ge=1, le=100)
+    priority: int = Field(default=0, ge=-100, le=100, strict=True)
+    run_after: datetime | None = None
+    delay_seconds: float | None = Field(default=None, ge=0, le=31_536_000, allow_inf_nan=False)
+
+    @field_validator("run_after")
+    @classmethod
+    def timezone_required(cls, value):
+        if value is not None and (value.tzinfo is None or value.utcoffset() is None):
+            raise ValueError("run_after must include a timezone")
+        return value
+
+    @field_validator("delay_seconds")
+    @classmethod
+    def delay_finite(cls, value):
+        if value is not None and not math.isfinite(value):
+            raise ValueError("delay_seconds must be finite")
+        return value
+
+    @model_validator(mode="after")
+    def schedule_exclusive(self):
+        if self.run_after is not None and self.delay_seconds is not None:
+            raise ValueError("run_after and delay_seconds cannot be used together")
+        return self
 
 
 class ClaimIn(BaseModel):
     worker_id: str = Field(min_length=1, max_length=200, pattern=WORKER_PATTERN)
     lease_seconds: float = Field(default=30, gt=0, le=3600, allow_inf_nan=False)
+    kinds: list[str] | None = Field(default=None, min_length=1, max_length=64)
+
+    @field_validator("kinds")
+    @classmethod
+    def valid_kinds(cls, value):
+        if value is not None and (len(set(value)) != len(value) or any(
+                not kind or len(kind) > 100 or not re.fullmatch(KIND_PATTERN, kind)
+                for kind in value)):
+            raise ValueError("kinds must be unique valid names")
+        return value
+
+
+class BulkIn(BaseModel):
+    action: Literal["requeue", "cancel"]
+    job_ids: list[StrictInt] = Field(min_length=1, max_length=100)
+
+    @field_validator("job_ids")
+    @classmethod
+    def safe_ids(cls, value):
+        if any(type(item) is not int or item < 1 or item > 2**53 - 1 for item in value) or len(set(value)) != len(value):
+            raise ValueError("job_ids must be unique positive safe integers")
+        return value
+
+
+class ScheduleIn(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    kind: str = Field(min_length=1, max_length=100, pattern=KIND_PATTERN)
+    payload: dict
+    cron: str = Field(min_length=1, max_length=100)
+    priority: int = Field(default=0, ge=-100, le=100, strict=True)
+    max_attempts: int = Field(default=5, ge=1, le=100)
+
+    _payload_depth = field_validator("payload")(check_json_depth)
+
+
+class ScheduleEnabledIn(BaseModel):
+    enabled: bool
 
 
 class HeartbeatIn(BaseModel):
@@ -160,9 +244,12 @@ def data_error(request: Request, exc: psycopg.errors.DataError):
 @app.post("/jobs")
 def submit(body: JobIn, request: Request, response: Response,
            idempotency_key: str = Header(min_length=1, max_length=200)):
+    if idempotency_key.startswith("_leaseq_schedule/"):
+        raise HTTPException(422, "Idempotency-Key uses a reserved prefix")
     with request.app.state.pool.connection() as conn:
         job, created = queue.enqueue(conn, body.kind, body.payload, idempotency_key,
-                                     body.max_attempts)
+                                     body.max_attempts, body.priority, body.run_after,
+                                     body.delay_seconds)
     response.status_code = 201 if created else 200
     return job
 
@@ -170,7 +257,7 @@ def submit(body: JobIn, request: Request, response: Response,
 @app.post("/jobs/claim")
 def claim(body: ClaimIn, request: Request):
     with request.app.state.pool.connection() as conn:
-        job = queue.claim(conn, body.worker_id, body.lease_seconds)
+        job = queue.claim(conn, body.worker_id, body.lease_seconds, body.kinds)
     return job if job is not None else Response(status_code=204)
 
 
@@ -221,6 +308,12 @@ def cancel(job_id: int, request: Request, body: CancelIn | None = None):
     if job is None:
         raise HTTPException(409, "only queued or leased jobs can be cancelled")
     return job
+
+
+@app.post("/jobs/bulk")
+def bulk_jobs(body: BulkIn, request: Request):
+    with request.app.state.pool.connection() as conn:
+        return operations.bulk(conn, body.action, body.job_ids)
 
 
 @app.get("/auth/check")
@@ -286,6 +379,49 @@ def metrics(request: Request):
         counts = request.app.state.counts_cache.get(lambda: queue.counts(conn))
     return PlainTextResponse(request.app.state.metrics.render(counts),
                              media_type="text/plain; version=0.0.4")
+
+
+@app.get("/workers")
+def list_workers(request: Request, limit: int = Query(100, ge=1, le=100)):
+    with request.app.state.pool.connection() as conn:
+        return operations.workers(conn, limit)
+
+
+@app.get("/operations/metrics")
+def operations_metrics(request: Request):
+    with request.app.state.pool.connection() as conn:
+        return request.app.state.operations_metrics_cache.get(lambda: operations.metrics(conn))
+
+
+@app.get("/schedules")
+def list_schedules(request: Request, limit: int = Query(100, ge=1, le=100)):
+    with request.app.state.pool.connection() as conn:
+        return scheduling.list_schedules(conn, limit)
+
+
+@app.post("/schedules", status_code=201)
+def create_schedule(body: ScheduleIn, request: Request, response: Response,
+                    idempotency_key: str = Header(min_length=1, max_length=200)):
+    try:
+        with request.app.state.pool.connection() as conn:
+            row, created = scheduling.create(conn, name=body.name, kind=body.kind,
+                payload=body.payload, cron=body.cron, priority=body.priority,
+                max_attempts=body.max_attempts, key=idempotency_key)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    response.status_code = 201 if created else 200
+    return row
+
+
+@app.patch("/schedules/{schedule_id}")
+def update_schedule(schedule_id: int, body: ScheduleEnabledIn, request: Request):
+    if schedule_id < 1 or schedule_id > BIGINT_MAX:
+        raise HTTPException(422, "invalid schedule id")
+    with request.app.state.pool.connection() as conn:
+        row = scheduling.set_enabled(conn, schedule_id, body.enabled)
+    if row is None:
+        raise HTTPException(404, "schedule not found")
+    return row
 
 
 @app.get("/jobs")

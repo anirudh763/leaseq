@@ -336,7 +336,17 @@ function Modal({ className, labelledby, onClose, children }) {
     if (!element.open) element.showModal();
     return () => { if (element.open) element.close(); };
   }, []);
-  return <dialog ref={dialog} className={className} aria-labelledby={labelledby} onClose={() => closeHandler.current?.()} onClick={(event) => { if (event.target === event.currentTarget || event.target.closest('[data-dialog-close]')) dialog.current?.close(); }}>{children}</dialog>;
+  const keepFocus = (event) => {
+    if (event.key !== 'Tab') return;
+    const controls = [...dialog.current.querySelectorAll('button, a[href], input, select, textarea, summary, [tabindex]')]
+      .filter((element) => !element.disabled && element.tabIndex >= 0 && element.getClientRects().length);
+    const target = event.shiftKey ? controls.at(-1) : controls[0];
+    const boundary = event.shiftKey ? controls[0] : controls.at(-1);
+    if (target && (document.activeElement === boundary || !dialog.current.contains(document.activeElement))) {
+      event.preventDefault(); target.focus();
+    }
+  };
+  return <dialog ref={dialog} className={className} aria-labelledby={labelledby} onKeyDown={keepFocus} onClose={() => closeHandler.current?.()} onClick={(event) => { if (event.target === event.currentTarget || event.target.closest('[data-dialog-close]')) dialog.current?.close(); }}>{children}</dialog>;
 }
 
 function JobDetail({ detail }) {

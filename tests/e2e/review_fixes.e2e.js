@@ -19,7 +19,7 @@ async function connect(page) {
 }
 
 (async () => {
-  const browser = await chromium.launch();
+  const browser = await chromium.launch({ ...(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : {}) });
   async function check(name, fn, width = 1280) {
     const context = await browser.newContext({ viewport: { width, height: 900 } });
     const page = await context.newPage();

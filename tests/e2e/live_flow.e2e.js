@@ -50,7 +50,7 @@ const openJobById = async (page, id) => {
 };
 
 (async () => {
-  const browser = await chromium.launch();
+  const browser = await chromium.launch(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : {});
   try {
     const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 }, bypassCSP: true });
     const page = await ctx.newPage();

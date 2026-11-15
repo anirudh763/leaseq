@@ -9,3 +9,7 @@ frontend/.test-artifacts/
 # Local secrets/configuration. Keep the checked-in examples visible.
 .env.*
 !.env.example
+
+# Local Python package build output.
+build/
+*.egg-info/

@@ -93,7 +93,7 @@ async function axeViolations(page) {
 }
 
 (async () => {
-  const browser = await chromium.launch();
+  const browser = await chromium.launch(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : {});
   try {
     // ---- 1. no page overflow at 320 / 768 / 1440 on every primary screen ------------
     for (const width of [320, 768, 1440]) {
@@ -479,7 +479,7 @@ async function axeViolations(page) {
         form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
         form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
       });
-      await page.locator("#wc-error").filter({ hasText: /try again/ }).waitFor();
+      await page.locator("#wc-error").filter({ hasText: /Retry with the same idempotency key/ }).waitFor();
       assert.equal(attempts.length, 1, "a second submit was sent while the first was pending");
       await page.getByRole("button", { name: "Submit job" }).click();
       await page.locator("#submit-result").filter({ hasText: /3 words/ }).waitFor({ timeout: 30000 });
