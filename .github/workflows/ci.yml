@@ -165,6 +165,11 @@ jobs:
       - run: npm install --no-save playwright@1.63.0 axe-core@4.14.0
       - run: npx playwright install --with-deps chromium
       - run: python -m pytest -v tests/test_dashboard_e2e.py
+      - name: static guest, simulator and offline regression checks
+        run: |
+          python scripts/build_static_site.py
+          git diff --exit-code -- docs leaseq/dashboard/sw.js
+          node tests/e2e/revenue_pwa.e2e.js
 
   # The real Docker stack (postgres, API, worker) end to end. The demo feeder is
   # scaled to 0 so the browser test starts from an empty queue.

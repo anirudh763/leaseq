@@ -5,7 +5,7 @@ const path = require('node:path');
 const { chromium } = require('playwright');
 
 const root = path.resolve(__dirname, '../../docs');
-const evidence = process.env.LEASEQ_EVIDENCE || '/Users/anirudhyadav/Downloads/active/audit-workstation-2026-11-15/leaseq';
+const evidence = process.env.LEASEQ_EVIDENCE || path.resolve(__dirname, '../../artifacts/verification/post-restart/revenue-pwa');
 const axeSource = fs.readFileSync(require.resolve('axe-core'), 'utf8');
 const mime = { '.html':'text/html; charset=utf-8', '.js':'text/javascript; charset=utf-8', '.css':'text/css; charset=utf-8', '.webmanifest':'application/manifest+json', '.svg':'image/svg+xml', '.png':'image/png', '.woff2':'font/woff2', '.txt':'text/plain; charset=utf-8' };
 let interestEndpoint = '';
@@ -45,7 +45,7 @@ const close = (server) => new Promise((resolve) => server.close(resolve));
   const unavailableServer=http.createServer();unavailablePort=await listen(unavailableServer);await close(unavailableServer);
   probePort=await listen(probe);
   interestEndpoint = `http://127.0.0.1:${receiverPort}/interest`;
-  const browser = await chromium.launch({ headless:true, executablePath:process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' });
+  const browser = await chromium.launch({ headless:true, ...(process.env.CHROME_PATH ? { executablePath:process.env.CHROME_PATH } : {}) });
   const report = { viewports:[], axe:[], apiRequests:[], interest:{}, pwa:{} };
   const errors = [];
   try {
@@ -135,7 +135,7 @@ const close = (server) => new Promise((resolve) => server.close(resolve));
 
     // Manifest and scope are served from the same static app root.
     const manifest = await (await page.request.get(base+'manifest.webmanifest')).json();
-    assert.equal(manifest.scope,'./'); assert.equal(manifest.theme_color,'#18181B');
+    assert.equal(manifest.scope,'./'); assert.equal(manifest.theme_color,'#183b2b');
     await page.waitForFunction(() => !!navigator.serviceWorker?.controller, { timeout:15000 }).catch(async()=>{const details=await page.evaluate(async()=>({secure:isSecureContext,supported:'serviceWorker'in navigator,controller:!!navigator.serviceWorker?.controller,registrations:await navigator.serviceWorker?.getRegistrations().then(rs=>rs.map(r=>({scope:r.scope,active:r.active?.state,installing:r.installing?.state,waiting:r.waiting?.state}))),registerError:window.__leaseqSwRegisterError,status:document.querySelector('#pwa-status-text')?.textContent}));throw new Error(JSON.stringify({serviceWorker:details,errors}));});
     const readiness=await page.evaluate(async()=>await window.LeaseQPlatform.checkOfflineReadiness());
     assert.equal(readiness.ready,true,JSON.stringify(readiness));

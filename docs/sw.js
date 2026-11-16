@@ -25,7 +25,7 @@ const REQUIRED = [
 ];
 // Generated from the packaged files during release preparation.
 const SHA256 = Object.freeze({
-  './': 'ca37e8b535d7ad9372670993b57bdfd259df679566b6d0c4961f78242d1a9534',
+  './': '0ebcd42ece963f6d7cc2293830677c11459aaca161655a14ec78fd7d930a758b',
   './manifest.webmanifest': '237030fc793ba3b663020f629531cecd89d9cffb7389009360e08e71181c5e70',
   './pages/privacy.html': 'fcf24b03133cc9c98da6865c6ea94fa8397f29c8b347e328a1f6ed247f9b4e68',
   './pages/terms.html': 'd71e9bff0e8c2b5163f4b8a8a87500b06818894688e8634dbf74c7e1c51ca266',

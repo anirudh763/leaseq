@@ -6,6 +6,19 @@ const TOKEN = process.env.API_TOKEN;
 const EXP = JSON.parse(process.env.EXPECTED);
 const results = [];
 
+async function expectStarted(started, message) {
+  let timer;
+  try {
+    const requested = await Promise.race([
+      started.then(() => true),
+      new Promise((resolve) => { timer = setTimeout(() => resolve(false), 5000); }),
+    ]);
+    assert.equal(requested, true, message);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function go(page, route) {
   await page.evaluate((r) => { location.hash = r; }, route);
   await page.waitForFunction((r) => location.hash === r && document.querySelector("main h1"), route);
@@ -40,7 +53,7 @@ async function connect(page) {
         await route.fulfill({ status: 200, contentType: "application/json", body: '{"jobs":[],"counts":{}}' });
       });
       await page.goto(`${BASE}/dashboard/#/connection`);
-      await started;
+      await expectStarted(started, "expected anonymous connection probe GET /jobs?limit=1");
       const input = page.getByLabel("API token", { exact: true });
       await input.fill(TOKEN);
       await input.evaluate((node) => { window.__tokenInput = node; });
@@ -183,7 +196,7 @@ async function connect(page) {
         began(); await blocked; await r.abort();
       });
       await go(page, `#/jobs/${EXP.dead}`);
-      await started;
+      await expectStarted(started, `expected held GET /jobs/${EXP.dead}/events before Forget`);
       await page.getByRole("button", { name: "Forget token", exact: true }).first().click();
       release();
       await page.waitForTimeout(300);
@@ -202,7 +215,7 @@ async function connect(page) {
         began(); await blocked; await r.abort();
       });
       await go(page, `#/jobs/${EXP.dead}`);
-      await started;
+      await expectStarted(started, `expected held GET /jobs/${EXP.dead}/events before changing route`);
       await go(page, "#/submit");
       release();
       await page.waitForTimeout(300);
@@ -230,7 +243,7 @@ async function connect(page) {
         await r.fulfill({ status: 503, contentType: "application/json", body: '{"detail":"old Jobs failure"}' });
       });
       await go(page, "#/jobs");
-      await started;
+      await expectStarted(started, "expected held GET /jobs before opening Submit");
       await go(page, "#/submit");
       release();
       await page.waitForTimeout(300);
