@@ -51,8 +51,9 @@ async function confirmButtonStyle(page) {
   });
 }
 
+// Only the exact non-secret offline-notice bit is permitted; all other stored state fails.
 async function storage(page) {
-  return page.evaluate(() => ({ local: localStorage.length, session: sessionStorage.length,
+  return page.evaluate(() => ({ local: localStorage.length, session: Object.keys(sessionStorage).filter(key => key !== "leaseq:pwa:v1:ready-notice" || sessionStorage.getItem(key) !== "1").length,
                                 cookie: document.cookie }));
 }
 

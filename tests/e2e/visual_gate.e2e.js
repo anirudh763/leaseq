@@ -374,8 +374,8 @@ function contrastRatio(foreground, background) {
       await go(page, `#/jobs/${EXP.dead}`, new RegExp(`^Job ${EXP.dead}$`));
       await page.waitForTimeout(2500);
       assert.equal(await markerInDom(page), false, "stale payload shown after 401");
-      assert.equal(await page.evaluate(() => ({ l: JSON.stringify(localStorage), s: sessionStorage.length }))
-        .then((x) => x.l.includes("e2e") || x.s > 0), false, "token found in browser storage");
+      assert.equal(await page.evaluate(() => ({ l: localStorage.length, s: Object.keys(sessionStorage).filter(key => key !== "leaseq:pwa:v1:ready-notice" || sessionStorage.getItem(key) !== "1").length, cookie: document.cookie }))
+        .then((x) => x.l > 0 || x.s > 0 || x.cookie !== ""), false, "unexpected stored state after authentication failure");
       await page.context().close();
     });
 

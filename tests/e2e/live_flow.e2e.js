@@ -166,7 +166,7 @@ const openJobById = async (page, id) => {
     assert.equal(await page.locator("#rows [data-job]").count(), 0);
     assert.deepEqual(await page.$$eval("[data-count]", (els) => els.map((e) => e.textContent)), Array(6).fill("–"));
     assert.deepEqual(await page.evaluate(() => ({ local: localStorage.length,
-      session: sessionStorage.length, cookie: document.cookie })), { local: 0, session: 0, cookie: "" });
+      session: Object.keys(sessionStorage).filter(key => key !== "leaseq:pwa:v1:ready-notice" || sessionStorage.getItem(key) !== "1").length, cookie: document.cookie })), { local: 0, session: 0, cookie: "" });
     step("Forget token: payload gone at once; a read in flight does not bring it back; job rows and counts cleared");
 
     await page.evaluate(() => { window.location.hash = "#/connection"; });
