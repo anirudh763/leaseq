@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
+  <rect width="1200" height="630" fill="#18181b"/>
+  <path d="M0 470H1200M0 510H1200M0 550H1200M0 590H1200M820 0V630M880 0V630M940 0V630M1000 0V630M1060 0V630M1120 0V630" stroke="#343438" stroke-width="1"/>
+  <rect x="76" y="82" width="64" height="8" rx="4" fill="#f59e0b"/>
+  <text x="76" y="166" fill="#fffdf7" font-family="Arial,sans-serif" font-size="76" font-weight="700">LeaseQ</text>
+  <text x="76" y="238" fill="#fbbf24" font-family="Arial,sans-serif" font-size="31" font-weight="600">QUEUE RECOVERY WITH EVIDENCE</text>
+  <text x="76" y="315" fill="#fffdf7" font-family="Arial,sans-serif" font-size="34">Run a local lease and fencing simulation.</text>
+  <text x="76" y="365" fill="#c7c2b8" font-family="Arial,sans-serif" font-size="26">Optional live operations use your separately operated API.</text>
+  <rect x="76" y="420" width="542" height="124" rx="12" fill="#242427" stroke="#55545a" stroke-width="2"/>
+  <circle cx="124" cy="462" r="11" fill="#f59e0b"/><text x="151" y="471" fill="#fffdf7" font-family="Arial,sans-serif" font-size="24">Worker B holds current lease</text>
+  <circle cx="124" cy="510" r="11" fill="#9a9aa0"/><text x="151" y="519" fill="#c7c2b8" font-family="Arial,sans-serif" font-size="22">Stale completion rejected by fence</text>
+  <text x="76" y="590" fill="#c7c2b8" font-family="Arial,sans-serif" font-size="18">FREE BROWSER SIMULATOR · NO POSTGRESQL WORKER</text>
+</svg>

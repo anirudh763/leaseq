@@ -3,17 +3,55 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Jobs – LeaseQ</title>
+<title>LeaseQ — Browser Simulator and Live Queue Operations</title>
+<meta name="description" content="Explore a free local queue recovery simulation, or connect to an explicitly authorized LeaseQ API for live PostgreSQL-backed operations.">
+<link rel="canonical" href="https://anirudh763.github.io/leaseq/">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="LeaseQ">
+<meta property="og:title" content="LeaseQ — Inspect queue state and recover with evidence">
+<meta property="og:description" content="Run a clearly labelled local lease and fencing simulation, then connect to an authorized LeaseQ API for live queue operations.">
+<meta property="og:url" content="https://anirudh763.github.io/leaseq/">
+<meta property="og:image" content="https://anirudh763.github.io/leaseq/og-card.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="LeaseQ charcoal and amber preview showing a queued job, a worker lease takeover and a fenced stale completion.">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="LeaseQ — Inspect queue state and recover with evidence">
+<meta name="twitter:description" content="Free local queue simulation; live operations require an authorized LeaseQ API.">
+<meta name="twitter:image" content="https://anirudh763.github.io/leaseq/og-card.png">
+<meta name="twitter:image:alt" content="LeaseQ local lease recovery simulation preview.">
+<meta name="leaseq-api-base" content="">
+<meta name="leaseq-waitlist-endpoint" content="">
+<meta name="theme-color" content="#183b2b">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<link rel="manifest" href="/dashboard/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/dashboard/assets/pwa-icon-180.png">
 <meta name="color-scheme" content="light">
-<link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
-<link rel="stylesheet" href="assets/ui.css">
-<link rel="stylesheet" href="assets/app.css">
+<link rel="icon" href="/dashboard/assets/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/dashboard/assets/ui.css">
+<link rel="stylesheet" href="/dashboard/assets/app.css">
+<link rel="stylesheet" href="/dashboard/assets/trust.css">
 <!-- Applies an explicit dark choice before first paint; light is the default. -->
-<script src="assets/theme.js"></script>
-<script src="assets/app.js" defer></script>
+<script src="/dashboard/assets/theme.js"></script>
+<script src="/dashboard/assets/profiles.js" defer></script>
+<script src="/dashboard/assets/platform.js" defer></script>
+<script src="/dashboard/assets/simulator.js" defer></script>
+<script src="/dashboard/assets/interest.js" defer></script>
+<script src="/dashboard/assets/sync.js" defer></script>
+<script src="/dashboard/assets/app.js" defer></script>
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"SoftwareApplication","name":"LeaseQ","applicationCategory":"DeveloperApplication","operatingSystem":"Web browser","description":"A free browser queue simulator with optional live operations against a separately operated, authorized FastAPI and PostgreSQL backend.","offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"featureList":["Local deterministic job, lease and fencing simulation","Optional live queue inspection with a separately operated API","No offline replay of live queue mutations"]}
+</script>
 </head>
 <body>
 <a class="skip" href="#main">Skip to content</a>
+
+<div id="pwa-status" class="pwa-status" role="status" hidden>
+  <span id="pwa-status-text"></span>
+  <button type="button" id="pwa-status-check" class="btn" hidden>Check offline readiness</button>
+  <button type="button" id="pwa-status-close" class="btn" aria-label="Dismiss status">Dismiss</button>
+</div>
 
 <div class="shell">
   <section class="rail" aria-label="LeaseQ commands">
@@ -23,11 +61,13 @@
     <nav aria-label="Main" class="nav" data-nav>
       <p class="nav-group" id="rail-work">Queue</p>
       <ul aria-labelledby="rail-work">
-        <li><a href="#/jobs" data-route="jobs">Jobs</a></li>
+        <li><a href="#/jobs" data-route="jobs" data-product="/" data-legacy="#/jobs">Jobs</a></li>
         <li><a href="#/submit" data-route="submit">New job</a></li>
-        <li><a href="#/operations" data-route="operations">Workers</a></li>
+        <li><a href="#/operations" data-route="operations" data-product="/leases" data-legacy="#/operations">Workers</a></li>
       </ul>
       <ul>
+        <li><a href="#/dead-letter" data-route="deadletter" data-product="/dead-letter" data-legacy="#/dead-letter">Dead letter</a></li>
+        <li><a href="#/system" data-route="system" data-product="/system" data-legacy="#/system">System</a></li>
         <li><a href="#/connection" data-route="connection">Settings</a></li>
       </ul>
     </nav>
@@ -41,7 +81,21 @@
       <button type="button" class="btn menu-btn" id="menu-button" aria-haspopup="dialog"
               aria-controls="menu-sheet">Menu</button>
       <nav aria-label="Breadcrumb" class="crumbs"><ol id="crumbs"><li><a href="#/jobs">LeaseQ</a></li></ol></nav>
+      <details class="suite-menu"><summary>More tools</summary><nav aria-label="Connected tools">
+        <a href="https://anirudh763.github.io/flightseal/console/">FlightSeal · HashWing</a>
+        <a href="https://anirudh763.github.io/mavframe/">Mavframe</a>
+        <a href="https://anirudh763.github.io/talkback-triage-pilot/">CueReport</a>
+        <a href="https://anirudh763.github.io/a11y-issue-warehouse/">Issue Warehouse</a>
+        <a href="https://anirudh763.github.io/leaseq/" aria-current="page">LeaseQ</a>
+        <a href="https://anirudh763.github.io/portfolio/">Portfolio</a>
+      </nav></details>
       <div class="loc-right">
+        <div class="mode-indicator" aria-live="polite"><span id="mode-label">Live API · checking availability</span><button type="button" class="btn" id="mode-toggle">Use Browser Simulator</button></div>
+        <nav class="persistent-actions" aria-label="Account and workspace">
+          <a href="#/login">Log in</a><a href="#/signup">Create account</a><a class="btn primary" href="#/app">Launch Workspace</a>
+        </nav>
+        <button type="button" class="btn" data-pwa-install hidden>Install LeaseQ</button>
+        <button type="button" class="btn" data-pwa-ios-guide hidden>Add to Home Screen</button>
         <span id="conn-status" class="conn">Not connected</span>
         <button type="button" class="btn" id="forget-token" hidden>Forget token</button>
       </div>
@@ -58,9 +112,13 @@
 
     <footer class="app-footer muted">
       API token stays in this page’s memory only.
-      <a href="assets/OFL.txt">Font license</a>.
+      <a href="/dashboard/assets/OFL-plus-jakarta-sans.txt">Font license</a>.
       <a class="repo" href="https://github.com/anirudh763/leaseq">Source on GitHub</a>
       <span id="version">leaseq</span>
+      <button type="button" class="btn" data-feedback-open>Send feedback</button>
+      <a href="/dashboard/pages/privacy.html">Privacy</a>
+      <a href="/dashboard/pages/terms.html">Terms</a>
+      <a href="/dashboard/pages/security-offline.html">Security &amp; offline</a>
     </footer>
   </div>
 </div>
@@ -73,15 +131,32 @@
   <nav aria-label="Menu links" class="nav" data-nav>
     <p class="nav-group" id="sheet-work">Queue</p>
     <ul aria-labelledby="sheet-work">
-      <li><a href="#/jobs" data-route="jobs">Jobs</a></li>
+      <li><a href="#/jobs" data-route="jobs" data-product="/" data-legacy="#/jobs">Jobs</a></li>
       <li><a href="#/submit" data-route="submit">New job</a></li>
-        <li><a href="#/operations" data-route="operations">Workers</a></li>
+        <li><a href="#/operations" data-route="operations" data-product="/leases" data-legacy="#/operations">Workers</a></li>
     </ul>
     <ul>
-      <li><a href="#/connection" data-route="connection">Settings</a></li>
+      <li><a href="#/dead-letter" data-route="deadletter" data-product="/dead-letter" data-legacy="#/dead-letter">Dead letter</a></li>
+        <li><a href="#/system" data-route="system" data-product="/system" data-legacy="#/system">System</a></li>
+        <li><a href="#/connection" data-route="connection">Settings</a></li>
     </ul>
   </nav>
+  <details class="suite-menu"><summary>More tools</summary><nav aria-label="Menu tools">
+    <a href="https://anirudh763.github.io/flightseal/console/">FlightSeal · HashWing</a>
+    <a href="https://anirudh763.github.io/mavframe/">Mavframe</a>
+    <a href="https://anirudh763.github.io/talkback-triage-pilot/">CueReport</a>
+    <a href="https://anirudh763.github.io/a11y-issue-warehouse/">Issue Warehouse</a>
+    <a href="https://anirudh763.github.io/leaseq/" aria-current="page">LeaseQ</a>
+    <a href="https://anirudh763.github.io/portfolio/">Portfolio</a>
+  </nav></details>
   <button type="button" class="btn quiet" data-theme-toggle>Use dark theme</button>
+  <div class="trust-links" aria-label="App help">
+    <button type="button" class="btn" data-pwa-install hidden>Install LeaseQ</button>
+    <button type="button" class="btn" data-pwa-ios-guide hidden>Add to Home Screen help</button>
+    <button type="button" class="btn" data-feedback-open>Send feedback</button>
+    <a href="/dashboard/pages/privacy.html">Privacy</a><a href="/dashboard/pages/terms.html">Terms</a>
+    <a href="/dashboard/pages/security-offline.html">Security &amp; offline</a>
+  </div>
 </dialog>
 
 <dialog id="confirm-dialog" aria-labelledby="confirm-title" aria-describedby="confirm-text">
@@ -92,6 +167,50 @@
       <button type="submit" class="btn primary" id="confirm-yes" value="yes">Confirm</button>
       <button type="submit" class="btn" id="confirm-no" value="no">Keep as is</button>
     </div>
+  </form>
+</dialog>
+
+<dialog id="feedback-dialog" class="feedback-dialog" aria-labelledby="feedback-title" aria-describedby="feedback-description">
+  <form id="feedback-form" method="dialog">
+    <h2 id="feedback-title">Send feedback</h2>
+    <p id="feedback-description">Review this draft before opening the LeaseQ issue form. Nothing is sent automatically.</p>
+    <label for="feedback-description-input">Description</label>
+    <textarea id="feedback-description-input" maxlength="4000" required></textarea>
+    <label for="feedback-steps-input">Reproduction steps (optional)</label>
+    <textarea id="feedback-steps-input" maxlength="4000"></textarea>
+    <label for="feedback-diagnostics">Included diagnostics</label>
+    <textarea id="feedback-diagnostics" readonly></textarea>
+    <label for="feedback-draft">Reviewable draft for GitHub</label>
+    <textarea id="feedback-draft" readonly></textarea>
+    <p id="feedback-status" role="status"></p>
+    <div class="dialog-buttons">
+      <button type="button" class="btn" id="feedback-copy">Copy draft</button>
+      <button type="button" class="btn primary" id="feedback-open">Open GitHub draft</button>
+      <button type="submit" class="btn" value="cancel">Close</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="install-guide" aria-labelledby="install-guide-title" aria-describedby="install-guide-description">
+  <div class="stack">
+    <h2 id="install-guide-title">Add LeaseQ to your Home Screen</h2>
+    <p id="install-guide-description">In Safari on iPhone or iPad:</p>
+    <ol><li>Open Share.</li><li>Choose Add to Home Screen, then enable Open as Web App if shown.</li></ol>
+    <p>If Safari's menu differs, open Safari's Share menu and look under Edit Actions.</p>
+    <div class="dialog-buttons"><button type="button" class="btn primary" id="install-guide-close">Done</button></div>
+  </div>
+</dialog>
+
+<dialog id="team-interest-dialog" aria-labelledby="team-interest-title" aria-describedby="team-interest-description">
+  <form id="team-interest-form" method="dialog">
+    <h2 id="team-interest-title">Team and cloud early access</h2>
+    <p id="team-interest-description">All current LeaseQ features stay free. This form records interest in possible future team/cloud work; no managed service is available today.</p>
+    <label for="interest-email">Email</label><input id="interest-email" type="email" maxlength="254" autocomplete="email" required>
+    <label for="interest-size">Team size</label><select id="interest-size" required><option value="">Choose a range</option><option>1</option><option>2–5</option><option>6–20</option><option>21+</option></select>
+    <label for="interest-use">Use case</label><textarea id="interest-use" maxlength="1200" required></textarea>
+    <p class="hint">Destination: <span id="interest-destination">not configured; this stays as a local draft until you choose a configured endpoint.</span> Nothing is sent until you review and submit.</p>
+    <p id="interest-status" role="status" aria-live="polite"></p>
+    <div class="dialog-buttons"><button type="button" class="btn primary" id="interest-submit">Submit interest</button><button type="button" class="btn" id="interest-save-draft">Save draft on this browser</button><button type="submit" class="btn" value="cancel">Close</button></div>
   </form>
 </dialog>
 

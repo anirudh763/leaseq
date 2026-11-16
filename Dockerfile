@@ -19,8 +19,9 @@ COPY --from=console-build /src/leaseq/console/ leaseq/console/
 # Package installation belongs to the build stages; the runtime needs no pip.
 RUN python -m pip uninstall --yes pip
 # Run as an unprivileged user, not root.
-RUN useradd --system --no-create-home leaseq
-USER leaseq
+RUN useradd --uid 10001 --user-group --no-create-home --shell /usr/sbin/nologin leaseq
+USER 10001:10001
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 EXPOSE 8000
+HEALTHCHECK --interval=15s --timeout=3s --start-period=10s --retries=3 CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/livez',timeout=2)"]
 CMD ["sh", "-c", "exec uvicorn leaseq.api:app --host 0.0.0.0 --port \"${PORT:-8000}\" --limit-concurrency 128 --timeout-keep-alive 5 --no-access-log"]

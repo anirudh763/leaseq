@@ -12,7 +12,8 @@ import logging
 import asyncio
 import math
 import re
-from contextlib import asynccontextmanager
+import time
+from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Literal
@@ -48,6 +49,7 @@ async def lifespan(app: FastAPI):
     app.state.probe_limiter = observability.RateBuckets(
         auth_limit=120, public_limit=120, max_clients=256)
     app.state.metrics = observability.Metrics()
+    app.state.started_at = time.monotonic()
     pool = db.make_pool()
     app.state.pool = pool
     app.state.counts_cache = queue.CountsCache(queue.COUNTS_MAX_AGE)
@@ -332,6 +334,18 @@ def sample_jobs(request: Request):
     return {"enqueued": len(created)}
 
 
+@contextmanager
+def read_connection(request: Request):
+    """Bound connection acquisition and each query without changing pooled session defaults."""
+    try:
+        with request.app.state.pool.connection(timeout=2) as conn:
+            with conn.transaction():
+                conn.execute("SET LOCAL statement_timeout = '5s'")
+                yield conn
+    except psycopg.OperationalError:
+        raise HTTPException(503, "Database read unavailable; retry later.") from None
+
+
 # --- reads -------------------------------------------------------------------
 
 @app.get("/livez")
@@ -355,17 +369,14 @@ def readyz(request: Request):
 
 @app.get("/healthz")
 def healthz(request: Request):
-    """Liveness for compose and the test harness, and the running version.
-    Reveals nothing about jobs."""
-    with request.app.state.pool.connection() as conn:
-        conn.execute("SELECT 1")
-    return {"ok": True, "version": __version__}
+    """Process liveness; dependency readiness belongs to /readyz."""
+    return livez()
 
 
 @app.get("/stats")
 def stats(request: Request, response: Response):
     """Aggregate counts share /jobs' declared bounded-age database snapshot."""
-    with request.app.state.pool.connection() as conn:
+    with read_connection(request) as conn:
         counts = request.app.state.counts_cache.get(lambda: queue.counts(conn))
     response.headers["X-LeaseQ-Counts-As-Of"] = counts["as_of"].isoformat()
     response.headers["X-LeaseQ-Counts-Max-Age-Seconds"] = str(request.app.state.counts_cache.max_age)
@@ -375,27 +386,50 @@ def stats(request: Request, response: Response):
 @app.get("/metrics", response_class=PlainTextResponse)
 def metrics(request: Request):
     """Authenticated Prometheus scrape. Queue gauges reuse the bounded-age cache."""
-    with request.app.state.pool.connection() as conn:
-        counts = request.app.state.counts_cache.get(lambda: queue.counts(conn))
+    try:
+        with request.app.state.pool.connection(timeout=2) as conn:
+            with conn.transaction():
+                conn.execute("SET LOCAL statement_timeout = '2s'")
+                counts = request.app.state.counts_cache.get(lambda: queue.counts(conn))
+    except psycopg.Error:
+        return PlainTextResponse("metrics dependency unavailable\n", status_code=503)
     return PlainTextResponse(request.app.state.metrics.render(counts),
                              media_type="text/plain; version=0.0.4")
 
 
+@app.get("/api/system")
+def system_status(request: Request):
+    """Authenticated process measurements with bounded database readiness."""
+    available = not isinstance(readyz(request), JSONResponse)
+    metrics = request.app.state.metrics
+    with metrics.lock:
+        requests = sum(metrics.requests.values())
+        errors = sum(value for (_, _, status), value in metrics.requests.items() if status >= 400)
+    return {
+        "service": "leaseq", "status": "ready" if available else "not_ready",
+        "uptime_seconds": round(time.monotonic() - request.app.state.started_at, 3),
+        "health": {"status": "ok"},
+        "readiness": {"status": "ready" if available else "not_ready"},
+        "http": {"requests_total": requests, "errors_total": errors},
+        "scope": "HTTP API process and bounded database readiness; worker outcomes measured separately",
+    }
+
+
 @app.get("/workers")
 def list_workers(request: Request, limit: int = Query(100, ge=1, le=100)):
-    with request.app.state.pool.connection() as conn:
+    with read_connection(request) as conn:
         return operations.workers(conn, limit)
 
 
 @app.get("/operations/metrics")
 def operations_metrics(request: Request):
-    with request.app.state.pool.connection() as conn:
+    with read_connection(request) as conn:
         return request.app.state.operations_metrics_cache.get(lambda: operations.metrics(conn))
 
 
 @app.get("/schedules")
 def list_schedules(request: Request, limit: int = Query(100, ge=1, le=100)):
-    with request.app.state.pool.connection() as conn:
+    with read_connection(request) as conn:
         return scheduling.list_schedules(conn, limit)
 
 
@@ -438,7 +472,7 @@ def list_jobs(request: Request,
     once per `counts_max_age_seconds` per API process; `counts_as_of` is the
     database time it was taken."""
     cache = request.app.state.counts_cache
-    with request.app.state.pool.connection() as conn:
+    with read_connection(request) as conn:
         jobs, next_before = queue.list_jobs(conn, state, kind, worker, before_id, limit)
         counts = dict(cache.get(lambda: queue.counts(conn)))
     as_of = counts.pop("as_of")
@@ -451,22 +485,26 @@ def job_events(job_id: int, request: Request,
                after_id: int = Query(0, ge=0, le=BIGINT_MAX),
                limit: int = Query(200, ge=1, le=queue.MAX_EVENTS_PAGE)):
     """The job's audit trail, oldest first; pass `next_after_id` back to page."""
-    with request.app.state.pool.connection() as conn:
+    with read_connection(request) as conn:
         events, next_after = queue.events(conn, job_id, after_id, limit)
     return {"events": events, "next_after_id": next_after}
 
 
 @app.get("/jobs/{job_id}")
 def get_job(job_id: int, request: Request):
-    with request.app.state.pool.connection() as conn:
+    with read_connection(request) as conn:
         return queue.get(conn, job_id)
 
 
 # --- dashboard (static files; no job data, so security.OPEN_PATHS lists them) --
 
 @app.get("/", include_in_schema=False)
+@app.get("/leases", include_in_schema=False)
+@app.get("/dead-letter", include_in_schema=False)
+@app.get("/system", include_in_schema=False)
 def root():
-    return RedirectResponse("/dashboard/")
+    return FileResponse(DASHBOARD / "index.html", media_type="text/html",
+                        headers={"Cache-Control": "no-cache"})
 
 
 @app.get("/dashboard", include_in_schema=False)
@@ -479,4 +517,17 @@ def dashboard():
     return FileResponse(DASHBOARD / "index.html")
 
 
+@app.get("/dashboard/manifest.webmanifest", include_in_schema=False)
+def dashboard_manifest():
+    return FileResponse(DASHBOARD / "manifest.webmanifest", media_type="application/manifest+json",
+                        headers={"Cache-Control": "no-cache"})
+
+
+@app.get("/dashboard/sw.js", include_in_schema=False)
+def dashboard_service_worker():
+    return FileResponse(DASHBOARD / "sw.js", media_type="application/javascript",
+                        headers={"Cache-Control": "no-cache", "Service-Worker-Allowed": "/dashboard/"})
+
+
+app.mount("/dashboard/pages", StaticFiles(directory=DASHBOARD / "pages"), name="dashboard-pages")
 app.mount("/dashboard/assets", StaticFiles(directory=DASHBOARD / "assets"), name="assets")

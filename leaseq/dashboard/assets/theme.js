@@ -5,6 +5,10 @@
    windows, blocked site data), so every access is wrapped in try/catch. */
 (function () {
   var theme = "light";
-  try { if (window.localStorage.getItem("leaseq-theme") === "dark") theme = "dark"; } catch (e) { /* light */ }
+  try {
+    var stored = window.localStorage.getItem("leaseq:theme:v1");
+    if (stored === null) { stored = window.localStorage.getItem("leaseq-theme"); if (stored !== null) { window.localStorage.setItem("leaseq:theme:v1", stored); window.localStorage.removeItem("leaseq-theme"); } }
+    if (stored === "dark") theme = "dark";
+  } catch (e) { /* light */ }
   document.documentElement.setAttribute("data-theme", theme);
 })();

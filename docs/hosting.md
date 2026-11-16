@@ -6,40 +6,23 @@ PostgreSQL database in the same region. The demo feeder is absent. Job reads,
 writes and worker calls require the shared token; the dashboard itself is public.
 The token grants operator access, so share it only with trusted operators.
 
-## Cost and account setup
+## Public entry status
 
-`render.yaml` selects **paid** Starter web/worker services and Basic PostgreSQL.
-Check the resource summary and current prices before creating them. The owner’s
-proposed $20/month total hosting budget still requires confirmation of that
-period and explicit approval of an itemized estimate before any financial
-commitment. This template is not that approval. No account,
-resources or payment have been created by this change. Free Render web services
-sleep after 15 idle minutes, free databases expire after 30 days, and background
-workers do not support the Free plan. They do not provide this durable stack.
-See [Render's free-instance limits](https://render.com/docs/free).
+The previously supplied `trycloudflare.com` URL failed DNS resolution on 2026-11-15. A Quick Tunnel is temporary and its generated hostname changes; do not use that URL as a durable share link. `docs/cloudflared.example.yml` is a credential-free template for a named tunnel and an operator-owned DNS hostname. It requires a Cloudflare account, a domain configured there, a real tunnel ID and credentials stored outside this repository. None of those were available here, and no tunnel or deployment was created. The template is therefore not an active or verified public entry point.
 
-1. In your Render account, choose **New → Blueprint** and connect the existing
-   `anirudh763/leaseq` repository, branch `main`. Review `render.yaml`.
-2. Check the paid resource summary, region and database backup/restore options.
-   Creating the Blueprint provisions the resources; automatic deploys are off
-   for subsequent commits, not for initial provisioning.
-3. Create the resources only after accepting their costs. The shared environment
-   group generates the API token. The worker uses the API's private host/port;
-   the database has no public IP allow-list entries.
-4. Wait for the API's `/readyz` health check, then the worker. Open
-   `https://YOUR-API.onrender.com/dashboard/`. Retrieve the generated token in
-   the provider's environment settings and enter it on **Connection & API**.
-   Do not paste it into repository files, screenshots, issues or command lines.
-5. Submit a small `word_count` job. Confirm a real worker result and a completed
-   audit event. Reloading the dashboard should require the token again.
-6. Check that `/jobs` without the token returns 401. Confirm worker recovery
-   after a restart using a synthetic job before accepting important work.
+The API rate buckets use the connection address and ignore forwarded headers; behind a tunnel, clients may share the tunnel process address for admission. The default shared bearer token is not tenant isolation. Keep the service for trusted operators until a scoped identity and proxy-attribution design is separately established.
 
-Field definitions and private-network behaviour come from the
-[Blueprint reference](https://render.com/docs/blueprint-spec) and
-[private-network documentation](https://render.com/docs/private-network).
-The template has local validation and container tests; an actual Render deploy
-is still a separate acceptance step.
+## Hosting template status
+
+`render.yaml` is an unverified provider template that selects paid web, worker
+and database resources. It is not part of a free launch path, has not been
+deployed, and must not be applied as part of local verification. No hosted
+service or public URL is available from this repository. A future operator may
+evaluate a provider configuration separately; its resource and account costs
+are not authorized or included here. For a stable public entry, first configure
+an owner-controlled hostname and named tunnel as described in the section
+above, then separately deploy and verify the API, assets, authentication and
+reload from outside the host.
 
 ## Container and startup
 
@@ -49,14 +32,78 @@ non-root image with runtime dependencies only. The default command listens on
 same image with the existing `python -m leaseq.worker` command.
 
 With Docker running, `python3 scripts/hosting_smoke.py --image leaseq:production`
-tests that built image using fresh disposable resources bound to loopback. It
-checks a real worker result, the port override, private reads and recovery from
-a database restart, then removes only its uniquely named test project and data.
+builds the production image through the actual base and production Compose
+files, with temporary credentials, a fresh database volume, and an isolated
+loopback host port. It checks a real worker result, private reads, both
+container roles, and recovery from a database restart, then removes only its
+uniquely named test project and data.
 
-The API already applies its schema during startup, before serving requests.
-That existing migration path and its lock-timeout protection are unchanged.
+The Compose API and worker use the distinct `leaseq_app` login, configured
+with a private random `LEASEQ_APP_PASSWORD` in `.env`. It owns only the LeaseQ
+database objects and has no superuser, role-creation, database-creation or
+replication privilege. A short-lived `db-bootstrap` service connects with the
+existing local `leaseq` cluster-bootstrap account before the API starts. It
+creates/updates the app login and transfers existing object ownership without
+dropping rows or resetting the volume. The database has no published host
+port. This is local least privilege, not a claim that the stack is production
+ready: the default Compose file preserves its fixed local bootstrap credential
+for development and legacy-volume compatibility. Do not expose that default
+configuration. Use the production override below for a new deployment.
+
+For a volume from an earlier Compose run, verify a backup, stop `app`, `worker`
+and `demo`, keep the same project name, `pgdata` volume and `.env`, then run
+`scripts/up.sh`. The bootstrap step is idempotent. It performs ownership DDL;
+schedule it as a brief startup migration and do not run it concurrently with an
+older API process. Never use `docker compose down -v` as a migration step.
+
+The API applies its schema during startup as the `leaseq_app` database owner,
+before serving requests. That migration path and lock-timeout protection are
+unchanged.
 Follow the [backup and restore guide](backup-restore.md) before upgrades; a code rollback cannot undo schema/data
 changes. The API will not start without a valid token or an available database.
+
+### Recommended Compose configuration for a fresh production volume
+
+Use the production override for a new volume. It removes the development
+bootstrap password and requires an explicit administrator password of at least
+64 hexadecimal characters. Create it in a protected shell, and retain the same
+value in the operator's secret manager for later restarts:
+
+```sh
+export LEASEQ_POSTGRES_PASSWORD="$(openssl rand -hex 32)"
+scripts/up.sh --production
+```
+
+The launcher rejects a missing or weak password before it writes `.env` or
+starts containers. The API token and ordinary app-role password are generated
+in `.env` with mode 600. The PostgreSQL administrator password is supplied
+only to the database and the short-lived bootstrap service; API and worker
+containers receive the random `leaseq_app` DSN and API token. The database has
+no host-published port. To omit the demo feeder, append `--scale demo=0`.
+Production Compose mode changes no existing password automatically and does
+not reset a volume.
+
+For an existing volume, take and verify a backup first, then stop `app`,
+`worker` and `demo`. The bootstrap password must match the PostgreSQL role's
+current password. A volume created with the earlier development Compose file
+still has the weak `leaseq` bootstrap password unless its owner changed it;
+do not carry that password into production. Rotate it interactively while the
+old stack is available:
+
+```sh
+docker compose stop app worker demo
+docker compose exec postgres psql -U leaseq -d postgres
+```
+
+At the `psql` prompt, run `\password leaseq`, enter the strong generated value
+without echoing or recording it in shell history, then `\q`. Export that same
+value as `LEASEQ_POSTGRES_PASSWORD` from the protected secret manager and run
+`scripts/up.sh --production`. Keep the existing Compose project name, `.env`
+and `pgdata` volume. The bootstrap migrates object ownership and does not
+delete data. If the old admin password was already changed, use its matching
+secret or rotate it through the existing administrator access before startup.
+Do not use `docker compose down -v` as an upgrade step. This is a deployment
+procedure, not a migration that has been applied to any user volume here.
 
 | Probe | Meaning | Database access |
 |---|---|---|

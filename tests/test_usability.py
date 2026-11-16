@@ -72,7 +72,8 @@ def up(tmp_path, health_url):
     fake.chmod(0o755)
 
     def run(*args, env=None, url=health_url):
-        e = {k: v for k, v in os.environ.items() if k != "LEASEQ_API_TOKEN"}
+        e = {k: v for k, v in os.environ.items()
+             if k not in {"LEASEQ_API_TOKEN", "LEASEQ_APP_PASSWORD", "LEASEQ_POSTGRES_PASSWORD"}}
         e.update({"PATH": f"{bin_dir}:{os.environ['PATH']}", "LEASEQ_URL": url,
                   "LEASEQ_UP_TIMEOUT": "3", **(env or {})})
         return subprocess.run(["bash", str(proj / "scripts" / "up.sh"), *args], cwd=proj,
@@ -86,6 +87,12 @@ def _token(env_file: Path) -> str:
     return m.group(1)
 
 
+def _app_password(env_file: Path) -> str:
+    m = re.search(r"^LEASEQ_APP_PASSWORD=(\S+)$", env_file.read_text(), re.M)
+    assert m, "missing app-role password"
+    return m.group(1)
+
+
 def test_up_creates_private_env_with_random_token_and_starts_compose(up, health_url):
     run, proj, log = up
     r = run("--scale", "demo=0")
@@ -93,18 +100,21 @@ def test_up_creates_private_env_with_random_token_and_starts_compose(up, health_
     env_file = proj / ".env"
     token = _token(env_file)
     assert len(token) >= 32 and re.fullmatch(r"[0-9a-f]+", token)
+    app_password = _app_password(env_file)
+    assert len(app_password) >= 32 and re.fullmatch(r"[0-9a-f]+", app_password)
     assert stat.S_IMODE(env_file.stat().st_mode) == 0o600
     assert log.read_text().splitlines() == ["compose up -d --build --scale demo=0"]
     assert f"{health_url}/dashboard/" in r.stdout
     assert str(env_file) in r.stdout or ".env" in r.stdout
     assert "docker compose down" in r.stdout
     assert token not in r.stdout + r.stderr          # the secret is not printed
+    assert app_password not in r.stdout + r.stderr
 
 
 def test_up_never_overwrites_an_existing_env(up):
     run, proj, _ = up
     env_file = proj / ".env"
-    env_file.write_text("LEASEQ_API_TOKEN=keep-this-token-0123456789\nOTHER=1\n")
+    env_file.write_text("LEASEQ_API_TOKEN=keep-this-token-0123456789\nLEASEQ_APP_PASSWORD=" + "a" * 32 + "\nOTHER=1\n")
     env_file.chmod(0o644)
     before = env_file.read_bytes()
     r = run()
@@ -121,6 +131,7 @@ def test_up_adds_a_token_to_an_env_without_one_and_keeps_the_rest(up):
     text = env_file.read_text()
     assert text.startswith("COMPOSE_PROJECT_NAME=mine\n")
     assert len(_token(env_file)) >= 32
+    assert len(_app_password(env_file)) >= 32
 
 
 def test_up_tokens_are_random(up, tmp_path):
@@ -137,6 +148,41 @@ def test_up_fails_when_the_api_never_becomes_healthy(up):
     r = run(url="http://127.0.0.1:9")                  # nothing listens on port 9
     assert r.returncode != 0
     assert "healthz" in r.stderr
+
+
+@pytest.mark.parametrize("password", [None, "ab" * 31, "not-a-hex-secret"])
+def test_production_mode_fails_closed_without_a_strong_bootstrap_secret(up, password):
+    run, proj, log = up
+    environment = {"LEASEQ_API_TOKEN": "test-token-0123456789abcdef",
+                   "LEASEQ_APP_PASSWORD": "ab" * 24}
+    if password is not None:
+        environment["LEASEQ_POSTGRES_PASSWORD"] = password
+    result = run("--production", env=environment)
+    assert result.returncode == 2
+    assert "LEASEQ_POSTGRES_PASSWORD" in result.stderr
+    assert password not in result.stdout + result.stderr if password else True
+    assert not log.exists()
+    assert not (proj / ".env").exists()
+
+
+def test_production_mode_uses_override_without_exposing_secret(up):
+    run, proj, log = up
+    token = "test-token-0123456789abcdef"
+    app_password = "ab" * 24
+    postgres_password = "c" * 64
+    result = run("--production", "--scale", "demo=0", env={
+        "LEASEQ_API_TOKEN": token,
+        "LEASEQ_APP_PASSWORD": app_password,
+        "LEASEQ_POSTGRES_PASSWORD": postgres_password,
+    })
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert log.read_text().splitlines() == [
+        "compose -f docker-compose.yml -f docker-compose.production.yml up -d --build --scale demo=0"
+    ]
+    assert not (proj / ".env").exists()
+    for value in (token, app_password, postgres_password):
+        assert value not in result.stdout + result.stderr
+        assert value not in log.read_text()
 
 
 def test_env_with_the_token_is_ignored_by_git():
@@ -165,15 +211,19 @@ def test_up_fills_the_blank_token_of_a_copied_env_example_in_place(up):
     example = (ROOT / ".env.example").read_text()
     env_file.write_text(example + "COMPOSE_PROJECT_NAME=mine\n")
     others = [line for line in env_file.read_text().splitlines()
-              if not line.startswith("LEASEQ_API_TOKEN=")]
+              if not line.startswith(("LEASEQ_API_TOKEN=", "LEASEQ_APP_PASSWORD="))]
     r = run()
     assert r.returncode == 0, r.stdout + r.stderr
     lines = _token_lines(env_file)
     assert len(lines) == 1, lines                      # replaced, not appended
     token = lines[0].split("=", 1)[1]
     assert len(token) >= 32
+    app_password_lines = [line for line in env_file.read_text().splitlines()
+                          if line.startswith("LEASEQ_APP_PASSWORD=")]
+    assert len(app_password_lines) == 1
+    assert len(app_password_lines[0].split("=", 1)[1]) >= 32
     assert [line for line in env_file.read_text().splitlines()
-            if not line.startswith("LEASEQ_API_TOKEN=")] == others
+            if not line.startswith(("LEASEQ_API_TOKEN=", "LEASEQ_APP_PASSWORD="))] == others
     assert stat.S_IMODE(env_file.stat().st_mode) == 0o600
     assert _documented_token(proj) == token            # one line, no leading newline
     assert token not in r.stdout + r.stderr
@@ -220,20 +270,21 @@ def test_smoke_passes_with_the_token_read_from_a_copied_env_example(up, monkeypa
 def test_up_uses_a_token_exported_in_the_shell_and_leaves_env_alone(up):
     run, proj, log = up
     shell_token = "shell-token-0123456789abcdef"
-    r = run(env={"LEASEQ_API_TOKEN": shell_token})        # no .env at all
+    shell_password = "ab" * 24
+    r = run(env={"LEASEQ_API_TOKEN": shell_token, "LEASEQ_APP_PASSWORD": shell_password})
     assert r.returncode == 0, r.stdout + r.stderr
     assert not (proj / ".env").exists()
     assert "using leaseq_api_token from your shell environment" in r.stdout.lower()
     assert ".env" not in r.stdout.split("leaseq is running.")[1].split("Stop:")[0] \
         or "not .env" in r.stdout
-    assert shell_token not in r.stdout + r.stderr
+    assert shell_token not in r.stdout + r.stderr and shell_password not in r.stdout + r.stderr
     assert log.read_text().splitlines() == ["compose up -d --build"]
 
     env_file = proj / ".env"                               # .env with another token
     env_file.write_text("LEASEQ_API_TOKEN=file-token-0123456789abcdef\n")
     env_file.chmod(0o600)
     before = env_file.read_bytes()
-    r = run(env={"LEASEQ_API_TOKEN": shell_token})
+    r = run(env={"LEASEQ_API_TOKEN": shell_token, "LEASEQ_APP_PASSWORD": shell_password})
     assert r.returncode == 0, r.stdout + r.stderr
     assert env_file.read_bytes() == before
     assert "using leaseq_api_token from your shell environment" in r.stdout.lower()

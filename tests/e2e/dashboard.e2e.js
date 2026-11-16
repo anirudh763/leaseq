@@ -159,17 +159,17 @@ async function enterToken(page, token) {
       assert.equal(await page.getByLabel("Kind").getAttribute("aria-invalid"), "true");
       step("lane and kind filter are kept in the URL; a lane toggles from the keyboard; bad filter text is flagged");
 
-      // One state mechanism only: the label changes, so no aria-pressed as well.
+      // The changing label names the next action; pressed state reflects paused mode.
       const pause = page.getByRole("button", { name: "Pause updates" });
-      assert.equal(await pause.getAttribute("aria-pressed"), null);
+      assert.equal(await pause.getAttribute("aria-pressed"), "false");
       await pause.click();
       const resume = page.getByRole("button", { name: "Resume updates" });
-      assert.equal(await resume.getAttribute("aria-pressed"), null);
+      assert.equal(await resume.getAttribute("aria-pressed"), "true");
       let pausedPolls = 0;
       page.on("request", (r) => { if (/\/jobs\?/.test(r.url())) pausedPolls += 1; });
       await page.waitForTimeout(2600);
       assert.equal(pausedPolls, 0, `${pausedPolls} list requests while paused`);
-      step("pause stops automatic updates; the button changes its label and has no aria-pressed");
+      step("pause stops automatic updates; its changing label and pressed state report paused mode");
       await page.context().close();
     }
 

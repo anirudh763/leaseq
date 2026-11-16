@@ -1,5 +1,42 @@
 # leaseq
 
+Background jobs can be delayed, retried or left behind when a worker fails. LeaseQ lets operators inspect the queue, its current leases and recorded failures before confirming a recovery action. Its lease checks protect queue state from stale completion, while external effects still need their own idempotency controls.
+
+## Direct operator routes
+
+The existing vanilla dashboard supports these local routes without changing its API authorization:
+
+| Route | Data and actions |
+|---|---|
+| `/` | Live Queue Overview with real state counts and URL filters |
+| `/leases` | Observed workers, sampled operation metrics and up to 100 actual leased jobs |
+| `/dead-letter` | Dead-job filter, failure details/audit timeline and protected requeue confirmation |
+| `/system` | Actual `/livez`, `/readyz`, authenticated `/api/system` and Prometheus metrics |
+
+The HTML shell is public; reading protected data and changing jobs require the existing in-memory
+API token entered through Settings. Refresh forgets that token. New local routes open in Live API
+mode; Browser Simulator remains an explicit, labeled alternative and does not represent PostgreSQL
+activity. Local profiles do not grant API access. The separate recovery lab below owns its processes;
+the ordinary API dashboard cannot kill arbitrary workers.
+
+Assets stay under `/dashboard/assets/`; existing `/dashboard/#/jobs`, job detail, submit, operations,
+settings and PWA links remain available. Direct paths support refresh and Back/Forward. Queue filters
+live in the current tab's URL; the token is never put in a URL or browser storage. The system page
+clears protected operational data when the token is forgotten or rejected.
+
+The warm off-white and forest interface bundles Plus Jakarta Sans with its SIL OFL notice. There is
+no frontend framework migration or new JavaScript dependency. Build the separate static Pages copy
+with the existing `python scripts/build_static_site.py`; it disables the API and preserves explicit
+simulator labeling. The static copy does not provide live operational health.
+
+Frontend checks and screenshots are recorded in `artifacts/verification/post-restart/`. Run
+`node --test tests/e2e/*test.cjs` for browser-model/profile/routing checks, and
+`BASE_URL=http://127.0.0.1:3002 node tests/e2e/product_routes.e2e.js` against the running task-owned
+API. The latter requires Playwright, axe-core, Chrome and an authorized token supplied through
+`API_TOKEN` or the task-owned root launch environment; it never prints the token. It creates only
+its own uniquely named fixture jobs and leaves their audit evidence in the task-owned queue.
+
+
 [CI status](https://github.com/anirudh763/leaseq/actions)
 
 leaseq is a PostgreSQL job queue and recovery lab. Run four real worker
@@ -27,11 +64,11 @@ database and internal API; the existing authenticated operator dashboard
 below retains its interface. Re-running the lab launch resets only the
 `leaseq-local-lab` Compose project. Its data is disposable.
 
-The proposed Free/Pro/Team plans describe a demand-validation hypothesis.
-Subscriptions, private waitlist collection and AWS infrastructure are not
-connected. [Architecture](ARCHITECTURE.md), [failure modes](FAILURE_MODES.md),
-[operator runbook](RUNBOOK.md) and [cost model](FINOPS_AND_PRICING.md) state
-the implemented boundaries and proposed deployment options.
+All available LeaseQ features are free. There are no subscriptions, paid
+quotas, trials or upgrade gates. Hosting remains operator-controlled; local
+availability does not imply a hosted service. [Architecture](ARCHITECTURE.md),
+[failure modes](FAILURE_MODES.md), [operator runbook](RUNBOOK.md) and
+[cost model](FINOPS_AND_PRICING.md) document the implemented boundaries.
 
 Status: public beta, maintained by one student on a best-effort basis. It has
 no known users and has not been validated with any. Supported scope, and how
@@ -70,12 +107,15 @@ With Docker (Docker Compose v2):
 scripts/up.sh
 ```
 
-It writes a random `LEASEQ_API_TOKEN` to `.env` if there is none, or if the
-line is blank (as after `cp .env.example .env`; the blank line is filled in
-place). An existing token is never overwritten, `.env` is set to mode 600 and
-is in `.gitignore`. If `LEASEQ_API_TOKEN` is exported in your shell, Compose
-uses that value ahead of `.env`, so `scripts/up.sh` uses it too, leaves `.env`
-alone and says so. It then runs `docker compose up -d --build`, waits for
+It writes random `LEASEQ_API_TOKEN` and `LEASEQ_APP_PASSWORD` values to `.env`
+if either is missing or blank (as after `cp .env.example .env`; blank lines are
+filled in place). Existing valid values are preserved, `.env` is set to mode
+600 and is in `.gitignore`. The app password is a distinct non-superuser
+PostgreSQL login used by the API and worker. A short-lived Compose bootstrap
+step prepares/updates that role before the API starts. If `LEASEQ_API_TOKEN` is exported in your shell, Compose
+uses that value ahead of `.env`, so `scripts/up.sh` uses it too. The script may
+still add a missing app-role password to `.env` unless that is also exported.
+It then runs `docker compose up -d --build`, waits for
 `/healthz` (at most `LEASEQ_UP_TIMEOUT` seconds, default 120), and prints the
 dashboard URL (http://127.0.0.1:8000/dashboard/), where the token is, and how
 to stop. The stack is PostgreSQL, the API on 127.0.0.1:8000, one worker and a
@@ -106,8 +146,8 @@ docker compose down          # stop; keeps the data
 ```
 
 There is no default token: a bare `docker compose up` with no `.env` and no
-`LEASEQ_API_TOKEN` stops with a message saying so. `.env.example` lists the
-variable if you prefer to write `.env` yourself.
+`LEASEQ_API_TOKEN` or `LEASEQ_APP_PASSWORD` stops with a message saying so.
+`.env.example` lists the variables if you prefer to write `.env` yourself.
 
 Jobs, results and audit history are stored in the named `pgdata` volume.
 `docker compose down` keeps that data; the next `docker compose up --build`
@@ -116,6 +156,15 @@ moving to a differently named directory) selects a different volume.
 `docker compose down -v` is a destructive reset: it deletes the database
 volume, including every job, result and audit event. Use it only when that
 data is disposable, such as cleaning up a CI test.
+
+The first startup with the non-superuser app role runs a local database
+bootstrap step. For an existing Compose volume, first make and verify a backup,
+then stop the API, worker and demo (`docker compose stop app worker demo`) and
+run `scripts/up.sh`. The bootstrap step transfers ownership of existing LeaseQ
+objects to the app role without dropping or recreating the volume. Keep the
+existing `pgdata` volume and `.env`; do not use `down -v` for this upgrade.
+The PostgreSQL bootstrap login remains local to the Compose network and is
+used only by this setup step; it is not passed to API or worker containers.
 
 If upgrading from the earlier Compose file without a named volume, export
 your existing database before changing the mount, then restore it into the
@@ -229,7 +278,7 @@ so a new intent cannot silently reuse the previous key.
 and JavaScript inside the package, no build step, no CDN, no third-party code.
 It is light by default (also when the operating system prefers dark); "Use dark
 theme" switches it. The theme preference is stored locally; the API token is
-memory-only by default, with a separate opt-in session-storage choice. Each
+page-memory-only; reloading forgets it. Each
 task is its own screen with its own URL (hash routes, so links can be shared
 and Back/Forward work):
 
@@ -276,10 +325,9 @@ and Back/Forward work):
 
 Without the token (and without `LEASEQ_PUBLIC_READ=1`) the data screens show
 a "Not connected" state that links to Settings. The token is checked
-with `GET /auth/check`, kept in memory by default and sent only in the
-`Authorization` header. “Keep token until this tab closes” is explicit opt-in
-`sessionStorage`; same-origin script access can read it while it is stored.
-The token is never put in a cookie, `localStorage` or the URL. Forget and 401
+with `GET /auth/check`, kept only in page memory and sent only in the
+`Authorization` header. Reloading forgets it. The token is never put in a
+cookie, browser storage or the URL. Forget and 401
 clear the token and sensitive job/schedule state. With a
 token, "Requeue job" and "Cancel job" appear; each asks for confirmation that
 names the job and the effect, and Cancel uses the danger style with "Keep job"
@@ -673,8 +721,7 @@ repository, recommended in real use: adding the constraint as a second guard.
   scan the table; they are not indexed yet. With
   a job open, each refresh fetches up to 500 of that job's events. The job table shows at most the newest 200
   jobs per filter; older jobs are reached with the filters or "Open job" by id.
-  The token is memory-only by default; explicit sessionStorage opt-in keeps it
-  until the tab closes and exposes it to same-origin scripts while stored.
+  The token is memory-only; reloading forgets it.
 
 ## Contributing and security
 
@@ -691,3 +738,5 @@ Built with AI assistance (Claude). Every number above comes from the commands sh
 MIT, see `LICENSE`. The dashboard's Atkinson Hyperlegible font files are under the
 SIL Open Font License 1.1; the license text is in
 `leaseq/dashboard/assets/OFL.txt`.
+
+Local verification: [2026-11-15/16 checks and limits](docs/verification/release-2026-11-15.md).

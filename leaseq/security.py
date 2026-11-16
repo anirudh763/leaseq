@@ -82,7 +82,8 @@ def authenticated(scope, settings):
 
 # Paths that hold no job data and are served without a token. Everything else
 # is denied by default, so a route added later is protected unless listed here.
-OPEN_PATHS = {"/", "/healthz", "/livez", "/readyz", "/dashboard", "/docs", "/docs/oauth2-redirect", "/openapi.json"}
+PRODUCT_PATHS = frozenset({"/", "/leases", "/dead-letter", "/system"})
+OPEN_PATHS = PRODUCT_PATHS | { "/healthz", "/livez", "/readyz", "/dashboard", "/docs", "/docs/oauth2-redirect", "/openapi.json"}
 OPEN_PREFIXES = ("/dashboard",)
 # GET endpoints that LEASEQ_PUBLIC_READ=1 opens. /auth/check is not among them.
 PUBLIC_READ_PREFIXES = ("/stats", "/jobs")
@@ -185,8 +186,8 @@ async def _reply(send, status: int, body: bytes, extra_headers=()) -> None:
 # The dashboard loads only its own files, never runs inline script, and may not
 # be framed. The API docs page (/docs) loads Swagger UI from a CDN, so the
 # policy is applied to the dashboard paths only.
-DASHBOARD_CSP = ("default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; "
-                 "img-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; "
+DASHBOARD_CSP = ("default-src 'none'; script-src 'self' 'sha256-9PQI/5CckZC1YQ+tNlURtpHwVLgEKrQYDjOS6PjobY4='; style-src 'self'; font-src 'self'; "
+                 "img-src 'self'; connect-src 'self' https: http://localhost http://127.0.0.1; base-uri 'none'; form-action 'none'; "
                  "frame-ancestors 'none'")
 
 
@@ -197,7 +198,7 @@ class SecurityHeaders:
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":
             return await self.app(scope, receive, send)
-        dashboard = _under(scope["path"], ("/dashboard",))
+        dashboard = scope["path"] in PRODUCT_PATHS or _under(scope["path"], ("/dashboard",))
 
         async def send_with_headers(message):
             if message["type"] == "http.response.start":

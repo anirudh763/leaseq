@@ -58,7 +58,7 @@ const openJobById = async (page, id) => {
     page.on("pageerror", (e) => errors.push(String(e)));
 
     // 1. Without the token, reads are refused and the page says so.
-    await page.goto(`${BASE}/dashboard/`);
+    await page.goto(`${BASE}/dashboard/#/jobs`);
     const banner = page.getByRole("alert");
     await banner.filter({ hasText: "requires the API token to read jobs" }).waitFor();
     assert.equal(await page.locator("#demo-note").isVisible(), false);
@@ -192,7 +192,7 @@ const openJobById = async (page, id) => {
     for (const [width, scheme] of [[375, "light"], [375, "dark"], [640, "light"], [640, "dark"]]) {
       const c = await browser.newContext({ viewport: { width, height: 800 }, bypassCSP: true });
       const p = await c.newPage();
-      if (scheme === "dark") await p.addInitScript(() => { try { localStorage.setItem("leaseq-theme", "dark"); } catch (e) {} });
+      if (scheme === "dark") await p.addInitScript(() => { try { localStorage.setItem("leaseq:theme:v1", "dark"); } catch (e) {} });
       await p.goto(`${BASE}/dashboard/#/jobs/13`);
       await enterTokenByKeyboard(p);
       await p.evaluate(() => { window.location.hash = "#/jobs/13"; });

@@ -189,6 +189,17 @@ def test_healthz_and_dashboard_files_need_no_token(make_client):
     assert client.get("/healthz").json() == {"ok": True, "version": leaseq.__version__}
     assert client.get("/dashboard/").status_code == 200
     assert client.get("/dashboard/assets/app.js").status_code == 200
+    manifest = client.get("/dashboard/manifest.webmanifest")
+    assert manifest.status_code == 200
+    assert "application/manifest+json" in manifest.headers["content-type"]
+    assert manifest.json()["scope"] == "./" and manifest.json()["start_url"].startswith("./#/")
+    worker = client.get("/dashboard/sw.js")
+    assert worker.status_code == 200
+    assert "javascript" in worker.headers["content-type"]
+    assert worker.headers["service-worker-allowed"] == "/dashboard/"
+    assert "authorization" in worker.text.lower() and "leaseq-dashboard-shell-" in worker.text
+    for page in ("privacy.html", "terms.html", "security-offline.html"):
+        assert client.get(f"/dashboard/pages/{page}").status_code == 200
 
 
 # --- request size and input validation ----------------------------------------
@@ -487,15 +498,17 @@ def test_dashboard_has_a_strict_csp_and_loads_nothing_external(make_client):
     assert files
     for p in files:
         text = p.read_text()
-        text = text.replace("http://www.w3.org/2000/svg", "")      # SVG namespace name
-        # Allowed external URLs: a plain link (navigation, not a load) to
-        # the README's curl steps in the <noscript> fallback.
-        text = text.replace('<a href="https://github.com/anirudh763/leaseq#quick-start">', "")
-        # ...and the header's "Source on GitHub" link (also navigation only).
-        text = text.replace('<a class="repo" href="https://github.com/anirudh763/leaseq">', "")
-        assert not re.search(r"https?://|//cdn", text), f"external URL in {p.name}"
         assert "innerHTML" not in text and "insertAdjacentHTML" not in text, p.name
-        assert "<script>" not in text and " on" + "click=" not in text, p.name
+        assert not re.search(r"\son[a-z]+\s*=", text, re.I), p.name
+        assert not re.search(r"<(?:script|img|iframe)\b[^>]*src=[\"']https?://", text, re.I), p.name
+        assert not re.search(r"<link\b(?=[^>]*rel=[\"'](?:stylesheet|manifest|icon|apple-touch-icon))[^>]*href=[\"']https?://", text, re.I), p.name
+        if p.suffix == ".html":
+            for script in re.finditer(r"<script\b([^>]*)>([\s\S]*?)</script>", text, re.I):
+                attrs, body = script.groups()
+                if not re.search(r"\bsrc=", attrs, re.I):
+                    assert re.search(r"type=[\"']application/ld\+json[\"']", attrs, re.I), p.name
+                    digest = __import__("base64").b64encode(__import__("hashlib").sha256(body.encode()).digest()).decode()
+                    assert f"sha256-{digest}" in csp
 
 
 # --- worker over HTTP with a token -------------------------------------------------

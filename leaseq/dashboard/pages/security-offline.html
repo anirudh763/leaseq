@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#18181B">
+  <title>Security & Offline Data | LeaseQ</title>
+  <link rel="stylesheet" href="../assets/ui.css"><link rel="stylesheet" href="../assets/app.css"><link rel="stylesheet" href="../assets/trust.css">
+  <link rel="manifest" href="../manifest.webmanifest"><script src="../assets/theme.js"></script><script src="../assets/platform.js" defer></script><script src="../assets/trust.js" defer></script>
+</head>
+<body><main class="trust-document"><article>
+  <a href="../#/">LeaseQ</a><h1>Security & offline data</h1>
+  <p>The service worker is scoped to <code>/dashboard/</code>. It caches public application files and the bundled sample only. Queue API responses and mutations always use the network and are never queued for later replay.</p>
+  <h2>What works offline</h2>
+  <table><thead><tr><th>Capability</th><th>Availability</th></tr></thead><tbody>
+    <tr><td>Landing, deterministic local lease model, synthetic demo, bundled sample/help and local theme</td><td>Available after the shell has been prepared and its cache remains available.</td></tr>
+    <tr><td>Local profile signup/login and saved browser preferences</td><td>Available when app assets, Web Crypto and browser storage are available. Reload opens the landing page; a profile must be unlocked again. The API token is cleared on reload.</td></tr>
+    <tr><td>First visit or first install while offline</td><td>Requires a network visit first. Offline readiness is shown only after all required shell assets are cached and the worker controls this page.</td></tr>
+    <tr><td>Real jobs, health, submit, cancel, requeue, schedules and server metrics</td><td>Requires network access to the authorized LeaseQ API and a valid server-issued token where required.</td></tr>
+    <tr><td>Offline submit/cancel/requeue replay, local worker or Postgres</td><td>Unsupported. No mutation is stored for later replay; the service worker cannot run the server or worker.</td></tr>
+  </tbody></table>
+  <h2>Local profiles and removal</h2>
+  <p>Profile passwords are verified with Web Crypto PBKDF2-HMAC-SHA-256 (600,000 iterations and a random per-profile salt). This does not encrypt saved work. The shared API token is page-memory-only and is not stored in the service-worker cache. Only explicitly saved, bounded profile preferences and drafts persist in this browser.</p>
+  <p>Cache storage can be unavailable or evicted. The app verifies pinned SHA-256 digests for every required shell file; an evicted file is restored only if the network copy exactly matches this release. A mismatch is reported instead of mixing builds or returning an HTML page pretending to be JavaScript or an image. Reconnect and check readiness to repair the shell.</p>
+  <button type="button" class="btn danger" id="clear-leaseq-data">Remove LeaseQ browser data and offline cache</button>
+  <p id="clear-data-status" role="status" aria-live="polite"></p>
+  <p>You can also remove site data for this app’s exact origin and <code>/dashboard/</code> service-worker scope in browser settings. The button above deletes only local-storage keys beginning with <code>leaseq:</code>, caches beginning with <code>leaseq-dashboard-shell-</code>, and the registration scoped to this app. It does not delete jobs on your server or another app’s origin data.</p>
+  <nav class="trust-links" aria-label="Trust information"><a href="privacy.html">Privacy</a><a href="terms.html">Terms of use</a><a href="../#/">Return to LeaseQ</a></nav>
+</article></main></body>
+</html>

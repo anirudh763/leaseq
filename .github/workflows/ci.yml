@@ -38,15 +38,16 @@ jobs:
           POSTGRES_PASSWORD: leaseq
           POSTGRES_DB: leaseq
         ports:
-          - 5432:5432
+          - 55444:5432
         options: >-
           --health-cmd "pg_isready -U leaseq -d leaseq"
           --health-interval 2s
           --health-timeout 3s
           --health-retries 30
     env:
-      LEASEQ_DATABASE_URL: postgresql://leaseq:leaseq@localhost:5432/leaseq
-      LEASEQ_SANDBOX_ADMIN_URL: postgresql://leaseq:leaseq@localhost:5432/leaseq_sandbox_admin
+      LEASEQ_DATABASE_URL: postgresql://leaseq:leaseq@localhost:55444/leaseq
+      LEASEQ_SANDBOX_ADMIN_URL: postgresql://leaseq:leaseq@localhost:55444/leaseq_sandbox_admin
+      LEASEQ_TEST_ENV_FILE: ${{ runner.temp }}/leaseq-policy-test.json
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
         with:
@@ -55,13 +56,17 @@ jobs:
         with:
           python-version: "3.13"
       - run: pip install -r requirements.txt
-      - name: create isolated sandbox test administrator database
+      - name: prepare isolated sandbox and policy test fixtures
         run: |
           python - <<'PY'
+          import json
           import os
           import psycopg
           with psycopg.connect(os.environ["LEASEQ_DATABASE_URL"], autocommit=True) as conn:
               conn.execute("CREATE DATABASE leaseq_sandbox_admin")
+          descriptor = os.open(os.environ["LEASEQ_TEST_ENV_FILE"], os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+          with os.fdopen(descriptor, "w") as output:
+              json.dump({"LEASEQ_DATABASE_URL": os.environ["LEASEQ_DATABASE_URL"]}, output)
           PY
       # The tests create their own random API token (tests/conftest.py, scripts/harness.py).
       - run: python -m pytest -v

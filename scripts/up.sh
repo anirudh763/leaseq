@@ -1,12 +1,18 @@
 #!/usr/bin/env bash
-# Start the Docker stack with a private API token, in one command.
+# Start the Docker stack with private API and database-app credentials.
 #
 #   scripts/up.sh                    # PostgreSQL, API, one worker, demo feeder
+#   LEASEQ_POSTGRES_PASSWORD=... scripts/up.sh --production
 #   scripts/up.sh --scale demo=0     # extra arguments go to `docker compose up`
 #
+# The API token and PostgreSQL application-role password are private and never
+# printed. Both are created in .env when needed; shell exports take precedence.
+# The development database bootstrap password remains local-only in Compose.
+# Production mode requires an explicit high-entropy bootstrap password; it is
+# never forwarded to API or worker and is never written to .env.
 # Where the token comes from (one source, never printed):
 #  - LEASEQ_API_TOKEN exported in your shell: Compose uses it ahead of .env, so
-#    this script uses it too and leaves .env alone. It must be 16+ characters.
+#    this script uses it too. It must be 16+ characters.
 #  - Otherwise .env: an existing non-blank LEASEQ_API_TOKEN is kept as it is.
 #    If .env is missing, has no LEASEQ_API_TOKEN line, or has a blank one (as
 #    after `cp .env.example .env`), a random token is written: a blank line is
@@ -23,6 +29,15 @@ cd "$(dirname "$0")/.."
 URL="${LEASEQ_URL:-http://127.0.0.1:8000}"
 TIMEOUT="${LEASEQ_UP_TIMEOUT:-120}"
 ENV_FILE="$PWD/.env"
+PRODUCTION_MODE=0
+if [ "${1:-}" = "--production" ]; then
+  shift
+  if ! [[ "${LEASEQ_POSTGRES_PASSWORD:-}" =~ ^[[:xdigit:]]{64,}$ ]]; then
+    echo "scripts/up.sh: --production requires LEASEQ_POSTGRES_PASSWORD with at least 64 hexadecimal characters (for example, output of openssl rand -hex 32)." >&2
+    exit 2
+  fi
+  PRODUCTION_MODE=1
+fi
 
 new_token() {
   if command -v openssl >/dev/null 2>&1; then openssl rand -hex 24
@@ -30,6 +45,10 @@ new_token() {
 }
 die() { echo "scripts/up.sh: $*" >&2; exit 1; }
 blank() { [ -z "$(printf '%s' "$1" | tr -d "[:space:]\"'")" ]; }
+valid_db_password() {
+  case "$1" in *[!0123456789abcdefABCDEF]*|'') return 1 ;; esac
+  [ "${#1}" -ge 32 ]
+}
 
 if [ -n "${LEASEQ_API_TOKEN+set}" ]; then
   # Compose would use this value instead of .env, so it is the only source.
@@ -39,7 +58,7 @@ if [ -n "${LEASEQ_API_TOKEN+set}" ]; then
   [ "${#LEASEQ_API_TOKEN}" -ge 16 ] || \
     die "LEASEQ_API_TOKEN in your shell is shorter than 16 characters; the API would refuse it."
   TOKEN_SOURCE=shell
-  echo "Using LEASEQ_API_TOKEN from your shell environment; .env is not read or changed."
+  echo "Using LEASEQ_API_TOKEN from your shell environment; it takes precedence over .env."
   if [ -f "$ENV_FILE" ] && grep -q '^LEASEQ_API_TOKEN=' "$ENV_FILE"; then
     echo "The LEASEQ_API_TOKEN in $ENV_FILE is ignored while the shell variable is set."
   fi
@@ -79,7 +98,52 @@ else
   chmod 600 "$ENV_FILE"
 fi
 
-docker compose up -d --build "$@"
+# A URL-safe random hex secret keeps the app DSN unambiguous. The short-lived
+# Compose bootstrap service transfers schema ownership to this login role; it
+# is not the PostgreSQL cluster administrator used by the database container.
+if [ -n "${LEASEQ_APP_PASSWORD+set}" ]; then
+  valid_db_password "$LEASEQ_APP_PASSWORD" || \
+    die "LEASEQ_APP_PASSWORD must be at least 32 hexadecimal characters."
+  echo "Using LEASEQ_APP_PASSWORD from the shell environment; .env is not changed."
+else
+  count=0
+  if [ -f "$ENV_FILE" ]; then count=$(grep -c '^LEASEQ_APP_PASSWORD=' "$ENV_FILE" || true); fi
+  [ "$count" -le 1 ] || die "$ENV_FILE has more than one LEASEQ_APP_PASSWORD line; keep one and run again."
+  current=""
+  if [ "$count" = 1 ]; then current=$(sed -n 's/^LEASEQ_APP_PASSWORD=//p' "$ENV_FILE"); fi
+  if [ "$count" = 1 ] && valid_db_password "$current"; then
+    echo "Using the existing LEASEQ_APP_PASSWORD in $ENV_FILE (not changed)."
+  else
+    password="$(new_token)"
+    [ "${#password}" -ge 32 ] || die "could not generate a database app password"
+    if [ "$count" = 1 ]; then
+      tmp="$(umask 077 && mktemp "$ENV_FILE.XXXXXX")"
+      if ! PASSWORD="$password" awk '/^LEASEQ_APP_PASSWORD=/ { print "LEASEQ_APP_PASSWORD=" ENVIRON["PASSWORD"]; next } { print }' \
+          "$ENV_FILE" > "$tmp"; then
+        rm -f "$tmp"; die "could not update $ENV_FILE"
+      fi
+      chmod 600 "$tmp"
+      mv "$tmp" "$ENV_FILE"
+      echo "Filled in the blank LEASEQ_APP_PASSWORD in $ENV_FILE with a random value."
+    else
+      (
+        umask 077
+        if [ -s "$ENV_FILE" ] && [ -n "$(tail -c1 "$ENV_FILE")" ]; then echo >> "$ENV_FILE"; fi
+        echo "LEASEQ_APP_PASSWORD=$password" >> "$ENV_FILE"
+      )
+      echo "Created a random LEASEQ_APP_PASSWORD in $ENV_FILE."
+    fi
+    unset password
+  fi
+  unset current count
+  chmod 600 "$ENV_FILE"
+fi
+
+if [ "$PRODUCTION_MODE" = 1 ]; then
+  docker compose -f docker-compose.yml -f docker-compose.production.yml up -d --build "$@"
+else
+  docker compose up -d --build "$@"
+fi
 
 printf 'Waiting for %s/healthz ' "$URL"
 deadline=$((SECONDS + TIMEOUT))

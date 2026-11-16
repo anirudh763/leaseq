@@ -1,4 +1,4 @@
-# FinOps and pricing
+# Hosting boundaries
 
 ## Current posture
 
@@ -26,9 +26,9 @@ million rows. Sustained write amplification, managed database pricing, multi-
 host behavior and cloud capacity were not measured; these results cannot be
 used as a cloud cost or throughput estimate.
 
-## Pricing hypotheses
+## Feature availability
 
-Free 50K jobs, Pro $19/month, and Team $79/month are proposed package hypotheses only. They are not purchasable plans, validated willingness-to-pay, costed margins, forecasts, or revenue evidence. Quotas and support costs would need to be defined before these prices could be evaluated.
+All available features are free. There are no paid tiers, subscriptions, trials, paid quotas or upgrade gates. This does not promise free hosted infrastructure: the verified workflow is local or operator-controlled, and no public hosted service or cloud budget is provisioned. Reliability bounds apply equally to every user.
 
 ## Recovery objectives
 
