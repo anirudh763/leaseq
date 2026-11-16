@@ -273,7 +273,7 @@ def test_workstation_exact_viewport_matrix(monkeypatch):
             assert response.status_code == 201, response.text
             job_id = response.json()["id"]
             _wait_state(client, job_id, "done")
-        out_dir = Path("/Users/anirudhyadav/Downloads/active/audit-workstation-2026-11-15/leaseq/screenshots")
+        out_dir = Path(__file__).resolve().parents[1] / "artifacts/verification/post-restart/workstation-matrix"
         result = subprocess.run(["node", str(E2E.with_name("workstation_matrix.e2e.js"))],
             capture_output=True, text=True, timeout=600,
             env={**os.environ, "BASE_URL": base, "API_TOKEN": TOKEN, "JOB_ID": str(job_id),
