@@ -187,11 +187,17 @@ jobs:
         run: |
           test ! -e .env
           test -z "${LEASEQ_API_TOKEN:-}"
-          if docker compose up -d --build --scale demo=0 2>"$RUNNER_TEMP/err.txt"; then
+          if LEASEQ_APP_PASSWORD="$(openssl rand -hex 24)" docker compose up -d --build --scale demo=0 2>"$RUNNER_TEMP/err.txt"; then
             echo "docker compose up started without LEASEQ_API_TOKEN"; exit 1
           fi
           cat "$RUNNER_TEMP/err.txt"
           grep -q "LEASEQ_API_TOKEN" "$RUNNER_TEMP/err.txt"
+          test -z "$(docker ps -aq --filter "label=com.docker.compose.project=$COMPOSE_PROJECT_NAME")"
+          if LEASEQ_API_TOKEN="$(openssl rand -hex 24)" docker compose up -d --build --scale demo=0 2>"$RUNNER_TEMP/db-password-err.txt"; then
+            echo "docker compose up started without LEASEQ_APP_PASSWORD"; exit 1
+          fi
+          cat "$RUNNER_TEMP/db-password-err.txt"
+          grep -q "LEASEQ_APP_PASSWORD" "$RUNNER_TEMP/db-password-err.txt"
           test -z "$(docker ps -aq --filter "label=com.docker.compose.project=$COMPOSE_PROJECT_NAME")"
       # Gate 2: fresh run of scripts/up.sh with no token anywhere: it writes a
       # random token to .env (mode 600) and the stack accepts exactly that token.
