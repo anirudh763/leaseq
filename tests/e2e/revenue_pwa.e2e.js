@@ -35,6 +35,7 @@ const receiver = http.createServer((req, res) => {
   req.on('end', () => { try { receiverBodies.push(JSON.parse(raw)); } catch {} res.writeHead(200, { 'Content-Type':'application/json' }).end(JSON.stringify({ accepted:true })); });
 });
 const probe = http.createServer((req,res)=>{res.setHeader('Access-Control-Allow-Origin','*');res.setHeader('Access-Control-Allow-Headers','authorization,content-type,accept');res.setHeader('Access-Control-Allow-Methods','GET,OPTIONS');if(req.method==='OPTIONS'){res.writeHead(204).end();return;}res.writeHead(401,{'Content-Type':'application/json'}).end('{"detail":"authentication required"}');});
+const statusFixture=status=>http.createServer((req,res)=>{res.setHeader('Access-Control-Allow-Origin','*');res.setHeader('Access-Control-Allow-Headers','authorization,content-type,accept');res.setHeader('Access-Control-Allow-Methods','GET,OPTIONS');if(req.method==='OPTIONS'){res.writeHead(204).end();return;}res.writeHead(status,{'Content-Type':'application/json'}).end('{"detail":"fixture unavailable"}');});
 const listen = (server) => new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve(server.address().port)));
 const close = (server) => new Promise((resolve) => server.close(resolve));
 
@@ -44,6 +45,7 @@ const close = (server) => new Promise((resolve) => server.close(resolve));
   const receiverPort = await listen(receiver);
   const unavailableServer=http.createServer();unavailablePort=await listen(unavailableServer);await close(unavailableServer);
   probePort=await listen(probe);
+  const unavailableApi=statusFixture(503),unavailableApiPort=await listen(unavailableApi);
   interestEndpoint = `http://127.0.0.1:${receiverPort}/interest`;
   const browser = await chromium.launch({ headless:true, ...(process.env.CHROME_PATH ? { executablePath:process.env.CHROME_PATH } : {}) });
   const report = { viewports:[], axe:[], apiRequests:[], interest:{}, pwa:{} };
@@ -208,6 +210,41 @@ const close = (server) => new Promise((resolve) => server.close(resolve));
     report.unauthorizedStartup={mode:unauthorizedMode,simulatorSubstitution:false};
     await unauthorizedContext.close();
 
+    // An explicit simulator deep link survives configured health failures and reload.
+    for (const [name,origin] of [['none',null],['401',`http://127.0.0.1:${probePort}`],['503',`http://127.0.0.1:${unavailableApiPort}`],['network',`http://127.0.0.1:${unavailablePort}`]]) {
+      const explicitContext=await browser.newContext({serviceWorkers:'allow'}),explicitPage=await explicitContext.newPage();
+      if(origin) await explicitContext.addInitScript(value=>localStorage.setItem('leaseq:api-origin:v1',value),origin);
+      const healthResponse=name==='503'?explicitPage.waitForResponse(response=>response.status()===503&&new URL(response.url()).pathname==='/healthz',{timeout:10000}):null;
+      await explicitPage.goto(base+'#/app?mode=simulator',{waitUntil:'networkidle'});
+      if(healthResponse) assert.equal((await healthResponse).status(),503,'configured health probe must receive HTTP 503, not fail at CORS');
+      await explicitPage.getByRole('heading',{name:'Browser Simulator'}).waitFor({timeout:10000});
+      assert.match(await explicitPage.locator('#mode-label').textContent(),/Browser Simulator/);
+      await explicitPage.reload({waitUntil:'networkidle'});
+      await explicitPage.getByRole('heading',{name:'Browser Simulator'}).waitFor({timeout:10000});
+      assert.match(await explicitPage.locator('#mode-label').textContent(),/Browser Simulator/);
+      await explicitContext.close();
+      report.explicitSimulatorFailures??={};report.explicitSimulatorFailures[name]='simulator deep link and reload preserved';
+    }
+
+    // Hold the health response until after the user changes mode in flight.
+    const lateContext=await browser.newContext({serviceWorkers:'allow'}),latePage=await lateContext.newPage();
+    await lateContext.addInitScript(value=>localStorage.setItem('leaseq:api-origin:v1',value),`http://127.0.0.1:${unavailableApiPort}`);
+    let releaseHealth;const healthGate=new Promise(resolve=>{releaseHealth=resolve;});
+    const healthRequest=lateContext.waitForEvent('request',{predicate:request=>new URL(request.url()).port===String(unavailableApiPort)&&new URL(request.url()).pathname==='/healthz',timeout:10000});
+    await lateContext.route(`http://127.0.0.1:${unavailableApiPort}/healthz`,async route=>{await healthGate;await route.fulfill({status:503,headers:{'Access-Control-Allow-Origin':'*','Content-Type':'application/json'},body:'{"detail":"fixture unavailable"}'});});
+    try {
+      await latePage.goto(base+'#/app?mode=live',{waitUntil:'domcontentloaded'});
+      await healthRequest;
+      await latePage.locator('#mode-toggle').click();
+      await latePage.getByRole('heading',{name:'Browser Simulator'}).waitFor();
+      const lateResponse=latePage.waitForResponse(response=>response.status()===503&&new URL(response.url()).pathname==='/healthz',{timeout:10000});
+      releaseHealth();
+      const response=await lateResponse;assert.equal(response.status(),503);await response.finished();
+      await latePage.waitForFunction(()=>!window.LeaseQGetUpdateState().inFlight,null,{timeout:10000});
+      assert.match(await latePage.locator('#mode-label').textContent(),/Browser Simulator/);
+      report.lateHealthResponse='held HTTP 503 released after simulator selection; request completed';
+    } finally { releaseHealth(); await lateContext.close(); }
+
     // An accepted token followed by a failed POST is never rewritten as a
     // synthetic local completion or replayed into the browser model.
     const mutationContext=await browser.newContext({serviceWorkers:'allow'}),mutationPage=await mutationContext.newPage();
@@ -230,7 +267,7 @@ const close = (server) => new Promise((resolve) => server.close(resolve));
     assert.deepEqual(errors,[]);
     report.errors=errors;
     fs.writeFileSync(path.join(evidence,'revenue-pwa-results.json'),JSON.stringify(report,null,2)+'\n');
-    console.log(JSON.stringify({viewports:report.viewports.length,axe:report.axe.length,interest:report.interest,pwa:report.pwa,liveFailure:report.liveFailure,errors}));
+    console.log(JSON.stringify({viewports:report.viewports.length,axe:report.axe.length,interest:report.interest,pwa:report.pwa,liveFailure:report.liveFailure,explicitSimulatorFailures:report.explicitSimulatorFailures,lateHealthResponse:report.lateHealthResponse,errors}));
     await context.close();
-  } finally { await browser.close(); await close(probe); await close(receiver); await close(staticServer); }
+  } finally { await browser.close(); await close(probe); await close(unavailableApi); await close(receiver); await close(staticServer); }
 })().catch((error) => { console.error(error); process.exitCode=1; });

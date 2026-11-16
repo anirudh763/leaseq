@@ -2252,7 +2252,7 @@ function initMenu() {
 
 async function loadVersion() {
   if (!app.apiOrigin) {
-    app.apiAvailability = "unavailable"; app.mode = app.modeUserChoice ? "live" : "simulator";
+    app.apiAvailability = "unavailable"; if (!app.modeUserChoice) app.mode = "simulator";
     stopPolling();
     setConn("offline"); syncModeChrome();
     if (app.route.name !== "landing" && app.route.name !== "signup" && app.route.name !== "login") renderView(false);
@@ -2268,17 +2268,17 @@ async function loadVersion() {
       return;
     }
     if (response.status === 401) {
-      app.apiAvailability = "auth"; app.mode = "live"; setConn("needs-token");
+      app.apiAvailability = "auth"; if (!app.modeUserChoice) app.mode = "live"; setConn("needs-token");
       showBanner("The Live API answered but requires authorization. Browser Simulator is available from the mode control; no simulated result will replace this response.", true);
       syncModeChrome(); if (app.route.name !== "connection") renderView(false); return;
     }
     app.apiAvailability = response.status === 403 ? "configuration-error" : "unavailable";
-    app.mode = app.modeUserChoice ? "live" : "simulator"; setConn("offline");
+    if (!app.modeUserChoice) app.mode = "simulator"; setConn("offline");
     stopPolling();
     showBanner(response.status === 403 ? "The API denied this origin. Check server authorization and CORS settings; no local result replaces a Live API response." : `The configured API returned HTTP ${response.status}. Browser Simulator is available, but it does not represent a live queue.`, true);
     syncModeChrome(); if (!app.modeUserChoice && app.route.name !== "landing") renderView(false);
   } catch {
-    app.apiAvailability = "unavailable"; app.mode = app.modeUserChoice ? "live" : "simulator";
+    app.apiAvailability = "unavailable"; if (!app.modeUserChoice) app.mode = "simulator";
     stopPolling();
     setConn("offline"); showBanner("No Live API answered the bounded health check. Browser Simulator uses only this tab and does not connect to PostgreSQL.", true);
     syncModeChrome(); if (!app.modeUserChoice && !["landing","signup","login"].includes(app.route.name)) renderView(false);
