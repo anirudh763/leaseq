@@ -20,6 +20,7 @@ async function connect(page) {
 
 (async () => {
   const browser = await chromium.launch({ ...(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : {}) });
+  // Context routing reaches API requests owned by an active service worker too.
   async function check(name, fn, width = 1280) {
     const context = await browser.newContext({ viewport: { width, height: 900 } });
     const page = await context.newPage();
@@ -33,7 +34,7 @@ async function connect(page) {
       let release, requested;
       const held = new Promise((resolve) => { release = resolve; });
       const started = new Promise((resolve) => { requested = resolve; });
-      await page.route((url) => url.pathname === "/jobs" && url.searchParams.get("limit") === "1", async (route) => {
+      await page.context().route((url) => url.pathname === "/jobs" && url.searchParams.get("limit") === "1", async (route) => {
         requested();
         await held;
         await route.fulfill({ status: 200, contentType: "application/json", body: '{"jobs":[],"counts":{}}' });
@@ -73,10 +74,12 @@ async function connect(page) {
       await check(`${endpoint} HTTP failure names its endpoint and actual status`, async (page) => {
         await connect(page);
         const path = `/jobs/${EXP.dead}${endpoint === "events" ? "/events" : ""}`;
-        await page.route((url) => url.pathname === path, (r) => r.fulfill({
+        await page.context().route((url) => url.pathname === path, (r) => r.fulfill({
           status: 503, contentType: "application/json", body: '{"detail":"temporarily unavailable"}',
         }));
+        const failedResponse = page.waitForResponse(response => new URL(response.url()).pathname === path && response.status() === 503);
         await go(page, `#/jobs/${EXP.dead}`);
+        await failedResponse;
         await page.locator("#banner").filter({ hasText: /HTTP 503/ }).waitFor();
         assert.ok((await page.locator("#banner").innerText()).includes(path));
       });
@@ -165,7 +168,7 @@ async function connect(page) {
     });
     await check("an events network failure names the failed request", async (page) => {
       await connect(page);
-      await page.route(`**/jobs/${EXP.dead}/events?*`, (r) => r.abort());
+      await page.context().route(`**/jobs/${EXP.dead}/events?*`, (r) => r.abort());
       await go(page, `#/jobs/${EXP.dead}`);
       await page.locator("#banner").filter({ hasText: /Cannot reach/ }).waitFor();
       assert.ok((await page.locator("#banner").innerText()).includes(`/jobs/${EXP.dead}/events`));
@@ -176,7 +179,7 @@ async function connect(page) {
       const blocked = new Promise((resolve) => { release = resolve; });
       let began;
       const started = new Promise((resolve) => { began = resolve; });
-      await page.route(`**/jobs/${EXP.dead}/events?*`, async (r) => {
+      await page.context().route(`**/jobs/${EXP.dead}/events?*`, async (r) => {
         began(); await blocked; await r.abort();
       });
       await go(page, `#/jobs/${EXP.dead}`);
@@ -195,7 +198,7 @@ async function connect(page) {
       const blocked = new Promise((resolve) => { release = resolve; });
       let began;
       const started = new Promise((resolve) => { began = resolve; });
-      await page.route(`**/jobs/${EXP.dead}/events?*`, async (r) => {
+      await page.context().route(`**/jobs/${EXP.dead}/events?*`, async (r) => {
         began(); await blocked; await r.abort();
       });
       await go(page, `#/jobs/${EXP.dead}`);
@@ -222,7 +225,7 @@ async function connect(page) {
       const blocked = new Promise((resolve) => { release = resolve; });
       let began;
       const started = new Promise((resolve) => { began = resolve; });
-      await page.route((url) => url.pathname === "/jobs", async (r) => {
+      await page.context().route((url) => url.pathname === "/jobs", async (r) => {
         began(); await blocked;
         await r.fulfill({ status: 503, contentType: "application/json", body: '{"detail":"old Jobs failure"}' });
       });
