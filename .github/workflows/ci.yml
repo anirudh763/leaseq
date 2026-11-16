@@ -47,7 +47,6 @@ jobs:
     env:
       LEASEQ_DATABASE_URL: postgresql://leaseq:leaseq@localhost:55444/leaseq
       LEASEQ_SANDBOX_ADMIN_URL: postgresql://leaseq:leaseq@localhost:55444/leaseq_sandbox_admin
-      LEASEQ_TEST_ENV_FILE: ${{ runner.temp }}/leaseq-policy-test.json
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
         with:
@@ -61,12 +60,16 @@ jobs:
           python - <<'PY'
           import json
           import os
+          from pathlib import Path
           import psycopg
           with psycopg.connect(os.environ["LEASEQ_DATABASE_URL"], autocommit=True) as conn:
               conn.execute("CREATE DATABASE leaseq_sandbox_admin")
-          descriptor = os.open(os.environ["LEASEQ_TEST_ENV_FILE"], os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+          path = Path(os.environ["RUNNER_TEMP"]) / "leaseq-policy-test.json"
+          descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
           with os.fdopen(descriptor, "w") as output:
               json.dump({"LEASEQ_DATABASE_URL": os.environ["LEASEQ_DATABASE_URL"]}, output)
+          with open(os.environ["GITHUB_ENV"], "a") as environment:
+              environment.write(f"LEASEQ_TEST_ENV_FILE={path}\n")
           PY
       # The tests create their own random API token (tests/conftest.py, scripts/harness.py).
       - run: python -m pytest -v
