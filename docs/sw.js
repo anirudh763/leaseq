@@ -7,7 +7,7 @@
 const POLICY_VERSION = 'p3';
 // Bump with policy/client changes. Unlike CACHE_NAME, this compact tab signal
 // intentionally avoids a circular dependency on the assets it identifies.
-const CLIENT_RELEASE = 'r8';
+const CLIENT_RELEASE = 'r9';
 const CACHE_PREFIX = 'leaseq-dashboard-shell-';
 const REQUIRED = [
   './', './manifest.webmanifest',
@@ -36,9 +36,9 @@ const SHA256 = Object.freeze({
   './assets/trust.css': '8f6befaaf972d1caea2452351a2593d3c877475b9a8828ea0a57223d8ace6425',
   './assets/theme.js': '7fa908f0b4424acecda8c602ff1afbf09eba1ba410d2a2c78c1a0f74043bcb69',
   './assets/profiles.js': '979b7af49e179d9cf513cf1aeefb0d66cf271d7705f949b54e6b87b6af9c1dff',
-  './assets/platform.js': '302ee1660880a284af87efefa647a1b22e10e228f2947747803ae7821f29c145',
+  './assets/platform.js': 'f936d466d675017921fd96599f2bc2b6fc949b6242afe0c660fe03bd5dea580c',
   './assets/trust.js': 'bd099c20a38bdf4d6657118dd52d1184199d67f1c1aee7d2b228b7e82513b488',
-  './assets/app.js': '7e1421ad9f8da25e81fd6c5716c37a2829f780599e4ed13eadc627d92953101b',
+  './assets/app.js': 'd6ab50a5796e202ca9f950882179dbc836f6b68aef8d939ef95f4c58de7b55bc',
   './assets/simulator.js': '1e49fbdeac6bec639ff8006c491e51348aa447969938755431c551aeea7576b3',
   './assets/interest.js': '6419e62966b9d7960a335249172a2a39da6d8efd7ca622c43622810d1fb7db8b',
   './assets/sync.js': '9e3aa3a04443ca4768f51283c48aa2f08d97aa0d7ea120e90c78b125a84d2308',
@@ -61,7 +61,7 @@ const CACHE_NAME = `${CACHE_PREFIX}${BUILD}`;
 const EXPECTED_TYPES = new Map([
   ['.', 'text/html'], ['.webmanifest', 'manifest+json'], ['.html', 'text/html'],
   ['.css', 'text/css'], ['.js', 'javascript'], ['.svg', 'image/svg+xml'],
-  ['.png', 'image/png'], ['.woff2', 'font/woff2'], ['.txt', 'text/plain'],
+  ['.png', 'image/png'], ['.woff2', 'font/woff2'], ['.ttf', 'font/ttf'], ['.txt', 'text/plain'],
 ]);
 const scope = new URL(self.registration.scope);
 
@@ -75,7 +75,7 @@ async function validShellResponse(response, key) {
   if (!response?.ok || !Object.hasOwn(SHA256, key)) return false;
   const expectedType = EXPECTED_TYPES.get(extension(key));
   const actualType = (response.headers.get('content-type') || '').toLowerCase();
-  if (!actualType.includes(expectedType)) return false;
+  if (!actualType.includes(expectedType) && !(['.ttf', '.woff2'].includes(extension(key)) && actualType.split(';')[0].trim() === 'application/octet-stream')) return false;
   const digest = await crypto.subtle.digest('SHA-256', await response.clone().arrayBuffer());
   const actual = [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
   return actual === SHA256[key];

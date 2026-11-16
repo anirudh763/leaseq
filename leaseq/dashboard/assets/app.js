@@ -893,7 +893,6 @@ function viewJobs() {
 
   const pause = el("button", { type: "button", class: "btn", id: "pause",
                                text: app.paused ? "Resume updates" : "Pause updates" });
-  pause.setAttribute("aria-pressed", app.paused ? "true" : "false");
   pause.addEventListener("click", togglePause);
   const more = el("button", { type: "button", class: "btn", id: "more", text: "Show more jobs", hidden: true });
   more.addEventListener("click", () => { app.rows = Math.min(MAX_ROWS, app.rows + PAGE); pollNow(); });
@@ -1204,7 +1203,6 @@ function renderJobData() {
   const pause = $("detail-pause");
   if (pause) {
     pause.textContent = app.paused ? "Resume updates" : "Pause updates";
-    pause.setAttribute("aria-pressed", app.paused ? "true" : "false");
     pause.onclick = togglePause;
   }
   if (!d) {
@@ -2183,11 +2181,9 @@ function togglePause() {
   // The label says what the button will do; no aria-pressed as well (one state mechanism).
   if ($("pause")) {
     $("pause").textContent = app.paused ? "Resume updates" : "Pause updates";
-    $("pause").setAttribute("aria-pressed", app.paused ? "true" : "false");
   }
   if ($("detail-pause")) {
     $("detail-pause").textContent = app.paused ? "Resume updates" : "Pause updates";
-    $("detail-pause").setAttribute("aria-pressed", app.paused ? "true" : "false");
   }
   announce(app.paused ? "Automatic updates paused." : "Automatic updates resumed.");
   if (!app.paused) refresh();

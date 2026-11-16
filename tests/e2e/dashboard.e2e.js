@@ -159,17 +159,21 @@ async function enterToken(page, token) {
       assert.equal(await page.getByLabel("Kind").getAttribute("aria-invalid"), "true");
       step("lane and kind filter are kept in the URL; a lane toggles from the keyboard; bad filter text is flagged");
 
-      // The changing label names the next action; pressed state reflects paused mode.
-      const pause = page.getByRole("button", { name: "Pause updates" });
-      assert.equal(await pause.getAttribute("aria-pressed"), "false");
+      // Changing action labels communicate Pause/Resume without toggle-button semantics.
+      const pause = page.getByRole("button", { name: "Pause updates", exact: true });
+      assert.equal(await pause.getAttribute("aria-pressed"), null);
       await pause.click();
-      const resume = page.getByRole("button", { name: "Resume updates" });
-      assert.equal(await resume.getAttribute("aria-pressed"), "true");
+      const resume = page.getByRole("button", { name: "Resume updates", exact: true });
+      assert.equal(await resume.getAttribute("aria-pressed"), null);
       let pausedPolls = 0;
       page.on("request", (r) => { if (/\/jobs\?/.test(r.url())) pausedPolls += 1; });
       await page.waitForTimeout(2600);
       assert.equal(pausedPolls, 0, `${pausedPolls} list requests while paused`);
-      step("pause stops automatic updates; its changing label and pressed state report paused mode");
+      const resumedRefresh = page.waitForResponse((r) => /\/jobs\?/.test(r.url()) && r.status() === 200);
+      await resume.click();
+      await resumedRefresh;
+      assert.equal(await page.getByRole("button", { name: "Pause updates", exact: true }).getAttribute("aria-pressed"), null);
+      step("pause stops automatic updates; resume refreshes; action labels have no conflicting toggle state");
       await page.context().close();
     }
 

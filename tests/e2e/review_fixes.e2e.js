@@ -136,11 +136,13 @@ async function connect(page) {
       assert.ok(pollCount >= 4, `observed ${pollCount} detail polls`);
       assert.equal(await page.evaluate(() => window.__detailNodes.every((node, i) => node === document.querySelector(
         ["#detail-state", "#why", "#life-title", "#timeline", "#detail-fields", "#payload", "#result"][i]))), true);
-      await page.getByRole("button", { name: "Pause updates", exact: true }).click();
-      const pause = page.getByRole("button", { name: "Resume updates", exact: true });
-      assert.equal(await pause.getAttribute("aria-pressed"), "true");
-      await pause.click();
-      assert.equal(await page.getByRole("button", { name: "Pause updates", exact: true }).getAttribute("aria-pressed"), "false");
+      const pauseAction = page.getByRole("button", { name: "Pause updates", exact: true });
+      assert.equal(await pauseAction.getAttribute("aria-pressed"), null);
+      await pauseAction.click();
+      const resumeAction = page.getByRole("button", { name: "Resume updates", exact: true });
+      assert.equal(await resumeAction.getAttribute("aria-pressed"), null);
+      await resumeAction.click();
+      assert.equal(await page.getByRole("button", { name: "Pause updates", exact: true }).getAttribute("aria-pressed"), null);
     });
     await check("theme label, pressed state and persisted theme agree", async (page) => {
       await page.goto(`${BASE}/dashboard/#/jobs`);

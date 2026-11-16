@@ -81,7 +81,7 @@ let browser;
   await page.getByRole("heading", { level: 2, name: "Worker status" }).waitFor();
   await page.getByRole("heading", { level: 2, name: "Metrics" }).waitFor();
   await page.getByRole("heading", { level: 2, name: "Schedules" }).waitFor();
-  await page.waitForFunction(() => !document.querySelector("#metrics-data")?.textContent.includes("Loading metrics"));
+  await page.locator("#metrics-data").filter({ hasText: /15-minute window/ }).waitFor();
   const metricText = await page.locator("#metrics-data").innerText();
   assert.match(metricText, /15-minute window/);
   assert.match(metricText, /p50 .* p95/);
@@ -137,7 +137,7 @@ let browser;
     await page.getByRole("button", { name: "Forget token", exact: true }).first().waitFor();
     await go("#/operations");
     await page.getByRole("heading", { level: 2, name: "Schedules" }).waitFor();
-    await page.waitForFunction(() => !document.querySelector("#metrics-data")?.textContent.includes("Loading sampled metrics"));
+    await page.locator("#metrics-data").filter({ hasText: /15-minute window/ }).waitFor();
   }
 
   const axeResults = [];
