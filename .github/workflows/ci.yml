@@ -322,7 +322,7 @@ jobs:
           assert any(e["event"] == "completed" for e in events["events"])
 
           subprocess.run(["docker", "compose", "down"], check=True)
-          subprocess.run(["docker", "compose", "up", "-d", "--wait", "--wait-timeout", "90"],
+          subprocess.run(["docker", "compose", "up", "-d", "--wait", "--wait-timeout", "90", "--scale", "demo=0"],
                          check=True)
           # Read the original job before submitting anything after recreation.
           assert request(path) == job, "job or result did not survive down/up"

@@ -61,6 +61,13 @@ services:
     build: .
     command: ["python", "-m", "leaseq.worker", "--api", "http://app:8000", "--worker-id", "compose-worker"]
     environment: *leaseq-env
+    # Consumer dependency readiness; process exit controls liveness. Job progress is tested separately.
+    healthcheck: &consumer-readiness
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://app:8000/readyz', timeout=2)"]
+      interval: 15s
+      timeout: 3s
+      start_period: 10s
+      retries: 3
     depends_on:
       app:
         condition: service_healthy
@@ -72,6 +79,7 @@ services:
     build: .
     command: ["python", "-m", "leaseq.demo", "--api", "http://app:8000", "--trickle-minutes", "10"]
     environment: *leaseq-env
+    healthcheck: *consumer-readiness
     depends_on:
       app:
         condition: service_healthy
