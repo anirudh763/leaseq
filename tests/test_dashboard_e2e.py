@@ -52,10 +52,16 @@ def seed(base: str) -> dict:
     def claim(worker="w-e2e", lease=600):
         return c.post("/jobs/claim", json={"worker_id": worker, "lease_seconds": lease}).json()
 
-    for _ in range(2):                                        # done
+    done = None
+    for i in range(2):                                        # done
         submit("report.render")
         job = claim()
-        assert c.post(f"/jobs/{job['id']}/complete", json={"lease_token": job["lease_token"]}).status_code == 200
+        if done is None:
+            done = job["id"]
+        completion = {"lease_token": job["lease_token"]}
+        if i == 0:
+            completion["result"] = {"lines": 2, "words": 10}
+        assert c.post(f"/jobs/{job['id']}/complete", json=completion).status_code == 200
     dead = submit("fail", {"error": "boom"}, max_attempts=1)   # dead
     job = claim()
     assert c.post(f"/jobs/{dead}/fail", json={"lease_token": job["lease_token"], "error": "boom"}).json()["state"] == "dead"
@@ -73,11 +79,12 @@ def seed(base: str) -> dict:
     ).json()["state"] == "dead"
     running = submit("sleep", {"ms": 60000})                     # running
     assert claim()["id"] == running
-    submit("email.send", {"to": "someone@example.com"})          # queued
+    queued = submit("email.send", {"to": "someone@example.com"}) # queued
     xss = submit("thumbnail.resize",
                  {"note": '<img src=x onerror="window.__xss=1"><script>window.__xss=2</script>'})
     submit("index.rebuild")
-    return {"dead": dead, "running": running, "xss": xss, "hostile": hostile,
+    return {"dead": dead, "running": running, "leased": running, "queued": queued,
+            "done": done, "xss": xss, "hostile": hostile,
             "counts": {"all": 9, "queued": 4, "leased": 1, "retrying": 1, "done": 2, "dead": 2}}
 
 
@@ -98,6 +105,23 @@ def test_dashboard_in_a_real_browser(monkeypatch):
         report = json.loads(r.stdout.strip().splitlines()[-1])
         assert report["axe_total"] == 0
         assert len(report["axe"]) == 10          # every view that was scanned
+        # dashboard.e2e.js intentionally mutates its fixture jobs while testing
+        # cancel/requeue. Run the independent polling/skip checks against a
+        # fresh owned database so leased/done state is not order-dependent.
+        review_db_url = harness.scratch_database("leaseq_e2e_review_fixes")
+        review_proc, review_base = harness.start_api(review_db_url)
+        try:
+            review_expected = seed(review_base)
+            fixes = subprocess.run(["node", str(E2E.with_name("review_fixes.e2e.js"))], capture_output=True,
+                                   text=True, timeout=180,
+                                   env={**os.environ, "BASE_URL": review_base, "API_TOKEN": TOKEN,
+                                        "AXE_PATH": _axe_path(), "EXPECTED": json.dumps(review_expected)})
+            print(fixes.stdout)
+            print(fixes.stderr)
+            assert fixes.returncode == 0, fixes.stderr
+        finally:
+            review_proc.terminate()
+            review_proc.wait()
     finally:
         proc.terminate()
         proc.wait()
@@ -227,7 +251,7 @@ def test_dashboard_review_fixes(monkeypatch):
         print(result.stdout)
         print(result.stderr)
         report = json.loads(result.stdout.strip().splitlines()[-1])
-        assert len(report["results"]) == 17
+        assert len(report["results"]) == 21
         assert not [r for r in report["results"] if not r["ok"]], report
         assert result.returncode == 0
     finally:
@@ -235,7 +259,39 @@ def test_dashboard_review_fixes(monkeypatch):
         proc.wait()
 
 
-@pytest.mark.parametrize("script", ["operator_upgrade.e2e.js", "operator_review_regressions.e2e.js"])
+def test_workstation_exact_viewport_matrix(monkeypatch):
+    """Exact 1440x900/375x812 route and theme screenshots plus 200% text reflow."""
+    db_url = harness.scratch_database("leaseq_e2e_workstation_matrix")
+    monkeypatch.setenv("LEASEQ_API_TOKEN", TOKEN)
+    monkeypatch.delenv("LEASEQ_PUBLIC_READ", raising=False)
+    proc, base = harness.start_api(db_url)
+    worker = harness.start_worker(db_url, base, "matrix-worker", 10)
+    try:
+        with httpx.Client(base_url=base, headers=AUTH, timeout=10) as client:
+            response = client.post("/jobs", headers={"Idempotency-Key": "workstation-matrix-word-count"},
+                json={"kind": "word_count", "payload": {"text": "audit one two\nthree four"}})
+            assert response.status_code == 201, response.text
+            job_id = response.json()["id"]
+            _wait_state(client, job_id, "done")
+        out_dir = Path(__file__).resolve().parents[1] / "artifacts/verification/post-restart/workstation-matrix"
+        result = subprocess.run(["node", str(E2E.with_name("workstation_matrix.e2e.js"))],
+            capture_output=True, text=True, timeout=600,
+            env={**os.environ, "BASE_URL": base, "API_TOKEN": TOKEN, "JOB_ID": str(job_id),
+                 "AXE_PATH": _axe_path(), "ARTIFACT_DIR": str(out_dir)})
+        print(result.stdout)
+        print(result.stderr)
+        assert result.returncode == 0, result.stderr
+        report = json.loads(result.stdout.strip().splitlines()[-1])
+        assert report["routes"] == 15 and report["viewport_theme_cases"] == 60
+        assert report["serious_or_critical_axe_violations"] == 0
+        assert report["console_errors"] == 0 and report["failed_requests"] == 0
+    finally:
+        for p in (worker, proc):
+            p.terminate()
+            p.wait()
+
+
+@pytest.mark.parametrize("script", ["operator_upgrade.e2e.js", "operator_review_regressions.e2e.js", "update_security.e2e.js"])
 def test_operator_workflows(monkeypatch, script, tmp_path):
     db_url = harness.scratch_database("leaseq_e2e_operator")
     monkeypatch.setenv("LEASEQ_API_TOKEN", TOKEN)

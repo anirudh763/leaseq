@@ -1,0 +1,19 @@
+# Production-oriented override for a fresh, operator-managed Compose deployment.
+# Supply LEASEQ_POSTGRES_PASSWORD from a secret manager or protected shell env;
+# this file intentionally has no default password.
+services:
+  postgres:
+    environment:
+      POSTGRES_PASSWORD: ${LEASEQ_POSTGRES_PASSWORD:?set a strong LEASEQ_POSTGRES_PASSWORD}
+
+  db-bootstrap:
+    command:
+      - psql
+      - -X
+      - --quiet
+      - --set=ON_ERROR_STOP=1
+      - --dbname=postgresql://leaseq@postgres:5432/leaseq
+      - --file=/compose_db_bootstrap.sql
+    environment:
+      PGPASSWORD: ${LEASEQ_POSTGRES_PASSWORD:?set a strong LEASEQ_POSTGRES_PASSWORD}
+

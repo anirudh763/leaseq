@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#18181B">
+  <meta name="theme-color" content="#174aa6">
+  <title>Privacy | LeaseQ</title>
+  <link rel="stylesheet" href="../assets/ui.css">
+  <link rel="stylesheet" href="../assets/app.css">
+  <link rel="stylesheet" href="../assets/trust.css">
+  <link rel="manifest" href="../manifest.webmanifest">
+  <script src="../assets/theme.js"></script>
+  <script src="../assets/platform.js" defer></script>
+</head>
+<body>
+<main class="trust-document"><article>
+  <a href="../#/">LeaseQ</a>
+  <h1>Privacy</h1>
+  <p>LeaseQ is a local queue operator interface. It does not create a hosted account or send telemetry from this page.</p>
+  <h2>Browser data</h2>
+  <ul>
+    <li>Optional local profiles store an email identifier, a salted PBKDF2 password verifier, and small saved settings/drafts in this browser. Passwords are not stored. Saved work is not encrypted.</li>
+    <li>The API bearer token is held in page memory only. Reloading or logging out clears it; it is not placed in local storage, URLs, the service-worker cache or feedback diagnostics.</li>
+    <li>The recovery simulation is local to this tab until you explicitly save it into a profile. Quick-start progress is namespaced by guest or profile. The synthetic demo does not call the queue API.</li>
+    <li>The service worker caches only this app’s public HTML, CSS, JavaScript, fonts, icons and bundled sample text. It does not cache API/auth responses, jobs, payloads, results or tokens.</li>
+  </ul>
+  <h2>Network and sharing</h2>
+  <p>When you explicitly connect, the browser sends authorized API requests to the LeaseQ server that serves this dashboard. That server receives the request data needed for the action. The server operator’s retention and access policy is outside this local profile.</p>
+  <p>Sharing a job link includes only the current app URL and job number. It does not include a payload, result, filter text or API token. Recipients need network access and their own authorization. Feedback opens a prefilled draft at the public LeaseQ GitHub issue page only after you review and choose Open GitHub draft; it is not sent automatically.</p>
+  <p>Clearing browser site data, browser eviction or device loss may remove local profiles and work. Export important information before clearing site data. No cloud recovery is available.</p>
+  <nav class="trust-links" aria-label="Trust information"><a href="terms.html">Terms of use</a><a href="security-offline.html">Security & offline data</a><a href="../#/">Return to LeaseQ</a></nav>
+</article></main>
+</body>
+</html>

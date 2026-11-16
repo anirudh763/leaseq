@@ -18,4 +18,4 @@ dependencies = [
 include = ["leaseq*"]
 
 [tool.setuptools.package-data]
-leaseq = ["schema.sql", "dashboard/*.html", "dashboard/assets/*", "console/*.html", "console/assets/*"]
+leaseq = ["schema.sql", "dashboard/*.html", "dashboard/*.webmanifest", "dashboard/sw.js", "dashboard/pages/*", "dashboard/assets/*", "console/*.html", "console/assets/*"]

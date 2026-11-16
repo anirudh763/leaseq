@@ -42,6 +42,16 @@ Security section of the README).
 - `docker-compose.yml`, the `Dockerfile` and `scripts/up.sh` as shipped: the
   token handling in `.env`, published ports, the container user.
 
+## Request admission
+
+The API uses in-memory token buckets per process. Defaults are 60,000 requests
+per minute for authenticated clients and 120 per minute for unauthenticated
+clients; health probes use a separate bounded 120-per-minute map. The API
+returns `429` with `Retry-After` when a bucket is exhausted. Client identity
+comes from the ASGI connection address; forwarded headers are ignored. These
+limits reset on process restart and are not distributed quotas, tenant
+isolation or a spending cap. They do not apply to static dashboard files.
+
 ## Out of scope
 
 - Anything that needs the API token already: the token is one shared secret
@@ -49,7 +59,7 @@ Security section of the README).
 - Plain HTTP between client and API. leaseq does not serve TLS; put a reverse
   proxy in front of it if it is reached over a network.
 - `LEASEQ_PUBLIC_READ=1` exposing job payloads: that is what it is documented to do.
-- No rate limiting, and audit-log growth from wrong lease tokens (both listed
-  as known limitations).
+- Distributed rate limiting and audit-log growth from wrong lease tokens.
+  The API's local per-process rate buckets do not protect across replicas.
 - A database superuser disabling the audit trigger.
 - The demo worker kinds and `leaseq.demo`, which do no real work.

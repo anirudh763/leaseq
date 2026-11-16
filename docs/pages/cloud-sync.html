@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#18181B">
+  <title>Optional Supabase workspace sync · LeaseQ</title>
+  <link rel="manifest" href="../manifest.webmanifest">
+  <link rel="stylesheet" href="../assets/trust.css">
+</head>
+<body>
+  <main class="trust-page">
+    <a href="../#/">← Back to LeaseQ</a>
+    <h1>Optional Supabase workspace sync</h1>
+    <p>LeaseQ has no hosted cloud workspace by default. This is a reference connector for a Supabase project that you control. No project, account, table, or key was created for this app.</p>
+    <h2>Setup boundary</h2>
+    <ol>
+      <li>Create a Supabase project and an account using Supabase’s own account controls.</li>
+      <li>Run the <a href="../supabase-leaseq-workspaces.sql">reviewed SQL schema</a> in your project’s SQL editor.</li>
+      <li>Enter the project origin and publishable/legacy anon key in LeaseQ Settings. Secret and service_role/admin keys are rejected in browser code.</li>
+      <li>Sign in to Supabase, select the local categories to sync, and consent before each read/write.</li>
+    </ol>
+    <h2>Data and conflict handling</h2>
+    <p>Only selected local theme preferences, submit drafts, or a saved simulator example can be sent. Live jobs, queue responses, API tokens, local password verifiers, and mutation commands are excluded. The token for Supabase stays in page memory and is separate from LeaseQ’s shared API bearer.</p>
+    <p>Each account gets one row protected by row-level security. Revision-checked updates preserve a newer remote revision as a conflict; choose restore or replace explicitly. Deletion creates a revisioned tombstone and leaves local data intact. Network retries are bounded to safe reads; writes are not silently retried.</p>
+    <p>This connector has only been verified against an owned local protocol receiver. No real Supabase project, cross-device session, RLS deployment, recovery policy, or third-party availability has been tested. Browser-local profiles are not cloud identity; Supabase sync does not authorize LeaseQ API jobs.</p>
+    <p><a href="privacy.html">Privacy</a> · <a href="security-offline.html">Security and offline behavior</a></p>
+  </main>
+</body>
+</html>

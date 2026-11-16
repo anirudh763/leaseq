@@ -21,7 +21,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 FAST = ["tests/test_api.py", "tests/test_security.py", "tests/test_worker_kinds.py",
         "tests/test_audit_round2.py", "tests/test_usability.py", "tests/test_schema_startup.py",
-        "tests/test_counts_cache.py", "tests/test_permanent_error.py"]
+        "tests/test_counts_cache.py", "tests/test_permanent_error.py", "tests/test_worker_recovery.py"]
 E2E = ["tests/test_dashboard_e2e.py"]
 REVIEW = ["tests/test_dashboard_e2e.py::test_dashboard_review_fixes"]
 SEC, API, QUEUE, JS = ("leaseq/security.py", "leaseq/api.py", "leaseq/queue.py",
@@ -49,8 +49,10 @@ SABOTAGE = [
     ("413 only after the whole body is read", [
         (SEC, "                    if total > limit:\n                        return await _reply(send, 413, _too_large(limit))\n                    chunks.append(body)", "                    chunks.append(body)"),
         (SEC, "        buffered, replayed = b\"\".join(chunks), False", "        if total > limit:\n            return await _reply(send, 413, _too_large(limit))\n        buffered, replayed = b\"\".join(chunks), False")], FAST),
-    ("kind allow-list removed", [(API, "kind: str = Field(min_length=1, max_length=100, pattern=KIND_PATTERN)",
-                                  "kind: str = Field(min_length=1)")], FAST),
+    ('kind allow-list removed', [('leaseq/api.py',
+      'class JobIn(BaseModel):\n'
+      '    kind: str = Field(min_length=1, max_length=100, pattern=KIND_PATTERN)',
+      'class JobIn(BaseModel):\n    kind: str = Field(min_length=1)')], FAST),
     ("DataError handler removed", [(API, "@app.exception_handler(psycopg.errors.DataError)", "@app.exception_handler(KeyError)")], FAST),
     ("422 echoes input again", [(API, "@app.exception_handler(RequestValidationError)", "@app.exception_handler(LookupError)")], FAST),
     ("worker_id limits removed", [(API, "worker_id: str = Field(min_length=1, max_length=200, pattern=WORKER_PATTERN)",
@@ -75,9 +77,19 @@ SABOTAGE = [
         ("leaseq/schema.sql", "    CHECK ((state = 'leased') = (lease_token IS NOT NULL)),\n", "")], FAST),
     ("schema not widened on start", [("leaseq/schema.sql", "        ALTER TABLE job_events DROP CONSTRAINT IF EXISTS job_events_event_check;\n", "        RETURN;\n")], FAST),
     ("worker sends no token", [("leaseq/worker.py", 'headers = {"Authorization": f"Bearer {token}"} if token else {}', "headers = {}")], FAST),
-    ("fail_first_n never fails", [("leaseq/worker.py", 'if job["kind"] == "fail_first_n" and job["attempts"] <= int(payload.get("n", 1)):',
-                                   'if job["kind"] == "fail_first_n" and False:')], FAST),
-    ("payload depth unchecked", [(API, '    _payload_depth = field_validator("payload")(check_json_depth)\n', "")], FAST),
+    ('fail_first_n never fails', [('leaseq/worker.py',
+      '    if job["kind"] == "fail_first_n":\n        if job["attempts"] <= int(payload.get("n", 1)):',
+      '    if job["kind"] == "fail_first_n":\n        if False:')], FAST),
+    ('payload depth unchecked', [('leaseq/api.py',
+      'class JobIn(BaseModel):\n'
+      '    kind: str = Field(min_length=1, max_length=100, pattern=KIND_PATTERN)\n'
+      '    payload: dict = {}\n'
+      '\n'
+      '    _payload_depth = field_validator("payload")(check_json_depth)\n',
+      'class JobIn(BaseModel):\n'
+      '    kind: str = Field(min_length=1, max_length=100, pattern=KIND_PATTERN)\n'
+      '    payload: dict = {}\n'
+      '\n')], FAST),
     ("result depth unchecked", [(API, '    _result_depth = field_validator("result")(check_json_depth)\n', "")], FAST),
     ("triggers recreated on every start", [("leaseq/schema.sql", "DO $$\nBEGIN\n    -- Only unfinished",
         "DROP TRIGGER IF EXISTS job_events_no_update_delete ON job_events;\nDO $$\nBEGIN\n    -- Only unfinished")], FAST),
@@ -102,12 +114,23 @@ SABOTAGE = [
     ("permanent flag not a strict boolean", [(API, "    permanent: StrictBool = False", "    permanent: bool = False")], FAST),
     ("permanent dead row without reason", [(QUEUE, '{"error": error, "permanent": True, "reason": "permanent error: not retried"}', '{"error": error}')], FAST),
     # Install and release hygiene (tests/test_usability.py)
-    ("version missing from /healthz", [(API, '        conn.execute("SELECT 1")\n    return {"ok": True, "version": __version__}', '        conn.execute("SELECT 1")\n    return {"ok": True}')], FAST),
+    ('version missing from /healthz', [('leaseq/api.py',
+      'def healthz(request: Request):\n'
+      '    """Process liveness; dependency readiness belongs to /readyz."""\n'
+      '    return livez()',
+      'def healthz(request: Request):\n'
+      '    """Process liveness; dependency readiness belongs to /readyz."""\n'
+      '    return {"ok": True}')], FAST),
     # Not listed: dropping FastAPI(version=...) cannot be caught while the
     # version is 0.1.0, because that is FastAPI's own default version.
     ("up.sh overwrites an existing token", [("scripts/up.sh", 'if [ "$count" = 1 ] && ! blank "$current"; then', "if false; then")], FAST),
-    ("up.sh leaves .env readable by others", [("scripts/up.sh", '  chmod 600 "$ENV_FILE"\n', ""),
-                                               ("scripts/up.sh", "        umask 077                              # a new .env is never world-readable\n", "")], FAST),
+    ('up.sh leaves .env readable by others', [('scripts/up.sh', '  chmod 600 "$ENV_FILE"\nfi\n\n# A URL-safe', 'fi\n\n# A URL-safe'),
+     ('scripts/up.sh',
+      '  chmod 600 "$ENV_FILE"\nfi\n\nif [ "$PRODUCTION_MODE" = 1 ]; then',
+      'fi\n\nif [ "$PRODUCTION_MODE" = 1 ]; then'),
+     ('scripts/up.sh',
+      '        umask 077                              # a new .env is never world-readable\n',
+      '')], FAST),
     ("up.sh appends instead of filling a blank token", [("scripts/up.sh", 'if [ "$count" = 1 ]; then\n      # Fill', 'if false; then\n      # Fill')], FAST),
     ("up.sh ignores the shell token", [("scripts/up.sh", 'if [ -n "${LEASEQ_API_TOKEN+set}" ]; then', "if false; then")], FAST),
     ("up.sh health check without a per-request timeout", [("scripts/up.sh", '--connect-timeout "$left" --max-time "$left" ', "")], FAST),
@@ -116,8 +139,11 @@ SABOTAGE = [
     (".env not ignored by git", [(".gitignore", "\n.env\n", "\n")], FAST),
     # Browser tests (dashboard)
     ("operator buttons without a token", [(JS, "function actions(job) {\n  if (!app.token) {", "function actions(job) {\n  if (false) {")], E2E),
-    ("payload rendered as HTML", [(JS, '        el("pre", { class: "json", id: "payload", tabindex: "0", "aria-label": "Payload JSON",\n                    text: JSON.stringify(job.payload, null, 2) }),',
-                                   '        Object.assign(el("pre", { class: "json", id: "payload" }), { innerHTML: job.payload.note || JSON.stringify(job.payload) }),')], E2E),
+    ('payload rendered as HTML', [('leaseq/dashboard/assets/app.js',
+      '          el("pre", { class: "json", id: "payload", text: JSON.stringify(job.payload, null, 2) '
+      '})),',
+      '          Object.assign(el("pre", { class: "json", id: "payload" }), { innerHTML: '
+      'job.payload.note || JSON.stringify(job.payload) })),')], E2E),
     ("token put in a cookie", [(JS, "  if (app.token) headers.Authorization = `Bearer ${app.token}`;",
                                 "  if (app.token) { headers.Authorization = `Bearer ${app.token}`; document.cookie = `t=${app.token}`; }")], E2E),
     ("audit detail rendered as HTML", [(JS, '    detail.length ? el("span", { class: "ev-detail" }, ...detail) : null);',
@@ -125,14 +151,16 @@ SABOTAGE = [
     ("demo-data note never shown", [(JS, '  $("demo-note").hidden = !jobs.some((j) => j.idempotency_key.startsWith("demo-"));',
                                       '  $("demo-note").hidden = true;')], E2E),
     ("Forget keeps job data until the next poll", [(JS, '  app.token = null;\n  clearSensitive();\n  setConn("unknown");', '  app.token = null;\n  setConn("unknown");')], E2E),
-    ("Forget/401 keep cached job details", [(JS, "  app.list = null;\n  app.details.clear();\n", "  app.list = null;\n")], E2E),
+    ('Forget/401 keep cached job details', [('leaseq/dashboard/assets/app.js',
+      '  app.guestSimulation = null;\n  app.details.clear();\n  app.submit = null;',
+      '  app.guestSimulation = null;\n  app.submit = null;')], E2E),
     ("in-flight job read repopulates after Forget", [(JS, "  if (gen !== app.authGen) return;\n  if (jr.status === 401 || er.status === 401)", "  if (jr.status === 401 || er.status === 401)")], E2E),
     ("footer version drifts from /healthz", [(JS, '$("version").textContent = `leaseq ${app.version}`;', '$("version").textContent = "leaseq 0.0.9";')], E2E),
-    ("noscript message removed", [("leaseq/dashboard/index.html", '<noscript><p class="noscript">', '<noscript><p class="nojs">')], E2E),
+    ("noscript message removed", [("leaseq/dashboard/index.html", '<noscript><p class="noscript">', '<noscript><p class="noscript" hidden>')], E2E),
     # Design standard: stable live region, one toggle mechanism, danger confirm.
     ("banner rebuilt on every poll", [(JS, "  if (!b.hidden && b.dataset.key === key) return;\n", "")], E2E),
-    ("pause has label and aria-pressed", [(JS, '  $("pause").textContent = app.paused ? "Resume updates" : "Pause updates";\n',
-        '  $("pause").textContent = app.paused ? "Resume updates" : "Pause updates";\n  $("pause").setAttribute("aria-pressed", app.paused ? "true" : "false");\n')], E2E),
+    ("pause action label stays stale", [(JS, '  $("pause").textContent = app.paused ? "Resume updates" : "Pause updates";\n',
+        '  $("pause").textContent = "Pause updates";\n')], E2E),
     ("cancel confirm styled like requeue", [(JS, 'yes.className = "btn primary danger";', 'yes.className = "btn primary";')], E2E),
     ("HTTP error banner without next step", [(JS, '"served by the leaseq API; it retries every 2 seconds."', '""')], E2E),
     ("no empty-state row without a token", [(JS, '? el("p", {}, "Jobs appear here after you connect. ", el("a", { href: "#/connection", text: "Enter the API token" }))', '? el("p", {})')], E2E),
@@ -157,8 +185,12 @@ SABOTAGE = [
                                                 "`It goes back to the queue with 3 more attempts. `")], E2E),
     ("submit result computed in the browser", [(JS, "  const job = s.job;\n  const link",
         "  const job = { ...s.job, state: \"done\", leased_by: \"browser\", result: { words: app.submitDraft.split(/\\s+/).length, lines: 1 } };\n  const link")], E2E),
-    ("submit text not bounded", [(JS, "if (v.length > WC_MAX) return fail(", "if (false) return fail(")], REVIEW),
-    ("paste silently truncated", [(JS, 'id: "wc-text", name: "text", spellcheck:', 'id: "wc-text", name: "text", maxlength: WC_MAX, spellcheck:')], REVIEW),
+    ('submit text not bounded', [('leaseq/dashboard/assets/app.js',
+      'if (text.length > WC_MAX) return fail(',
+      'if (false) return fail(')], REVIEW),
+    ('paste silently truncated', [('leaseq/dashboard/assets/app.js',
+      'const word = el("textarea", { id: "wc-text", spellcheck:',
+      'const word = el("textarea", { id: "wc-text", maxlength: WC_MAX, spellcheck:')], REVIEW),
     ("events failure reported as job success", [(JS, "const failed = jr.status !== 200 ? jr : er;", "const failed = jr;")], REVIEW),
     ("events failure names wrong endpoint", [(JS, 'const path = jr.status !== 200 ? `/jobs/${id}` : `/jobs/${id}/events`;', 'const path = `/jobs/${id}`;')], REVIEW),
     ("network failure loses endpoint", [(JS, 'failure.path = path.split("?")[0];', 'failure.path = "";')], REVIEW),
@@ -171,9 +203,15 @@ SABOTAGE = [
     ("breadcrumb targets too short", [("leaseq/dashboard/assets/app.css", '.crumbs a{color:var(--muted)}', '.crumbs a{color:var(--muted);min-height:20px}')], REVIEW),
     ("job links too narrow", [("leaseq/dashboard/assets/app.css", '.job-link{display:inline-flex;', '.job-link{min-width:8px!important;display:inline-flex;')], REVIEW),
     ("footer links too short", [("leaseq/dashboard/assets/app.css", '.app-footer #version{margin-left:8px}', '.app-footer #version{margin-left:8px}\n.app-footer a{min-height:20px!important}')], REVIEW),
-    ("input counter does not update", [(JS, '    if (app.submitIntent && app.submitIntent.text !== text.value) app.submitIntent = null;\n    setCount();\n  });', '    if (app.submitIntent && app.submitIntent.text !== text.value) app.submitIntent = null;\n  });')], REVIEW),
-    ("input draft lost on navigation", [(JS, 'text.addEventListener("input", () => {\n    app.submitDraft = text.value;', 'text.addEventListener("input", () => {\n    app.submitDraft = "";')], REVIEW),
-    ("invalid input lacks accessible state", [(JS, 'text.setAttribute("aria-invalid", "true"); text.focus();', 'text.focus();')], REVIEW),
+    ('input counter does not update', [('leaseq/dashboard/assets/app.js',
+      '  word.addEventListener("input", () => { app.submitText = word.value; setCount(); update(); });',
+      '  word.addEventListener("input", () => { app.submitText = word.value; update(); });')], REVIEW),
+    ('input draft lost on navigation', [('leaseq/dashboard/assets/app.js',
+      '  word.addEventListener("input", () => { app.submitText = word.value; setCount(); update(); });',
+      '  word.addEventListener("input", () => { app.submitText = ""; setCount(); update(); });')], REVIEW),
+    ('invalid input lacks accessible state', [('leaseq/dashboard/assets/app.js',
+      '    $(id).setAttribute("aria-invalid", "true"); $(id).focus();',
+      '    $(id).focus();')], REVIEW),
     ("late Jobs HTTP error changes new route", [(JS, '  if (key !== app.routeKey) return;         // this response belongs to an earlier view\n', '')], REVIEW),
 ]
 
@@ -203,6 +241,24 @@ def apply(patches):
     return originals
 
 
+def classify_result(returncode, summary, output="", control_name=""):
+    up_timeout = (control_name == "up.sh health check without a per-request timeout"
+                  and "FAILED tests/test_usability.py::test_up_gives_up_on_a_stalled_api_within_the_timeout" in output
+                  and "Command '['bash', '" in output
+                  and "/scripts/up.sh']' timed out" in output)
+    if re.search(r"\b(?:SyntaxError|ModuleNotFoundError|ImportError)\b", output):
+        return "ERROR"
+    if "subprocess.TimeoutExpired" in output and not up_timeout:
+        return "ERROR"
+    if returncode not in (0, 1) or re.search(r"\b[1-9]\d* errors?\b", summary):
+        return "ERROR"
+    if re.search(r"\b[1-9]\d* skipped\b", summary):
+        return "SKIPPED"
+    if returncode == 1 and re.search(r"\b[1-9]\d* failed\b", summary):
+        return "CAUGHT"
+    return "MISSED" if returncode == 0 else "ERROR"
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--no-e2e", action="store_true")
@@ -223,17 +279,8 @@ def main() -> int:
             r = subprocess.run([sys.executable, "-m", "pytest", "-q", "-x", "-p", "no:cacheprovider",
                                 *tests], cwd=ROOT, capture_output=True, text=True, timeout=900)
             last = (r.stdout.strip().splitlines() or ["(no output)"])[-1]
-            if r.returncode not in (0, 1) or re.search(r"\b[1-9]\d* errors?\b", last):
-                verdict = "ERROR"
-            elif re.search(r"\b[1-9]\d* skipped\b", last):
-                verdict = "SKIPPED"
-            elif r.returncode == 1 and re.search(r"\b[1-9]\d* failed\b", last):
-                verdict = "CAUGHT"
-            elif r.returncode != 0:
-                verdict = "ERROR"
-            else:
-                verdict = "MISSED"
             output = r.stdout + "\n" + r.stderr
+            verdict = classify_result(r.returncode, last, output, name)
         except subprocess.TimeoutExpired:
             verdict, last, output = "ERROR", "test runner timed out", "test runner timed out"
         finally:

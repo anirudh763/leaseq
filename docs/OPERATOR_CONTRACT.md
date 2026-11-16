@@ -1,6 +1,6 @@
 # Operator upgrade contract
 
-Owner-approved 2026-11-14 council decision: extend the existing FastAPI/PostgreSQL engine and vanilla `/dashboard/` operator interface. `/console/` remains the isolated real-worker chaos lab. Preserve legacy API defaults, fencing, audit, counts cache, public-read behavior and private data. Keep MIT licensing; paid plans are proposals, not a hosted offering.
+Owner-approved 2026-11-14 council decision: extend the existing FastAPI/PostgreSQL engine and vanilla `/dashboard/` operator interface. `/console/` remains the isolated real-worker chaos lab. Preserve legacy API defaults, fencing, audit, counts cache, public-read behavior and private data. Keep MIT licensing. All available features are free; there are no paid tiers or upgrade gates.
 
 ## Enqueue and claim
 
@@ -26,7 +26,7 @@ Persist next_run_at and enable state in PostgreSQL. API worker polling dispatche
 
 Keep existing paths and design. Accept `#/jobs/job-123` as an alias for numeric job 123; malformed IDs get a specific invalid-ID state, unknown valid IDs get Job not found, unrelated paths remain route-not-found. Keep safe numeric bounds.
 
-The default API token remains memory-only. “Keep token until this tab closes” is explicit opt-in sessionStorage; disclose its shared-device/XSS persistence risk, handle storage rejection, and clear it and all sensitive state on Forget or 401. No localStorage/cookies/URL token. Preserve in-flight auth-generation guards.
+The API token exists only in page memory and is sent in Authorization headers. Reloading forgets it. Clear legacy sessionStorage token data on startup; never load or store a token in browser storage, cookies or URLs. Preserve in-flight auth-generation guards and clear sensitive state on Forget or 401.
 
 The composer accepts a JSON object, editable kind, explicit/generated idempotency key, priority, optional UTC due time/delay and attempts. Keep word_count/sleep presets; validate 64KiB encoded request size with no silent truncation. Reuse the same key for ambiguous retries, not every button click. Show observed registry/unsupported-kind notices.
 

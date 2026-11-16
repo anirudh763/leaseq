@@ -6,6 +6,19 @@ const TOKEN = process.env.API_TOKEN;
 const EXP = JSON.parse(process.env.EXPECTED);
 const results = [];
 
+async function expectStarted(started, message) {
+  let timer;
+  try {
+    const requested = await Promise.race([
+      started.then(() => true),
+      new Promise((resolve) => { timer = setTimeout(() => resolve(false), 5000); }),
+    ]);
+    assert.equal(requested, true, message);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function go(page, route) {
   await page.evaluate((r) => { location.hash = r; }, route);
   await page.waitForFunction((r) => location.hash === r && document.querySelector("main h1"), route);
@@ -20,6 +33,7 @@ async function connect(page) {
 
 (async () => {
   const browser = await chromium.launch({ ...(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : {}) });
+  // Context routing reaches API requests owned by an active service worker too.
   async function check(name, fn, width = 1280) {
     const context = await browser.newContext({ viewport: { width, height: 900 } });
     const page = await context.newPage();
@@ -29,6 +43,28 @@ async function connect(page) {
     finally { await context.close(); }
   }
   try {
+    await check("an anonymous connection answer preserves a token being entered", async (page) => {
+      let release, requested;
+      const held = new Promise((resolve) => { release = resolve; });
+      const started = new Promise((resolve) => { requested = resolve; });
+      await page.context().route((url) => url.pathname === "/jobs" && url.searchParams.get("limit") === "1", async (route) => {
+        requested();
+        await held;
+        await route.fulfill({ status: 200, contentType: "application/json", body: '{"jobs":[],"counts":{}}' });
+      });
+      await page.goto(`${BASE}/dashboard/#/connection`);
+      await expectStarted(started, "expected anonymous connection probe GET /jobs?limit=1");
+      const input = page.getByLabel("API token", { exact: true });
+      await input.fill(TOKEN);
+      await input.evaluate((node) => { window.__tokenInput = node; });
+      release();
+      await page.locator("#conn-status").filter({ hasText: "Reading without token" }).waitFor();
+      assert.equal(await input.inputValue(), TOKEN, "anonymous probe replaced the entered token");
+      assert.equal(await input.evaluate((node) => node === window.__tokenInput), true);
+      assert.equal(await input.evaluate((node) => node === document.activeElement), true);
+      await page.getByRole("button", { name: "Use token", exact: true }).click();
+      await page.getByRole("button", { name: "Forget token", exact: true }).first().waitFor();
+    });
     await check("over-limit input stays intact and is rejected without a POST", async (page) => {
       await connect(page);
       await go(page, "#/submit");
@@ -51,10 +87,12 @@ async function connect(page) {
       await check(`${endpoint} HTTP failure names its endpoint and actual status`, async (page) => {
         await connect(page);
         const path = `/jobs/${EXP.dead}${endpoint === "events" ? "/events" : ""}`;
-        await page.route((url) => url.pathname === path, (r) => r.fulfill({
+        await page.context().route((url) => url.pathname === path, (r) => r.fulfill({
           status: 503, contentType: "application/json", body: '{"detail":"temporarily unavailable"}',
         }));
+        const failedResponse = page.waitForResponse(response => new URL(response.url()).pathname === path && response.status() === 503);
         await go(page, `#/jobs/${EXP.dead}`);
+        await failedResponse;
         await page.locator("#banner").filter({ hasText: /HTTP 503/ }).waitFor();
         assert.ok((await page.locator("#banner").innerText()).includes(path));
       });
@@ -71,9 +109,79 @@ async function connect(page) {
       const result = JSON.parse(await page.locator("#result").innerText());
       assert.deepEqual(result, { lines: 2, words: 10 });
     });
+    await check("skip link keeps the current route and filters and focuses main", async (page) => {
+      await connect(page);
+      await go(page, "#/jobs?state=dead&kind=fail");
+      const route = await page.evaluate(() => location.hash);
+      const skip = page.getByRole("link", { name: "Skip to content" });
+      await skip.focus();
+      await page.keyboard.press("Enter");
+      assert.equal(await page.evaluate(() => location.hash), route);
+      assert.equal(await page.evaluate(() => document.activeElement.id), "main");
+      assert.equal(await page.locator("main h1").innerText(), "Jobs");
+      await go(page, `#/jobs/${EXP.dead}`);
+      await skip.focus();
+      await page.keyboard.press("Enter");
+      assert.equal(await page.evaluate(() => location.hash), `#/jobs/${EXP.dead}`);
+      assert.equal(await page.evaluate(() => document.activeElement.id), "main");
+      for (const route of ["#/submit", "#/operations", "#/connection"]) {
+        await go(page, route);
+        await skip.focus();
+        await page.keyboard.press("Enter");
+        assert.equal(await page.evaluate(() => location.hash), route);
+        assert.equal(await page.evaluate(() => document.activeElement.id), "main");
+      }
+    });
+    await check("detail polling preserves named regions and reading nodes across three cycles", async (page) => {
+      await connect(page);
+      let pollCount = 0;
+      let pollsReady;
+      const threeCycles = new Promise((resolve) => { pollsReady = resolve; });
+      page.on("request", (request) => {
+        if (new URL(request.url()).pathname === `/jobs/${EXP.done}` && ++pollCount >= 4) pollsReady();
+      });
+      await go(page, `#/jobs/${EXP.done}`);
+      await page.locator("#result").waitFor();
+      const names = await page.locator(".code-region").evaluateAll((regions) => regions.map((region) =>
+        [region.getAttribute("aria-labelledby"), region.getAttribute("role"), region.textContent.trim()]));
+      assert.deepEqual(names.map((x) => x[0]), ["payload-title", "result-title"]);
+      assert.ok(names.every((x) => x[1] === "region" && x[2].length));
+      await page.evaluate(() => { window.__detailNodes = ["#detail-state", "#why", "#life-title", "#timeline", "#detail-fields", "#payload", "#result"]
+        .map((selector) => document.querySelector(selector)); });
+      await threeCycles;
+      assert.ok(pollCount >= 4, `observed ${pollCount} detail polls`);
+      assert.equal(await page.evaluate(() => window.__detailNodes.every((node, i) => node === document.querySelector(
+        ["#detail-state", "#why", "#life-title", "#timeline", "#detail-fields", "#payload", "#result"][i]))), true);
+      const pauseAction = page.getByRole("button", { name: "Pause updates", exact: true });
+      assert.equal(await pauseAction.getAttribute("aria-pressed"), null);
+      await pauseAction.click();
+      const resumeAction = page.getByRole("button", { name: "Resume updates", exact: true });
+      assert.equal(await resumeAction.getAttribute("aria-pressed"), null);
+      await resumeAction.click();
+      assert.equal(await page.getByRole("button", { name: "Pause updates", exact: true }).getAttribute("aria-pressed"), null);
+    });
+    await check("theme label, pressed state and persisted theme agree", async (page) => {
+      await page.goto(`${BASE}/dashboard/#/jobs`);
+      const control = page.locator("[data-theme-toggle]").first();
+      assert.equal(await control.innerText(), "Use dark theme");
+      assert.equal(await control.getAttribute("aria-pressed"), "false");
+      await control.click();
+      assert.equal(await page.locator("[data-theme-toggle]").first().innerText(), "Use light theme");
+      assert.equal(await page.locator("[data-theme-toggle]").first().getAttribute("aria-pressed"), "true");
+      await page.reload();
+      assert.equal(await page.locator("[data-theme-toggle]").first().getAttribute("aria-pressed"), "true");
+      assert.equal(await page.evaluate(() => document.documentElement.dataset.theme), "dark");
+      await page.setViewportSize({ width: 375, height: 812 });
+      await page.getByRole("button", { name: "Menu", exact: true }).click();
+      const mobileTheme = page.locator("#menu-sheet [data-theme-toggle]");
+      assert.equal(await mobileTheme.innerText(), "Use light theme");
+      assert.equal(await mobileTheme.getAttribute("aria-pressed"), "true");
+      await mobileTheme.click();
+      assert.equal(await mobileTheme.getAttribute("aria-pressed"), "false");
+    });
     await check("an events network failure names the failed request", async (page) => {
       await connect(page);
-      await page.route(`**/jobs/${EXP.dead}/events?*`, (r) => r.abort());
+      await page.context().route(`**/jobs/${EXP.dead}/events?*`, (r) => r.abort());
       await go(page, `#/jobs/${EXP.dead}`);
       await page.locator("#banner").filter({ hasText: /Cannot reach/ }).waitFor();
       assert.ok((await page.locator("#banner").innerText()).includes(`/jobs/${EXP.dead}/events`));
@@ -84,11 +192,11 @@ async function connect(page) {
       const blocked = new Promise((resolve) => { release = resolve; });
       let began;
       const started = new Promise((resolve) => { began = resolve; });
-      await page.route(`**/jobs/${EXP.dead}/events?*`, async (r) => {
+      await page.context().route(`**/jobs/${EXP.dead}/events?*`, async (r) => {
         began(); await blocked; await r.abort();
       });
       await go(page, `#/jobs/${EXP.dead}`);
-      await started;
+      await expectStarted(started, `expected held GET /jobs/${EXP.dead}/events before Forget`);
       await page.getByRole("button", { name: "Forget token", exact: true }).first().click();
       release();
       await page.waitForTimeout(300);
@@ -103,11 +211,11 @@ async function connect(page) {
       const blocked = new Promise((resolve) => { release = resolve; });
       let began;
       const started = new Promise((resolve) => { began = resolve; });
-      await page.route(`**/jobs/${EXP.dead}/events?*`, async (r) => {
+      await page.context().route(`**/jobs/${EXP.dead}/events?*`, async (r) => {
         began(); await blocked; await r.abort();
       });
       await go(page, `#/jobs/${EXP.dead}`);
-      await started;
+      await expectStarted(started, `expected held GET /jobs/${EXP.dead}/events before changing route`);
       await go(page, "#/submit");
       release();
       await page.waitForTimeout(300);
@@ -130,12 +238,12 @@ async function connect(page) {
       const blocked = new Promise((resolve) => { release = resolve; });
       let began;
       const started = new Promise((resolve) => { began = resolve; });
-      await page.route((url) => url.pathname === "/jobs", async (r) => {
+      await page.context().route((url) => url.pathname === "/jobs", async (r) => {
         began(); await blocked;
         await r.fulfill({ status: 503, contentType: "application/json", body: '{"detail":"old Jobs failure"}' });
       });
       await go(page, "#/jobs");
-      await started;
+      await expectStarted(started, "expected held GET /jobs before opening Submit");
       await go(page, "#/submit");
       release();
       await page.waitForTimeout(300);

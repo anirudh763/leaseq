@@ -54,7 +54,7 @@ pass "auth: anonymous POST /jobs, GET /jobs, GET /stats and a wrong token -> 401
 # Read the whole page first: `curl | grep -q` fails under pipefail when grep
 # stops early and curl gets SIGPIPE.
 page=$(curl -fsS "$API/dashboard/") || fail "dash: GET /dashboard/"
-case "$page" in *'<title>Jobs – LeaseQ</title>'*) ;; *) fail "dash: index.html has no title";; esac
+case "$page" in *'<title>LeaseQ — Browser Simulator and Live Queue Operations</title>'*) ;; *) fail "dash: index.html has no LeaseQ page title";; esac
 for f in app.js app.css ui.css theme.js sample/pride-and-prejudice-ch1.txt; do
   c=$(code "$API/dashboard/assets/$f"); [ "$c" = 200 ] || fail "dash: assets/$f gave $c"
 done

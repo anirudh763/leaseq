@@ -60,6 +60,13 @@ after "Use dark theme" (command header on desktop, Menu sheet on narrower screen
 `assets/theme.js` applies a remembered choice before first paint. The theme is
 the only thing in `localStorage`, read and written inside try/catch.
 
+Theme buttons name the next action ("Use dark theme" / "Use light theme");
+`aria-pressed` reports the current mode (`true` means dark is active). Pause
+buttons use the same convention for paused updates. The skip link focuses the
+existing `<main>` without changing the hash route or its filters. Job-detail
+polling reconciles existing nodes so unchanged reading targets remain stable;
+operators can pause updates while reading.
+
 ## Type, spacing, shape
 
 - Atkinson Hyperlegible (local woff2, SIL OFL 1.1), body/UI 16px/1.5, H1 30px/1.2.

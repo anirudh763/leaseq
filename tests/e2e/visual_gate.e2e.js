@@ -14,8 +14,8 @@ const TOKEN = process.env.API_TOKEN;
 const AXE = process.env.AXE_PATH;
 const EXP = JSON.parse(process.env.EXPECTED);
 const DASH = `${BASE}/dashboard/`;
-const CSP = "default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; " +
-  "img-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
+const CSP = "default-src 'none'; script-src 'self' 'sha256-9PQI/5CckZC1YQ+tNlURtpHwVLgEKrQYDjOS6PjobY4='; style-src 'self'; font-src 'self'; " +
+  "img-src 'self'; connect-src 'self' https: http://localhost http://127.0.0.1; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 
 const EXPECTED_401 = /^Failed to load resource: the server responded with a status of 401 \(Unauthorized\)$/;
 const results = [];
@@ -273,14 +273,14 @@ function contrastRatio(foreground, background) {
       await page.goto(`${DASH}#/jobs`);
       await waitH1(page, /^Jobs$/);
       const bg = () => page.evaluate(() => getComputedStyle(document.body).backgroundColor);
-      assert.equal(await bg(), "rgb(255, 255, 255)");
+      assert.equal(await bg(), "rgb(250, 248, 242)");
       await page.getByRole("button", { name: "Use dark theme" }).first().click();
-      assert.notEqual(await bg(), "rgb(255, 255, 255)");
+      assert.equal(await bg(), "rgb(23, 33, 27)");
       await page.reload();
       await waitH1(page, /^Jobs$/);
-      assert.notEqual(await bg(), "rgb(255, 255, 255)", "dark choice not remembered");
+      assert.equal(await bg(), "rgb(23, 33, 27)", "dark choice not remembered");
       await page.getByRole("button", { name: "Use light theme" }).first().click();
-      assert.equal(await bg(), "rgb(255, 255, 255)");
+      assert.equal(await bg(), "rgb(250, 248, 242)");
       await page.context().close();
     });
 
@@ -312,7 +312,7 @@ function contrastRatio(foreground, background) {
     });
 
     // ---- 7. console, CSP, noscript ------------------------------------------------------
-    await check("CSP unchanged and enforced: no violations, no console errors", async () => {
+    await check("authored CSP enforced: no unsafe-inline, violations or console errors", async () => {
       const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
       await ctx.addInitScript(() => {
         window.__csp = [];
@@ -324,6 +324,7 @@ function contrastRatio(foreground, background) {
       page.on("console", (m) => { if (m.type() === "error" && !EXPECTED_401.test(m.text())) errors.push(m.text()); });
       const res = await page.goto(`${DASH}#/connection`);
       assert.equal(res.headers()["content-security-policy"], CSP);
+      assert.doesNotMatch(res.headers()["content-security-policy"], /unsafe-inline|unsafe-eval|\*/);
       await waitH1(page, /^Settings$/);
       await page.getByLabel("API token", { exact: true }).fill(TOKEN);
       await page.getByRole("button", { name: "Use token" }).click();
@@ -373,8 +374,8 @@ function contrastRatio(foreground, background) {
       await go(page, `#/jobs/${EXP.dead}`, new RegExp(`^Job ${EXP.dead}$`));
       await page.waitForTimeout(2500);
       assert.equal(await markerInDom(page), false, "stale payload shown after 401");
-      assert.equal(await page.evaluate(() => ({ l: JSON.stringify(localStorage), s: sessionStorage.length }))
-        .then((x) => x.l.includes("e2e") || x.s > 0), false, "token found in browser storage");
+      assert.equal(await page.evaluate(() => ({ l: localStorage.length, s: Object.keys(sessionStorage).filter(key => key !== "leaseq:pwa:v1:ready-notice" || sessionStorage.getItem(key) !== "1").length, cookie: document.cookie }))
+        .then((x) => x.l > 0 || x.s > 0 || x.cookie !== ""), false, "unexpected stored state after authentication failure");
       await page.context().close();
     });
 

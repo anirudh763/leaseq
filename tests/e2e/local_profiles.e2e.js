@@ -1,0 +1,54 @@
+const { chromium } = require('playwright');
+const BASE = process.env.BASE_URL;
+if (!BASE) throw new Error('Set BASE_URL');
+(async () => {
+  const browser = await chromium.launch({ headless: true, executablePath: process.env.CHROME_PATH });
+  const context = await browser.newContext({ viewport: { width:1440, height:900 } });
+  const page = await context.newPage();
+  page.on('pageerror',e=>console.error('PAGEERR',e)); page.on('console',m=>{if(m.type()==='error')console.error('CONSOLE',m.text())}); const calls=[]; page.on('request', r => { if (/\/(jobs|workers|operations|schedules)(\/|\?|$)/.test(new URL(r.url()).pathname + new URL(r.url()).search)) calls.push(r.url()); });
+  await page.goto(`${BASE}/dashboard/#/`);
+  await page.getByRole('heading', {name:'Know what your queue is doing.'}).waitFor();
+  await page.setViewportSize({width:375,height:812}); if(!await page.getByRole('link',{name:'Log in'}).isVisible())throw Error('Mobile header hid local profile login'); const mobileMenu=page.getByRole('button',{name:'Menu'});await mobileMenu.click();await page.getByRole('link',{name:'Create account'}).waitFor({state:'visible'});await page.getByRole('link',{name:'Create account'}).press('Escape');if(await mobileMenu.getAttribute('aria-expanded')!=='false'||!(await mobileMenu.evaluate(el=>document.activeElement===el)))throw Error('Mobile menu Escape/focus behavior failed');await page.setViewportSize({width:1440,height:900});
+  const featureButton=page.getByRole('button',{name:'Features'}); await featureButton.click(); await page.locator('#panel-features').waitFor({state:'visible'}); if(await featureButton.getAttribute('aria-expanded')!=='true')throw Error('Mega menu expanded state missing'); await featureButton.press('Escape'); if(await featureButton.getAttribute('aria-expanded')!=='false')throw Error('Escape did not close mega menu'); if(await featureButton.evaluate(el=>document.activeElement!==el))throw Error('Escape did not return focus');
+  if(!(await page.evaluate(()=>matchMedia('(prefers-reduced-motion: reduce)').matches))){const cycle=await page.evaluate(()=>new Promise(resolve=>{const slides=[...document.querySelectorAll('.showcase-slide')];const start=slides.findIndex(x=>!x.hidden);setTimeout(()=>resolve({start,end:slides.findIndex(x=>!x.hidden)}),6800)}));if(cycle.start===cycle.end)throw Error('Showcase did not auto-rotate without reduced-motion preference');}
+  await page.getByRole('button',{name:'Job chronology'}).click(); if(await page.locator('#showcase-slide-1').isHidden())throw Error('Manual showcase selection failed');
+  await page.getByRole('button',{name:'Pause examples'}).click(); await page.reload(); await page.getByRole('button',{name:'Play examples'}).waitFor(); await page.emulateMedia({reducedMotion:'reduce'}); await page.reload(); const reducedCycle=await page.evaluate(()=>new Promise(resolve=>{const slides=[...document.querySelectorAll('.showcase-slide')];const start=slides.findIndex(x=>!x.hidden);setTimeout(()=>resolve({start,end:slides.findIndex(x=>!x.hidden)}),6500)})); if(reducedCycle.start!==reducedCycle.end)throw Error('Showcase advanced with reduced-motion preference');
+  await page.getByRole('link', {name:'Try Live Demo'}).click();
+  await page.getByRole('heading', {name:'Sample queue'}).waitFor({timeout:5000}).catch(async e=>{console.error('DEBUG',page.url(),(await page.locator('#view').innerText()).slice(0,1000));throw e});
+  if (calls.length) throw Error(`Synthetic demo contacted queue API: ${calls.join(',')}`);
+  await page.goto(`${BASE}/dashboard/#/signup`);
+  const signup = async (email,password) => {
+    await page.getByLabel('Email').fill(email); await page.getByLabel('Password').fill(password);
+    await page.getByRole('button',{name:'Create profile'}).click();
+    await page.waitForURL(/#\/app$/);
+  };
+  await signup('a@example.test','a-long-test-password');
+  await page.goto(`${BASE}/dashboard/#/app/submit`); await page.getByLabel('Text to count').fill('private profile A draft'); await page.waitForFunction(()=>{const ids=JSON.parse(localStorage.getItem('leaseq:profiles:v1:index')||'[]');return ids.some(id=>JSON.parse(localStorage.getItem(`leaseq:workspace:v1:${id}`)||'{}').saved?.submitText==='private profile A draft')});
+  const aId=await page.evaluate(()=>JSON.parse(localStorage.getItem('leaseq:profiles:v1:index'))[0]);
+  await page.locator('[data-theme-toggle]').first().click();
+  await page.getByRole('button',{name:'Log out'}).click();
+  await page.waitForURL(/#\/$/);
+  await page.goto(`${BASE}/dashboard/#/signup`);
+  await signup('b@example.test','b-long-test-password');
+  const ids=await page.evaluate(()=>JSON.parse(localStorage.getItem('leaseq:profiles:v1:index')));
+  const bId=await page.evaluate(()=>JSON.parse(localStorage.getItem('leaseq:profiles:v1:index')).find(id=>JSON.parse(localStorage.getItem(`leaseq:profile:v1:${id}`)).email==='b@example.test'));
+  if (!bId || bId===aId) throw Error('Profile namespaces were not distinct');
+  await page.goto(`${BASE}/dashboard/#/app/submit`); if(await page.getByLabel('Text to count').inputValue())throw Error('Profile B saw A saved draft');
+  const bTheme=await page.evaluate(id=>JSON.parse(localStorage.getItem(`leaseq:workspace:v1:${id}`)).saved.theme,bId);
+  if (bTheme!=='light') throw Error(`Profile B inherited profile A theme: ${bTheme}`);
+  await page.getByRole('button',{name:'Log out'}).click(); await page.waitForURL(/#\/$/);
+  await page.goto(`${BASE}/dashboard/#/login`);
+  await page.getByLabel('Email').fill('a@example.test'); await page.getByLabel('Password').fill('wrong-password');
+  await page.getByRole('button',{name:'Log in',exact:true}).click();
+  await page.getByRole('alert').filter({hasText:'incorrect'}).waitFor();
+  await page.getByLabel('Password').fill('a-long-test-password'); await page.getByRole('button',{name:'Log in',exact:true}).click();
+  await page.waitForURL(/#\/app$/);
+  await page.goto(`${BASE}/dashboard/#/app/submit`); const restoredDraft=await page.getByLabel('Text to count').inputValue(); if(restoredDraft!=='private profile A draft'){const saved=await page.evaluate(id=>JSON.parse(localStorage.getItem(`leaseq:workspace:v1:${id}`)).saved,aId);throw Error(`A draft was not restored: ${restoredDraft}; saved=${JSON.stringify(saved)}`);}
+  const theme=await page.locator('html').getAttribute('data-theme'); if(theme!=='dark') throw Error(`A profile preference not restored: ${theme}`);
+  const second=await context.newPage(); await second.goto(`${BASE}/dashboard/#/login`); await second.getByLabel('Email').fill('b@example.test'); await second.getByLabel('Password').fill('b-long-test-password'); await second.getByRole('button',{name:'Log in',exact:true}).click(); await second.waitForURL(/#\/app$/); await page.waitForURL(/#\/$/); if(await page.locator('#profile-logout').count()) throw Error('First tab retained active profile after another tab changed identity');
+  const storage=await page.evaluate(()=>Object.keys(localStorage).filter(k=>/token|password|verifier/i.test(k)));
+  if (storage.some(k=>/token/i.test(k))) throw Error(`Unexpected token storage: ${storage}`);
+  if (await page.evaluate(()=>localStorage.getItem('leaseq-api-token'))!==null) throw Error('API token was persisted');
+  process.stdout.write(JSON.stringify({demo_api_calls:0,profile_ids_distinct:true,wrong_password_rejected:true,profile_theme_restored:true,profile_draft_isolated_and_restored:true,mega_escape_focus_return:true,mobile_profile_menu_access:true,showcase_manual_pause_persistence:true,showcase_autoplay_reduced_motion_verified:true,api_token_storage:null,multitab_identity_switch_cleared:true})+'\n');
+  await browser.close();
+})().catch(e=>{console.error(e);process.exit(1)});

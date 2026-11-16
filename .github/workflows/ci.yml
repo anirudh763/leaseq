@@ -38,15 +38,15 @@ jobs:
           POSTGRES_PASSWORD: leaseq
           POSTGRES_DB: leaseq
         ports:
-          - 5432:5432
+          - 55444:5432
         options: >-
           --health-cmd "pg_isready -U leaseq -d leaseq"
           --health-interval 2s
           --health-timeout 3s
           --health-retries 30
     env:
-      LEASEQ_DATABASE_URL: postgresql://leaseq:leaseq@localhost:5432/leaseq
-      LEASEQ_SANDBOX_ADMIN_URL: postgresql://leaseq:leaseq@localhost:5432/leaseq_sandbox_admin
+      LEASEQ_DATABASE_URL: postgresql://leaseq:leaseq@localhost:55444/leaseq
+      LEASEQ_SANDBOX_ADMIN_URL: postgresql://leaseq:leaseq@localhost:55444/leaseq_sandbox_admin
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
         with:
@@ -55,13 +55,21 @@ jobs:
         with:
           python-version: "3.13"
       - run: pip install -r requirements.txt
-      - name: create isolated sandbox test administrator database
+      - name: prepare isolated sandbox and policy test fixtures
         run: |
           python - <<'PY'
+          import json
           import os
+          from pathlib import Path
           import psycopg
           with psycopg.connect(os.environ["LEASEQ_DATABASE_URL"], autocommit=True) as conn:
               conn.execute("CREATE DATABASE leaseq_sandbox_admin")
+          path = Path(os.environ["RUNNER_TEMP"]) / "leaseq-policy-test.json"
+          descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+          with os.fdopen(descriptor, "w") as output:
+              json.dump({"LEASEQ_DATABASE_URL": os.environ["LEASEQ_DATABASE_URL"]}, output)
+          with open(os.environ["GITHUB_ENV"], "a") as environment:
+              environment.write(f"LEASEQ_TEST_ENV_FILE={path}\n")
           PY
       # The tests create their own random API token (tests/conftest.py, scripts/harness.py).
       - run: python -m pytest -v
@@ -157,6 +165,11 @@ jobs:
       - run: npm install --no-save playwright@1.63.0 axe-core@4.14.0
       - run: npx playwright install --with-deps chromium
       - run: python -m pytest -v tests/test_dashboard_e2e.py
+      - name: static guest, simulator and offline regression checks
+        run: |
+          python scripts/build_static_site.py
+          git diff --exit-code -- docs leaseq/dashboard/sw.js
+          node tests/e2e/revenue_pwa.e2e.js
 
   # The real Docker stack (postgres, API, worker) end to end. The demo feeder is
   # scaled to 0 so the browser test starts from an empty queue.
@@ -179,11 +192,17 @@ jobs:
         run: |
           test ! -e .env
           test -z "${LEASEQ_API_TOKEN:-}"
-          if docker compose up -d --build --scale demo=0 2>"$RUNNER_TEMP/err.txt"; then
+          if LEASEQ_APP_PASSWORD="$(openssl rand -hex 24)" docker compose up -d --build --scale demo=0 2>"$RUNNER_TEMP/err.txt"; then
             echo "docker compose up started without LEASEQ_API_TOKEN"; exit 1
           fi
           cat "$RUNNER_TEMP/err.txt"
           grep -q "LEASEQ_API_TOKEN" "$RUNNER_TEMP/err.txt"
+          test -z "$(docker ps -aq --filter "label=com.docker.compose.project=$COMPOSE_PROJECT_NAME")"
+          if LEASEQ_API_TOKEN="$(openssl rand -hex 24)" docker compose up -d --build --scale demo=0 2>"$RUNNER_TEMP/db-password-err.txt"; then
+            echo "docker compose up started without LEASEQ_APP_PASSWORD"; exit 1
+          fi
+          cat "$RUNNER_TEMP/db-password-err.txt"
+          grep -q "LEASEQ_APP_PASSWORD" "$RUNNER_TEMP/db-password-err.txt"
           test -z "$(docker ps -aq --filter "label=com.docker.compose.project=$COMPOSE_PROJECT_NAME")"
       # Gate 2: fresh run of scripts/up.sh with no token anywhere: it writes a
       # random token to .env (mode 600) and the stack accepts exactly that token.
@@ -308,7 +327,7 @@ jobs:
           assert any(e["event"] == "completed" for e in events["events"])
 
           subprocess.run(["docker", "compose", "down"], check=True)
-          subprocess.run(["docker", "compose", "up", "-d", "--wait", "--wait-timeout", "90"],
+          subprocess.run(["docker", "compose", "up", "-d", "--wait", "--wait-timeout", "90", "--scale", "demo=0"],
                          check=True)
           # Read the original job before submitting anything after recreation.
           assert request(path) == job, "job or result did not survive down/up"

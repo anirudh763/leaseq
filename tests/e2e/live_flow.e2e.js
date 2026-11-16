@@ -58,7 +58,7 @@ const openJobById = async (page, id) => {
     page.on("pageerror", (e) => errors.push(String(e)));
 
     // 1. Without the token, reads are refused and the page says so.
-    await page.goto(`${BASE}/dashboard/`);
+    await page.goto(`${BASE}/dashboard/#/jobs`);
     const banner = page.getByRole("alert");
     await banner.filter({ hasText: "requires the API token to read jobs" }).waitFor();
     assert.equal(await page.locator("#demo-note").isVisible(), false);
@@ -166,7 +166,7 @@ const openJobById = async (page, id) => {
     assert.equal(await page.locator("#rows [data-job]").count(), 0);
     assert.deepEqual(await page.$$eval("[data-count]", (els) => els.map((e) => e.textContent)), Array(6).fill("–"));
     assert.deepEqual(await page.evaluate(() => ({ local: localStorage.length,
-      session: sessionStorage.length, cookie: document.cookie })), { local: 0, session: 0, cookie: "" });
+      session: Object.keys(sessionStorage).filter(key => key !== "leaseq:pwa:v1:ready-notice" || sessionStorage.getItem(key) !== "1").length, cookie: document.cookie })), { local: 0, session: 0, cookie: "" });
     step("Forget token: payload gone at once; a read in flight does not bring it back; job rows and counts cleared");
 
     await page.evaluate(() => { window.location.hash = "#/connection"; });
@@ -192,7 +192,7 @@ const openJobById = async (page, id) => {
     for (const [width, scheme] of [[375, "light"], [375, "dark"], [640, "light"], [640, "dark"]]) {
       const c = await browser.newContext({ viewport: { width, height: 800 }, bypassCSP: true });
       const p = await c.newPage();
-      if (scheme === "dark") await p.addInitScript(() => { try { localStorage.setItem("leaseq-theme", "dark"); } catch (e) {} });
+      if (scheme === "dark") await p.addInitScript(() => { try { localStorage.setItem("leaseq:theme:v1", "dark"); } catch (e) {} });
       await p.goto(`${BASE}/dashboard/#/jobs/13`);
       await enterTokenByKeyboard(p);
       await p.evaluate(() => { window.location.hash = "#/jobs/13"; });

@@ -13,3 +13,5 @@ frontend/.test-artifacts/
 # Local Python package build output.
 build/
 *.egg-info/
+# Local verification logs, browser profiles and generated test evidence.
+/artifacts/verification/post-restart/

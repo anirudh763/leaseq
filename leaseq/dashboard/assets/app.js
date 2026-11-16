@@ -14,8 +14,7 @@
    * Everything the API returns (kinds, payloads, results, error text, worker ids,
      idempotency keys) was written by API clients, so it is untrusted. It reaches the
      page only via textContent / createTextNode, never as HTML.
-   * The API token is memory-only by default; explicit opt-in uses tab-scoped
-     sessionStorage. It is sent only in the Authorization header, never a cookie,
+   * The API token is page-memory-only and is sent only in the Authorization header, never a cookie,
      localStorage or URL. Forget and any 401 clear it.
    * Job data is sensitive. "Forget token" and any 401 clear ALL of it at once: the job
      list, every cached job (payload, result, events) and the Submit result. Screens are
@@ -31,7 +30,21 @@ const PAGE = 50;
 const MAX_ROWS = 200;            // the API's page cap
 const WC_MAX = 10000;            // worker.WORD_COUNT_MAX_CHARS
 const NO_COUNT = "–";       // shown until the server has answered: never a guessed "0"
-const SAMPLE_TEXT = "assets/sample/pride-and-prejudice-ch1.txt";
+const ASSET_ROOT = new URL(".", document.currentScript?.src || new URL("assets/app.js", location.href));
+const SAMPLE_TEXT = new URL("sample/pride-and-prejudice-ch1.txt", ASSET_ROOT).href;
+const DEFAULT_SIM_TEXT = "audit one two\nthree four";
+const SUITE_LINKS = [["FlightSeal · HashWing","https://anirudh763.github.io/flightseal/console/"],["Mavframe","https://anirudh763.github.io/mavframe/"],["CueReport","https://anirudh763.github.io/talkback-triage-pilot/"],["Issue Warehouse","https://anirudh763.github.io/a11y-issue-warehouse/"],["LeaseQ","https://anirudh763.github.io/leaseq/"],["Portfolio","https://anirudh763.github.io/portfolio/"]];
+function suiteNavigation(label="Connected tools") { return el("details",{class:"suite-menu"},el("summary",{},"More tools"),el("nav",{"aria-label":label},...SUITE_LINKS.map(([name,href])=>el("a",{href,...(name==="LeaseQ"?{"aria-current":"page"}:{}),text:name})))); }
+function initialApiOrigin() {
+  try {
+    const saved = localStorage.getItem("leaseq:api-origin:v1");
+    if (saved) return new URL(saved).origin;
+  } catch { /* unavailable storage means use only the page's configured default */ }
+  const configured = document.querySelector('meta[name="leaseq-api-base"]')?.content.trim();
+  return configured === "none" ? null : location.origin;
+}
+const STATIC_API_DISABLED = document.querySelector('meta[name="leaseq-api-base"]')?.content.trim() === "none";
+const INITIAL_API_ORIGIN = initialApiOrigin();
 
 const LANES = [
   { id: "", label: "All", count: (c) => c.total },
@@ -43,7 +56,27 @@ const LANES = [
 ];
 
 const app = {
+  apiOrigin: INITIAL_API_ORIGIN,
+  apiAvailability: INITIAL_API_ORIGIN ? "unknown" : "unavailable",
+  mode: INITIAL_API_ORIGIN ? "live" : "simulator",
+  modeUserChoice: false,
+  simulator: window.LeaseQSimulator?.fresh(DEFAULT_SIM_TEXT) || null,
+  simulation: null,
   token: null,
+  profile: null,
+  guestSimulation: null,
+  syncProvider: null,
+  syncConfig: null,
+  syncRemote: null,
+  syncStatus: "",
+  syncEpoch: 0,
+  profileSaveTimer: null,
+  profileSaveGeneration: 0,
+  profileAuthGeneration: 0,
+  showcaseTimer: null,
+  showcaseIndex: 0,
+  showcasePaused: false,
+  demo: false,
   authGen: 0,          // bumped whenever job data must be dropped; older responses are ignored
   conn: "unknown",     // unknown | token | public | needs-token | offline
   route: { name: "jobs", id: null },
@@ -61,8 +94,6 @@ const app = {
   scheduleKey: null,
   scheduleConfirmed: false,
   scheduleInFlight: false,
-  keepToken: false,
-  storageNotice: "",
   submitIntent: null,  // text and key kept together so an ambiguous response can be retried
   submitInFlight: false,
   submitTimer: null,
@@ -71,10 +102,14 @@ const app = {
   bulkIds: [],
   paused: false,
   inflight: false,
+  pendingApiRequests: 0,
   timer: null,
   lastJobsHash: "#/jobs",
   version: null,
 };
+window.LeaseQGetUpdateState = () => ({ inFlight: app.inflight || app.pendingApiRequests > 0 || !!app.authPending, submitInFlight: app.submitInFlight,
+  submitIntent: !!app.submitIntent, scheduleInFlight: app.scheduleInFlight,
+  profileDraftCanPersist: !!app.profile && app.route.name === "submit" });
 
 const $ = (id) => document.getElementById(id);
 
@@ -174,28 +209,38 @@ function announce(msg) {
 /* ---------- API ---------- */
 
 async function api(path, options = {}) {
+  if (!app.apiOrigin) { const error = new Error("No Live API origin is configured"); error.path = path.split("?")[0]; throw error; }
   const headers = { Accept: "application/json", ...(options.headers || {}) };
   if (app.token) headers.Authorization = `Bearer ${app.token}`;
   if (options.body !== undefined) headers["Content-Type"] = "application/json";
-  let res;
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), options.timeoutMs ?? 10000);
+  app.pendingApiRequests += 1;
   try {
-    res = await fetch(path, {
-      method: options.method || "GET",
-      headers,
-      body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
-      credentials: "omit",
-      cache: "no-store",
-    });
-  } catch (e) {
-    const failure = new Error("Cannot reach the API");
-    failure.path = path.split("?")[0];
-    throw failure;
+    let res;
+    try {
+      res = await fetch(new URL(path, app.apiOrigin).href, {
+        method: options.method || "GET",
+        headers,
+        body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
+        credentials: "omit",
+        cache: "no-store",
+        signal: controller.signal,
+      });
+    } catch (e) {
+      const failure = new Error("Cannot reach the API");
+      failure.path = path.split("?")[0];
+      throw failure;
+    }
+    let body = null;
+    if (res.status !== 204) {
+      try { body = options.text ? await res.text() : await res.json(); } catch (e) { body = null; }
+    }
+    return { status: res.status, body };
+  } finally {
+    clearTimeout(timeout);
+    app.pendingApiRequests -= 1;
   }
-  let body = null;
-  if (res.status !== 204) {
-    try { body = await res.json(); } catch (e) { body = null; }
-  }
-  return { status: res.status, body };
 }
 
 function detailText(body) {
@@ -216,6 +261,8 @@ function hasSensitive() {
 function clearSensitive() {
   app.authGen += 1;
   app.list = null;
+  app.system = null;
+  app.guestSimulation = null;
   app.details.clear();
   app.submit = null;
   app.submitDraft = "";
@@ -228,8 +275,6 @@ function clearSensitive() {
   app.scheduleInFlight = false;
   app.submitIntent = null;
   app.submitInFlight = false;
-  app.keepToken = false;
-  app.storageNotice = "";
   app.ops = { workers: null, metrics: null, schedules: null, result: null };
   app.workersFetchedAt = 0;
   app.bulkIds = [];
@@ -248,18 +293,61 @@ function setConn(state) {
   s.replaceChildren(icon(state === "token" || state === "public" ? "done" : state === "unknown" ? "queued" : "dead"),
                     el("span", { text }));
   $("forget-token").hidden = !app.token;
+  syncModeChrome();
+}
+
+function syncModeChrome() {
+  const label = $("mode-label"), toggle = $("mode-toggle");
+  if (!label || !toggle) return;
+  if (app.mode === "simulator") {
+    label.textContent = "Browser Simulator · local session only";
+    toggle.textContent = app.apiOrigin ? "Switch to Live API" : "Configure Live API";
+    toggle.setAttribute("aria-label", app.apiOrigin ? "Switch to Live API" : "Configure Live API origin");
+  } else {
+    const status = app.apiAvailability === "unknown" ? "checking availability" : app.apiAvailability === "available" ? "connected endpoint" : app.apiAvailability === "auth" ? "authorization required" : app.apiAvailability === "unavailable" ? "unavailable" : "configuration needs review";
+    label.textContent = `Live API · ${status}`;
+    toggle.textContent = "Switch to Browser Simulator";
+    toggle.setAttribute("aria-label", "Switch to Browser Simulator");
+  }
+}
+
+function changeMode(mode) {
+  app.modeUserChoice = true;
+  app.mode = mode;
+  if (mode === "simulator") {
+    app.demo = false;
+    stopPolling();
+    if (app.route.name === "landing" || app.route.name === "signup" || app.route.name === "login") window.location.hash = "#/app?mode=simulator";
+    else if (app.routeKey !== "#/app?mode=simulator") window.location.hash = "#/app?mode=simulator";
+    syncModeChrome();
+  } else {
+    app.demo = false;
+    if (!app.apiOrigin) {
+      app.apiAvailability = "unavailable";
+      window.location.hash = "#/connection";
+      syncModeChrome();
+      return;
+    }
+    app.apiAvailability = "unknown";
+    syncModeChrome();
+    window.location.hash = "#/app?mode=live";
+    loadVersion();
+  }
 }
 
 function handleUnauthorized() {
   const hadToken = app.token !== null;
   const dirty = hasSensitive() || hadToken || app.conn !== "needs-token";
   app.token = null;
+  app.apiAvailability = "auth";
+  app.mode = "live";
   clearSensitive();
   setConn("needs-token");
   showBanner(hadToken
     ? "The server rejected the API token, so all job data was cleared from this page."
     : "This server requires the API token to read jobs.", true);
-  if (dirty) renderView(false);
+  if (dirty && (hadToken || app.route.name !== 'connection')) renderView(false);
+  else if ($('conn-detail')) $('conn-detail').textContent = 'Not connected. Enter the API token to continue.';
 }
 
 function forgetToken() {
@@ -299,16 +387,39 @@ function hideBanner() {
 
 /* ---------- routing ---------- */
 
+const PRODUCT_PATHS = { '/': ['jobs', 'overview'], '/leases': ['operations', 'leases'], '/dead-letter': ['jobs', 'dead-letter'], '/system': ['system', 'system'] };
+function parseLocation({ pathname = '/', search = '', hash = '' }) {
+  if (hash || STATIC_API_DISABLED) return parseHash(hash || '#/');
+  const product = PRODUCT_PATHS[pathname];
+  if (!product) return parseHash(pathname.endsWith('/dashboard/') || STATIC_API_DISABLED ? '#/' : '#/not-found');
+  const params = new URLSearchParams(search);
+  if (pathname === '/dead-letter') params.set('state', 'dead');
+  return { name: product[0], page: product[1], id: null, params, direct: true };
+}
+function productLocation() { return !STATIC_API_DISABLED && Object.hasOwn(PRODUCT_PATHS, window.location.pathname); }
+
+
 function parseHash(hash) {
   const raw = (hash || "").replace(/^#/, "") || "/jobs";
   const [path, query = ""] = raw.split("?");
   const p = new URLSearchParams(query);
-  if (path === "/jobs" || path === "/" || path === "") return { name: "jobs", id: null, params: p };
+  if (path === "/" || path === "") return { name: "landing", id: null, params: p };
+  if (path === "/signup") return { name: "signup", id: null, params: p };
+  if (path === "/login") return { name: "login", id: null, params: p };
+  if (path === "/app" || path === "/app/jobs") return { name: "jobs", id: null, params: p };
+  if (path === "/app/submit") return { name: "submit", id: null, params: p };
+  if (path === "/app/operations") return { name: "operations", id: null, params: p };
+  if (path === "/app/connection") return { name: "connection", id: null, params: p };
+  const nestedJob = /^\/app\/jobs\/(?:job-)?([0-9]{1,19})$/.exec(path);
+  if (nestedJob && BigInt(nestedJob[1]) > 0n && BigInt(nestedJob[1]) <= 9223372036854775807n) return { name: "job", id: BigInt(nestedJob[1]).toString(), params: p };
+  if (path === "/jobs" ) return { name: "jobs", id: null, params: p };
   const m = /^\/jobs\/(?:job-)?([0-9]{1,19})$/.exec(path);
   if (m && BigInt(m[1]) > 0n && BigInt(m[1]) <= 9223372036854775807n)
     return { name: "job", id: BigInt(m[1]).toString(), params: p };
   if (path.startsWith("/jobs/")) return { name: "invalidid", id: null, params: p };
   if (path === "/submit") return { name: "submit", id: null, params: p };
+  if (path === "/system") return { name: "system", id: null, params: p };
+  if (path === "/dead-letter") { p.set("state", "dead"); return { name: "jobs", page: "dead-letter", id: null, params: p }; }
   if (path === "/operations") return { name: "operations", id: null, params: p };
   if (path === "/connection") return { name: "connection", id: null, params: p };
   return { name: "notfound", id: null, params: p };
@@ -320,12 +431,18 @@ function jobsHash(f) {
   if (f.kind) p.set("kind", f.kind);
   if (f.worker) p.set("worker", f.worker);
   const qs = p.toString();
+  if (productLocation()) {
+    const path = app.route.page === 'dead-letter' && f.state === 'dead' ? '/dead-letter' : '/';
+    if (path === '/dead-letter') p.delete('state');
+    return `${path}${p.size ? `?${p}` : ''}`;
+  }
   return `#/jobs${qs ? `?${qs}` : ""}`;
 }
 
 // Old shared links: /dashboard/?job=12 and /dashboard/?state=dead&kind=x.
 function migrateOldLink() {
   const q = new URLSearchParams(window.location.search);
+  if (productLocation() && !q.has('job')) return;
   if (![...q.keys()].some((k) => ["job", "state", "kind", "worker"].includes(k))) return;
   let hash;
   const j = q.get("job");
@@ -342,18 +459,30 @@ function readFilters(params) {
 }
 
 function onLocationChange() {
-  const key = window.location.hash || "#/jobs";
+  const key = window.location.hash || (productLocation() ? window.location.pathname + window.location.search : '#/');
+  if (key === "#main") { $("main").focus({ preventScroll: true }); return; }
+  if (key.startsWith("#") && !key.startsWith("#/")) { const target = document.getElementById(key.slice(1)); if (target) { target.scrollIntoView(); return; } }
   if (key === app.routeKey) return;
   const prev = app.route;
   app.routeKey = key;
-  app.route = parseHash(key);
+  app.route = parseLocation(window.location);
+  if (app.route.direct) { app.mode = 'live'; app.modeUserChoice = true; }
+  app.demo = app.route.name === "jobs" && app.route.params.get("demo") === "1";
+  const requestedMode = app.route.params.get("mode");
+  if (requestedMode === "simulator" || app.demo) { app.mode = "simulator"; app.modeUserChoice = true; }
+  else if (requestedMode === "live") { app.mode = "live"; app.modeUserChoice = true; }
+  else if (!app.modeUserChoice && app.apiAvailability === "unavailable") app.mode = "simulator";
+  syncModeChrome();
+  app.profileAuthGeneration += 1;
+  if (["landing","signup","login"].includes(app.route.name) || app.demo) stopPolling();
+  else if (!document.hidden) startPolling();
   if (app.route.name === "jobs") {
     readFilters(app.route.params);
     app.lastJobsHash = key;
   }
   const sheet = $("menu-sheet");
   if (sheet.open) sheet.close("navigate");
-  const sameScreen = prev.name === app.route.name && prev.id === app.route.id && app.view;
+  const sameScreen = prev.name === app.route.name && prev.id === app.route.id && prev.page === app.route.page && app.view;
   renderView(!sameScreen);
   pollNow();
 }
@@ -362,18 +491,23 @@ function onLocationChange() {
 function pushJobsFilters() {
   const hash = jobsHash(app.filters);
   if (hash === app.routeKey) { pollNow(); return; }
-  window.history.pushState(null, "", window.location.pathname + hash);
+  window.history.pushState(null, "", hash.startsWith('#') ? window.location.pathname + hash : hash);
+  const previousPage = app.route.page;
   app.routeKey = hash;
-  app.route = parseHash(hash);
+  app.route = parseLocation(window.location);
+  if (previousPage !== app.route.page) renderView(true);
   app.lastJobsHash = hash;
   app.rows = PAGE;
   renderLanes();
   pollNow();
 }
 
-const TITLES = { jobs: "Jobs", submit: "New job", operations: "Workers", connection: "Settings", notfound: "Not found", invalidid: "Invalid job ID" };
+const TITLES = { landing: "LeaseQ", signup: "Create local profile", login: "Log in", jobs: "Jobs", submit: "New job", operations: "Workers", connection: "Settings", notfound: "Not found", invalidid: "Invalid job ID" };
 
 function screenTitle() {
+  if (app.route.direct) return { overview: 'Live Queue Overview', leases: 'Active Workers and Lease/Lock Inspector', 'dead-letter': 'Failed Job Replay and Triage', system: 'Health and Metrics' }[app.route.page];
+  if (app.route.page === 'dead-letter') return 'Failed Job Replay and Triage';
+  if (app.route.name === 'system') return 'Health and Metrics';
   return app.route.name === "job" ? `Job ${app.route.id}` : TITLES[app.route.name];
 }
 
@@ -384,10 +518,16 @@ function focusH1() {
 
 function renderChrome() {
   const title = screenTitle();
+  const inPublic = ["landing","signup","login"].includes(app.route.name);
+  const right=document.querySelector(".loc-right"); if (!inPublic && app.route.name !== "notfound" && !document.querySelector(".profile-badge")) { const user=el("span",{class:"profile-badge",text:app.demo?"Synthetic demo":app.profile?`Local profile: ${app.profile.email}`:"Local tools"}); right.prepend(user); if(app.profile||app.demo){const b=el("button",{id:"profile-logout",class:"btn",type:"button",text:"Log out"});b.addEventListener("click",logoutProfile);right.append(b);} } else if(inPublic) { $("profile-logout")?.remove();document.querySelector(".profile-badge")?.remove(); }
   document.title = `${title} – LeaseQ`;
   for (const a of document.querySelectorAll("[data-nav] a[data-route]")) {
     const r = a.dataset.route;
-    if (r === app.route.name) a.setAttribute("aria-current", "page");
+    if (a.dataset.product) {
+      a.href = productLocation() ? a.dataset.product : a.dataset.legacy;
+      if (a.dataset.product === '/leases') a.textContent = productLocation() ? 'Leases' : 'Workers';
+    }
+    if (app.route.page === 'dead-letter' ? r === 'deadletter' : r === app.route.name) a.setAttribute("aria-current", "page");
     else if (r === "jobs" && app.route.name === "job") a.setAttribute("aria-current", "true");
     else a.removeAttribute("aria-current");
   }
@@ -398,24 +538,298 @@ function renderChrome() {
   crumbs.replaceChildren(...items);
 }
 
+// Keep detail descendants stable while polling; only changed text and attributes move.
+function reconcileChildren(parent, nextNodes) {
+  const current = [...parent.childNodes];
+  const used = new Set();
+  nextNodes.forEach((next, index) => {
+    let old = next.id ? [...parent.querySelectorAll("[id]")].find((node) => node.id === next.id) : null;
+    if (!old || old.parentNode !== parent || used.has(old)) {
+      const candidate = current[index];
+      old = candidate && candidate.nodeType === next.nodeType &&
+        (candidate.nodeType !== Node.ELEMENT_NODE || candidate.tagName === next.tagName) && !used.has(candidate)
+        ? candidate : null;
+    }
+    if (!old) {
+      parent.insertBefore(next, current[index] || null);
+      used.add(next);
+      return;
+    }
+    used.add(old);
+    if (old.nodeType === Node.TEXT_NODE) {
+      if (old.textContent !== next.textContent) old.textContent = next.textContent;
+      return;
+    }
+    for (const attr of [...old.attributes]) if (!next.hasAttribute(attr.name)) old.removeAttribute(attr.name);
+    for (const attr of [...next.attributes]) if (old.getAttribute(attr.name) !== attr.value) old.setAttribute(attr.name, attr.value);
+    old.onclick = next.onclick;
+    reconcileChildren(old, [...next.childNodes]);
+    if (old !== current[index]) parent.insertBefore(old, current[index] || null);
+  });
+  for (const node of current) if (!used.has(node) && node.parentNode === parent) node.remove();
+}
+
 // Build the current screen from app state. moveFocus: a new screen (focus its H1,
 // scroll to top); false: the same screen redrawn (for example after Forget).
 function renderView(moveFocus) {
   renderChrome();
   const view = $("view");
-  const build = { jobs: viewJobs, job: viewJob, submit: viewSubmit, operations: viewOperations, connection: viewConnection,
+  document.querySelector(".shell").classList.toggle("public-page", ["landing","signup","login"].includes(app.route.name));
+  const simulatorRoute = app.mode === "simulator" && !["landing","signup","login","connection","system","notfound","invalidid"].includes(app.route.name);
+  const build = { landing: viewLanding, signup: viewAuth, login: viewAuth, jobs: simulatorRoute || app.demo ? viewDemo : viewJobs, job: simulatorRoute ? viewDemo : viewJob, submit: simulatorRoute ? viewDemo : viewSubmit, operations: simulatorRoute ? viewDemo : viewOperations, connection: viewConnection, system: viewSystem,
                   notfound: viewNotFound, invalidid: viewInvalidId }[app.route.name];
   view.replaceChildren(...build().filter((n) => n !== null && n !== undefined && n !== ""));
   app.view = app.route.name;
-  if (app.route.name === "jobs") renderJobsData();
+  if (app.route.name === "jobs" && !app.demo) renderJobsData();
   if (app.route.name === "job") renderJobData();
   if (app.route.name === "submit") renderSubmitResult();
   if (app.route.name === "operations") renderOperations();
+  if (app.route.name === 'system') renderSystem();
+  if (["landing","signup","login"].includes(app.route.name)) initLandingControls();
   if (moveFocus) {
     window.scrollTo(0, 0);
     focusH1();
   }
 }
+
+function viewLanding() {
+  const menu = (key,label,columns) => el("div",{class:"mega-wrap","data-mega":key},
+    el("button",{type:"button",class:"mega-trigger",id:`mega-${key}`,"data-mega-button":key,"aria-expanded":"false","aria-controls":`panel-${key}`,text:label}),
+    el("div",{class:"mega-panel",id:`panel-${key}`,hidden:true},...columns.map(([title,desc,href])=>el("a",{class:"mega-item",href},el("strong",{text:title}),el("span",{text:desc})))));
+  const slides = [
+    ["Queue lanes","Sample states, labeled as illustrative fixtures.","Queued: 3 | Running: 1 | Retrying: 1 | Done: 8"],
+    ["Job chronology","A sample lease timeline, with attempts distinct from logged events.","Created, claimed, lease expired, retried"],
+    ["Owned submission","A synthetic word-count example, not sent to a production queue.","Input: audit one two / three four. Result: 5 words, 2 lines."],
+    ["Recovery review","Review the scope and outcome before acting in a connected workspace.","Selected 1 job. Confirm action. Inspect the result."]
+  ];
+  const slideNodes=slides.map(([title,desc,example],i)=>el("section",{class:"showcase-slide",id:`showcase-slide-${i}`,role:"group","aria-roledescription":"slide","aria-label":`${i+1} of ${slides.length}: ${title}`,hidden:i!==0},el("h2",{text:title}),el("p",{text:desc}),el("pre",{class:"showcase-example",text:example})));
+  const showcase=el("section",{class:"preview showcase",id:"showcase","aria-label":"Product examples"},el("p",{class:"hint",text:"Illustrative fixtures. No live service activity."}),el("div",{id:"showcase-slides"},...slideNodes),el("div",{class:"showcase-controls",role:"group","aria-label":"Product example controls"},...slides.map(([title],i)=>{const b=el("button",{type:"button",class:"showcase-tab","data-showcase-index":String(i),"aria-pressed":i===0?"true":"false",text:title});return b;}),el("button",{type:"button",id:"showcase-pause",class:"btn",text:"Pause examples"})));
+  const featureContent = [
+    ["Queue and attempts","Inspect current state, attempts and the reason work is waiting.","#/app"],
+    ["Job details","Review lease chronology, payload and result with polling controls.","#/app/jobs"],
+    ["Submit work","Use the existing API to submit a job when you explicitly connect.","#/app/submit"],
+    ["Workers and schedules","See actual observations and schedule definitions from your service.","#/app/operations"]
+  ];
+  const useContent = [["On-call operations","Understand a waiting or retried job before taking action.","#/app"],["Worker development","Inspect handler output and retry behavior against your API.","#/app/operations"],["Local evaluation","Try a synthetic workspace without using queue data.","#/app?demo=1"]];
+  const howContent = [["Connect","Enter a server-issued API token in Settings; local profiles do not provide one.","#/app/connection"],["Inspect","Read live API state and event history.","#/app"],["Recover","Use protected actions, then verify the server response.","#/app"]];
+  const productNav=el("nav",{"aria-label":"Product"},menu("features","Features",featureContent),menu("usecases","Use Cases",useContent),menu("how","How it works",howContent),el("a",{href:"#/app/connection",text:"Docs"}),suiteNavigation());
+  const mobilePanel=el("div",{class:"mobile-panel",id:"mobile-panel",hidden:true},el("a",{href:"#features",text:"Features"}),el("a",{href:"#use-cases",text:"Use Cases"}),el("a",{href:"#how",text:"How it works"}),el("a",{href:"#/app/connection",text:"Docs and API"}),el("a",{href:"#/signup",text:"Create account"}),el("a",{href:"#/app?mode=simulator",text:"Try Browser Simulator"}),...SUITE_LINKS.map(([name,href])=>el("a",{href,text:name})));
+  const mobileButton=el("button",{type:"button",class:"mobile-nav-trigger",id:"mobile-nav-trigger","aria-expanded":"false","aria-controls":"mobile-panel",text:"Menu"});
+  const landingActions = [el("a",{href:"#/login",text:"Log in"}),el("a",{class:"btn",href:"#/signup",text:"Create account"}),el("a",{class:"btn primary",href:"#/app",text:"Launch Workspace"})];
+  if (app.profile) landingActions.unshift(el("span",{class:"profile-badge",text:`Saved on this browser: ${app.profile.email}`}),el("button",{class:"btn",type:"button",id:"landing-profile-logout",text:"Log out"}));
+  const header=el("header",{class:"landing-nav"},el("a",{class:"landing-logo",href:"#/",text:"LeaseQ"}),productNav,el("div",{class:"landing-actions"},...landingActions),mobileButton,mobilePanel);
+  const heroText=el("textarea",{id:"hero-sim-text",maxlength:String(LeaseQSimulator.maxText),"aria-label":"Text for the local word-count example"});heroText.value=app.simulator?.text||DEFAULT_SIM_TEXT;
+  const heroTask=el("section",{class:"hero-simulation panel",id:"hero-simulation","aria-labelledby":"hero-simulation-title"},el("p",{class:"eyebrow",text:"LOCAL SIMULATION — NO POSTGRESQL WORKER"}),el("h2",{id:"hero-simulation-title",text:"See a worker lease recover"}),el("p",{class:"hint",text:"Try a bounded word-count job. Nothing is sent to the Live API."}),el("label",{for:"hero-sim-text",text:"Sample job text (maximum 10,000 characters)"}),heroText,el("button",{type:"button",class:"btn primary",id:"run-lease-simulation",text:"Run recovery simulation"}),el("div",{id:"lease-simulation-output","aria-live":"polite"}),el("a",{href:"#/app?mode=simulator",class:"btn",id:"continue-simulation",hidden:true,text:"Continue in Browser Simulator"}));
+  const hero=el("div",{class:"hero"},el("div",{},el("p",{class:"eyebrow",text:"Queue operations"}),h1("Know what your queue is doing."),el("p",{class:"hero-copy",text:"Inspect jobs, understand why they wait, and recover them with the evidence in view."}),el("div",{class:"form-actions"},el("a",{class:"btn primary",href:"#/app",text:"Launch Workspace"}),el("a",{class:"btn",href:"#/signup",text:"Save to profile"})),el("p",{class:"hint",text:"Free tools for everyone. Profiles save convenience settings on this browser; they do not connect to the API."}),el("a",{class:"hero-docs",href:"#/app/connection",text:"Read the API guide"})),el("div",{class:"hero-product-preview"},heroTask,showcase));
+  return [el("section",{class:"landing"},header,hero,el("section",{id:"features",class:"landing-sections"},el("h2",{text:"Operational evidence, close to the work."}),el("div",{class:"feature-grid"},...featureContent.map(([a,b])=>el("article",{},el("h3",{text:a}),el("p",{text:b}))))),el("section",{id:"use-cases",class:"landing-sections"},el("h2",{text:"For the person on call and the person building the worker."}),el("p",{text:"Inspect delayed work, confirm the current lease, and make a deliberate recovery decision."})),el("section",{id:"how",class:"landing-sections"},el("h2",{text:"Connect. Inspect. Act with context."}),el("ol",{},...howContent.map(([x])=>el("li",{text:x})))),el("section",{class:"landing-sections early-access"},el("h2",{text:"Team and cloud early access"}),el("p",{text:"Current features remain free. Share interest in possible future hosted collaboration; no hosted service is available now."}),el("button",{type:"button",class:"btn",text:"Express interest","data-open-team-interest":""})),el("footer",{class:"landing-footer trust-links","aria-label":"Trust and feedback"},el("a",{href:new URL('../pages/privacy.html', ASSET_ROOT).href,text:"Privacy"}),el("a",{href:new URL('../pages/terms.html', ASSET_ROOT).href,text:"Terms"}),el("a",{href:new URL('../pages/security-offline.html', ASSET_ROOT).href,text:"Security & offline"}),el("button",{type:"button",class:"btn",text:"Send feedback","data-feedback-open":""})) )];
+}
+
+function simulatorControls() {
+  let model = app.simulator || (app.simulator = LeaseQSimulator.fresh(DEFAULT_SIM_TEXT));
+  const text = el("textarea",{id:"simulator-text",maxlength:String(LeaseQSimulator.maxText),"aria-describedby":"simulator-limit"});
+  text.value = model.text || DEFAULT_SIM_TEXT;
+  const status = el("p",{id:"simulator-status",role:"status","aria-live":"polite"});
+  const state = el("dl",{class:"simulator-state",id:"simulator-state"});
+  const events = el("ol",{id:"simulator-events",class:"simulator-events"});
+  const error = el("p",{id:"simulator-error",class:"field-error",role:"alert"});
+  const batchSize=el("input",{id:"simulator-batch-size",type:"number",min:"1",max:String(LeaseQSimulator.maxBatch),step:"1",value:"3"});
+  const actions = [
+    ["enqueue","Enqueue sample job"],["batch","Enqueue batch"],["claim-a","Claim as Worker A"],["heartbeat","Heartbeat current worker"],
+    ["crash","Simulate worker crash"],["advance","Advance virtual time 5 seconds"],["claim-b","Reclaim as Worker B"],
+    ["stale","Attempt stale completion"],["complete","Complete current lease"],["fail","Fail current attempt"],
+    ["replay","Replay dead-letter (+1 attempt)"],
+  ];
+  const actionButtons=actions.map(([action,label])=>el("button",{type:"button",class:"btn","data-sim-action":action,text:label}));
+  const reportText=el("pre",{id:"simulator-report-text",class:"simulator-report-text"});
+  const reportPrint=el("section",{id:"simulator-report-print",class:"simulator-report-print","aria-labelledby":"sim-report-title"},el("h2",{id:"sim-report-title",text:"LeaseQ Browser Simulator incident report"}),reportText);
+  const reportStatus=el("p",{id:"simulator-report-status",role:"status","aria-live":"polite"});
+  const section=el("section",{class:"panel simulator-panel","aria-labelledby":"simulator-title"},
+    el("div",{class:"panel-body"},el("p",{class:"eyebrow",text:"LOCAL SIMULATION — NO POSTGRESQL WORKER"}),
+      el("h2",{id:"simulator-title",text:"Browser Simulator"}),
+      el("p",{class:"hint",text:"This bounded in-memory model uses virtual time. “Simulate worker crash” does not kill an operating-system process or prove server/PostgreSQL behavior. Event history lasts only in this page session."}),
+      el("label",{for:"simulator-text",text:"Sample word-count job text"}),text,
+      el("p",{id:"simulator-limit",class:"hint",text:`Maximum ${LeaseQSimulator.maxText.toLocaleString()} characters. Word and line totals are computed from the entered text.`}),
+      el("div",{class:"form-actions"},el("button",{type:"button",class:"btn primary",id:"simulator-run-recovery",text:"Run complete recovery sequence"}),el("button",{type:"button",class:"btn",id:"simulator-pause",text:model.paused?"Resume simulation":"Pause simulation"}),el("button",{type:"button",class:"btn",id:"simulator-reset",text:"Reset simulation"})),
+      el("label",{for:"simulator-batch-size",text:`Batch size (1 to ${LeaseQSimulator.maxBatch})`}),batchSize,
+      el("div",{class:"simulator-actions",role:"group","aria-label":"Individual simulator steps"},...actionButtons),error,status,state,
+      el("details",{class:"simulator-event-detail"},el("summary",{},"Session event history"),events),
+      el("details",{class:"simulator-report"},el("summary",{},"Incident report · Browser Simulator"),el("p",{class:"hint",text:"This report contains computed local task output and page-session events; it is not evidence of PostgreSQL durability or production crash safety."}),el("div",{class:"form-actions"},el("button",{type:"button",class:"btn",id:"simulator-download-report",text:"Download Markdown report"}),el("button",{type:"button",class:"btn",id:"simulator-print-report",text:"Print report or save as PDF"})),reportStatus,reportPrint),
+      el("section",{class:"simulator-alert-preview","aria-labelledby":"sim-alert-title"},el("h3",{id:"sim-alert-title",text:"Alert delivery preview"}),el("p",{text:"No webhook or Slack destination is configured. Static Browser Simulator mode cannot deliver alerts; secrets and destination validation belong on a separately operated server."}))))
+  const sync=()=>{
+    const job=model.job; status.textContent=job?`Local simulation state: ${job.state}; attempt ${job.attempts} of ${job.maxAttempts}; virtual clock ${model.now} ms.`:"No simulated job has been enqueued.";
+    const totals=LeaseQSimulator.counts(model);
+    state.replaceChildren(el("dt",{text:"Queue state"}),el("dd",{text:job?`Job ${job.id}: ${job.state}`:"empty"}),el("dt",{text:"Queued / leased / done / dead"}),el("dd",{text:`${totals.queued} / ${totals.leased} / ${totals.done} / ${totals.dead}`}),el("dt",{text:"Attempts"}),el("dd",{text:job?`${job.attempts} of ${job.maxAttempts}`:"0"}),el("dt",{text:"Current worker"}),el("dd",{text:job?.worker||"none"}),el("dt",{text:"Fencing token"}),el("dd",{class:"mono",text:job?.token||"none"}),el("dt",{text:"Lease expires at"}),el("dd",{text:job?.leaseExpiresAt===null||job?.leaseExpiresAt===undefined?"none":`${job.leaseExpiresAt} virtual ms`}),el("dt",{text:"Result"}),el("dd",{text:job?.result?`${job.result.words} words, ${job.result.lines} lines`:"not completed"}),el("dt",{text:"Session events"}),el("dd",{text:`${model.events.length} retained; ${model.eventsDropped>=Number.MAX_SAFE_INTEGER?`at least ${Number.MAX_SAFE_INTEGER}`:model.eventsDropped} earlier entries omitted`}));
+    events.replaceChildren(...model.events.map((entry)=>el("li",{text:entry})));
+    batchSize.max=String(Math.min(LeaseQSimulator.maxBatch,LeaseQSimulator.maxJobs-totals.total));batchSize.disabled=totals.total>=LeaseQSimulator.maxJobs;
+    reportText.textContent=simulatorIncidentMarkdown(model);
+    section.querySelector("#simulator-download-report").disabled=!model.jobs.length;section.querySelector("#simulator-print-report").disabled=!model.jobs.length;
+    section.querySelector("#simulator-pause").textContent=model.paused?"Resume simulation":"Pause simulation";
+    section.querySelector("#simulator-pause").setAttribute("aria-pressed",model.paused?"true":"false");
+    for(const button of section.querySelectorAll("[data-sim-action]")) button.disabled=model.paused;
+    section.querySelector("#simulator-run-recovery").disabled=model.paused;
+    error.textContent="";
+  };
+  section.addEventListener("click",(event)=>{
+    const button=event.target.closest("button");if(!button)return;
+    try{
+      const action=button.dataset.simAction, job=model.job;
+      if(button.id==="simulator-pause"){model.paused=!model.paused;sync();return;}
+      if(button.id==="simulator-reset"){model=app.simulator=LeaseQSimulator.fresh(text.value||DEFAULT_SIM_TEXT);app.simulation=null;document.getElementById("continued-simulation-title")?.closest(".saved-example")?.remove();try{sessionStorage.removeItem("leaseq:guest-simulation:v1");}catch{}sync();return;}
+      if(button.id==="simulator-download-report"){downloadIncidentReport(simulatorIncidentMarkdown(model));reportStatus.textContent="Markdown report downloaded. It contains the selected local task text and simulation history; it was not sent to the API.";return;}
+      if(button.id==="simulator-print-report"){section.querySelector(".simulator-report").open=true;document.body.classList.add("print-incident-report");window.addEventListener("afterprint",()=>{document.body.classList.remove("print-incident-report");section.querySelector(".simulator-report").open=false;},{once:true});window.print();return;}
+      if(button.id==="simulator-run-recovery"){Object.assign(model,LeaseQSimulator.runRecovery(text.value));renderSimulatorOutcome();sync();return;}
+      if(action==="enqueue")LeaseQSimulator.enqueue(model,text.value);
+      else if(action==="batch")LeaseQSimulator.enqueueBatch(model,text.value,Number(batchSize.value));
+      else if(action==="claim-a")LeaseQSimulator.claim(model,"worker-a");
+      else if(action==="claim-b")LeaseQSimulator.claim(model,"worker-b");
+      else if(action==="heartbeat")LeaseQSimulator.heartbeat(model,job?.worker);
+      else if(action==="crash")LeaseQSimulator.crash(model,job?.worker||"worker-a");
+      else if(action==="advance")LeaseQSimulator.advance(model,5000);
+      else if(action==="stale")LeaseQSimulator.complete(model,model.staleToken||"stale-token","worker-a");
+      else if(action==="complete")LeaseQSimulator.complete(model,job?.token,job?.worker);
+      else if(action==="fail")LeaseQSimulator.fail(model,job?.token,job?.worker);
+      else if(action==="replay")LeaseQSimulator.replay(model,1);
+      sync();
+    }catch(e){error.textContent=e.message||"The simulator could not perform that step.";}
+  });
+  sync();
+  return section;
+}
+
+function simulatorIncidentMarkdown(model) {
+  const job=model.job;
+  const clean=(value)=>String(value??"").replace(/\r\n?/g,"\n");
+  const fenceFor=(value)=>"`".repeat(Math.max(3,...(clean(value).match(/`+/g)||[]).map((run)=>run.length+1)));
+  const fence=fenceFor(job?.payload?.text||"");
+  const jobs=model.jobs.map((entry)=>`| ${entry.id} | ${entry.state} | ${entry.attempts}/${entry.maxAttempts} | ${entry.token||"none"} | ${entry.result?`${entry.result.words} words / ${entry.result.lines} lines`:"pending"} |`).join("\n");
+  const logged=model.events.length?model.events.map((event)=>`- ${clean(event)}`):["- No simulator events yet."];
+  const dropped=model.eventsDropped>=Number.MAX_SAFE_INTEGER?`at least ${Number.MAX_SAFE_INTEGER}`:String(model.eventsDropped);
+  return ["# LeaseQ Browser Simulator incident report","",`Generated: ${new Date().toISOString()}`,"Mode: Browser Simulator — no PostgreSQL worker.","","## Workload","",`Jobs retained in this page session: ${model.jobs.length}.`,job?`Selected job: ${job.id} (${job.kind}).`:"Selected job: none.","","| Job | State | Attempts / limit | Current fencing token | Computed result |","| --- | --- | ---: | --- | --- |",jobs||"| — | — | — | — | — |","","## Selected job evidence","",job?`State: ${job.state}; attempts: ${job.attempts} of ${job.maxAttempts}.`:"No job has been enqueued.",job?`Current lease: ${job.leaseExpiresAt===null?"none":`expires at virtual time ${job.leaseExpiresAt} ms`}; current fencing token: ${job.token||"none"}.`:"Current lease: none.",job?.result?`Task result: ${job.result.words} words and ${job.result.lines} lines, computed from this job's sample text in this browser.`:"No completed task result is available for the selected job.","","## Selected input","",fence+"text",clean(job?.payload?.text||""),fence,"","## Session event history","",`Retained event strings: ${model.events.length} of the session history; ${dropped} older events were dropped to bound memory.`,"Logged entries are page-session strings produced by the simulator. They are not tamper-proof or server audit events.",...logged,"","## Derived evidence","",job?.result?"The result values above were computed from the retained input with the simulator's word-count task. The job-state and result table is derived from the current in-memory model at report time.":"No task result has been derived yet.","","## Evidence boundary","","This report describes a bounded in-memory browser model only. It does not establish PostgreSQL durability, FastAPI authorization, real worker termination, production crash recovery, external side-effect guarantees, or service throughput. No API request or live queue mutation is included.",""].join("\n");
+}
+function downloadIncidentReport(markdown) {
+  const blob=new Blob([markdown],{type:"text/markdown;charset=utf-8"}),url=URL.createObjectURL(blob),link=document.createElement("a");
+  link.href=url;link.download=`leaseq-simulator-report-${new Date().toISOString().slice(0,10)}.md`;link.click();setTimeout(()=>URL.revokeObjectURL(url),0);
+}
+
+function renderSimulatorOutcome() {
+  app.simulation=LeaseQSimulator.persistable(app.simulator);
+  const output=$("lease-simulation-output");
+  if(output)output.replaceChildren(el("h3",{text:`Outcome: ${app.simulation.state} on attempt ${app.simulation.attempts}`}),el("p",{text:app.simulation.result?`${app.simulation.result.words} words, ${app.simulation.result.lines} lines. Worker B completed with the current fencing token; Worker A's stale completion was rejected.`:"The simulated job did not complete."}),el("ol",{},...app.simulation.events.map((event)=>el("li",{text:event}))));
+  const continueLink=$("continue-simulation");if(continueLink)continueLink.hidden=false;
+}
+
+function viewDemo() {
+  const activeSimulation = app.simulation || app.guestSimulation;
+  const progressKey = `leaseq:quickstart:v1:${app.profile?.id || "guest"}`;
+  let progress = { demo: true, lifecycle: false, recovery: false, dismissed: false };
+  try { progress = { ...progress, ...JSON.parse(localStorage.getItem(progressKey) || "{}"), demo: true }; localStorage.setItem(progressKey, JSON.stringify(progress)); } catch { /* demo remains usable without storage */ }
+  const save = (field, value) => { progress[field] = value; try { localStorage.setItem(progressKey, JSON.stringify(progress)); } catch { announce("Progress could not be saved in this browser."); } };
+  const check = (field, label) => el("li", {}, el("label", {}, el("input", { type: "checkbox", checked: progress[field], disabled: true }), ` ${label}`));
+  const checklist = el("section", { class: "quickstart", "aria-labelledby": "quickstart-title" },
+    el("div", { id: "quickstart-content", hidden: progress.dismissed },
+    el("h2", { id: "quickstart-title", text: "Optional quick start" }),
+    el("ol", {}, check("demo", "Open the labelled synthetic demo"), check("lifecycle", "Inspect the sample job lifecycle"), check("recovery", "Review safe recovery boundaries")),
+    el("button", { type: "button", class: "btn", id: "quickstart-dismiss", text: "Dismiss checklist" })),
+    el("button", { type: "button", class: "btn", id: "quickstart-restart", text: "Restart checklist", hidden: !progress.dismissed }));
+  const lifecycle = el("details", { id: "sample-lifecycle" }, el("summary", {}, "Inspect sample lifecycle"),
+    el("p", { text: "Sample Job 1042 was created, claimed on attempt 1, lost its lease, and retried. The current sample state is waiting for a worker on attempt 2. This is an illustrative fixture; it is not a live job." }));
+  const recovery = el("details", { id: "safe-recovery" }, el("summary", {}, "Review safe recovery boundaries"),
+    el("p", { text: "This demo cannot cancel or requeue anything. In a connected workspace, review the exact job and server response before acting; a local profile never grants API access." }),
+    el("a", { href: "#/connection", text: "Connect an explicitly owned backend" }));
+  const simulationPanel = activeSimulation ? el("section",{class:"panel saved-example","aria-labelledby":"continued-simulation-title"},el("h2",{id:"continued-simulation-title",text:"Continued worker lease simulation"}),el("p",{text:`Outcome: ${activeSimulation.state} on attempt ${activeSimulation.attempts}. This local example did not contact the LeaseQ API.`}),el("p",{class:"hint",text:activeSimulation.eventsDropped===null||activeSimulation.eventsDropped===undefined?"Earlier event retention is unknown for this saved example.":`${activeSimulation.events.length} entries retained; ${activeSimulation.eventsDropped} older event entries omitted.`}),el("ol",{},...activeSimulation.events.map((event)=>el("li",{text:event}))),app.profile&&app.simulation?el("button",{type:"button",class:"btn",id:"save-simulation-to-profile",text:"Save this example to profile"}):null):null;
+  const section = el("section", { class: "landing-sections demo-workspace" }, el("p", { class: "eyebrow", text: "SYNTHETIC DEMO" }), h1("Sample queue"),
+    el("p", { class: "hint", text: "Illustrative data only. This demo does not contact the API or change your queue." }), checklist,
+    simulationPanel, simulatorControls(),
+    el("div", { class: "sample-lanes" }, ...[["Queued","3"],["Running","1"],["Retrying","1"],["Done","8"],["Dead","0"]].map(([n,v]) => el("div", { class: "sample-lane" }, el("span", { text:n }), el("strong", { text:v })))),
+    el("p", { class: "mono", text: "Sample Job 1042 · attempt 2 · waiting for worker" }), lifecycle, recovery,
+    el("a", { href: "#/", text: "Return to LeaseQ" }));
+  const syncProgress = () => { ["demo", "lifecycle", "recovery"].forEach((key, i) => { const input = checklist.querySelectorAll('input[type="checkbox"]')[i]; if (input) input.checked = !!progress[key]; }); };
+  lifecycle.addEventListener("toggle", () => { if (lifecycle.open && !progress.lifecycle) { save("lifecycle", true); syncProgress(); } });
+  recovery.addEventListener("toggle", () => { if (recovery.open && !progress.recovery) { save("recovery", true); syncProgress(); } });
+  checklist.querySelector("#quickstart-restart").addEventListener("click", (event) => { progress = { demo:true, lifecycle:false, recovery:false, dismissed:false }; try { localStorage.setItem(progressKey, JSON.stringify(progress)); } catch {} lifecycle.open = false; recovery.open = false; checklist.querySelector("#quickstart-content").hidden = false; event.currentTarget.hidden = true; syncProgress(); checklist.querySelector("#quickstart-title")?.focus(); });
+  checklist.querySelector("#quickstart-dismiss").addEventListener("click", () => { save("dismissed", true); checklist.querySelector("#quickstart-content").hidden = true; checklist.querySelector("#quickstart-restart").hidden = false; });
+  if(app.profile&&app.simulation){const saveButton=section.querySelector("#save-simulation-to-profile");saveButton?.addEventListener("click",()=>{try{const saved=LeaseQProfiles.load(app.profile.id);LeaseQProfiles.save(app.profile.id,{...saved,guestSimulation:app.simulation});app.guestSimulation=app.simulation;saveButton.textContent="Saved on this browser";saveButton.disabled=true;announce("Example saved to this local profile.");}catch{announce("Could not save the example in this browser.");}});}
+  return [section];
+}
+
+function viewAuth() {
+  const signup = app.route.name === "signup";
+  let pendingSimulation = null;
+  try { const raw=sessionStorage.getItem("leaseq:guest-simulation:v1");if(raw&&new TextEncoder().encode(raw).byteLength<=16000){const candidate=JSON.parse(raw);if(candidate&&Array.isArray(candidate.events)&&candidate.events.length<=40)pendingSimulation=candidate;} } catch { /* the current browser session remains usable without task restoration */ }
+  const form = el("form", { class:"local-auth", id:"profile-form" }, el("nav",{class:"auth-actions","aria-label":"Account and workspace"},el("a",{href:"#/login",text:"Log in"}),el("a",{href:"#/signup",text:"Create account"}),el("a",{class:"btn primary",href:"#/app",text:"Launch Workspace"}),app.profile?el("span",{class:"profile-badge",text:`Saved on this browser: ${app.profile.email}`}):null,app.profile?el("button",{type:"button",class:"btn",id:"auth-profile-logout",text:"Log out"}):null),el("h1", { tabindex:"-1", text:signup?"Create a local profile":"Log in to this browser" }),
+    el("p", { class:"hint", text:"Saved on this browser. Email is not verified; there is no password reset or cloud sync." }),
+    el("label", { for:"profile-email", text:"Email" }), el("input", { id:"profile-email", class:"input", type:"email", autocomplete:"email", required:true, maxlength:"254" }),
+    el("label", { for:"profile-password", text:"Password" }), el("input", { id:"profile-password", class:"input", type:"password", autocomplete:signup?"new-password":"current-password", required:true, minlength:"10", maxlength:"1024" }),
+    el("button", { type:"button", class:"btn", id:"password-toggle", text:"Show password" }),
+    el("p", { class:"hint", text:"Password verifies this local profile; it does not encrypt saved work or authorize API requests." }),
+    pendingSimulation ? el("fieldset",{class:"pending-import"},el("legend",{text:"Unsaved guest example"}),el("p",{text:"This tab has a completed lease recovery simulation. It remains available in this session unless you explicitly save it below."}),el("label",{},el("input",{type:"checkbox",id:"save-pending-simulation"})," Save this simulation in the local profile after sign-in")) : null,
+    el("p", { id:"profile-error", class:"field-error", role:"alert" }), el("button", { type:"submit", class:"btn primary", id:"profile-submit", text:signup?"Create profile":"Log in" }),
+    el("a", { href:signup?"#/login":"#/signup", text:signup?"Already have a profile? Log in":"Create a local profile" }),
+    el("a", { href:"#/app?demo=1", class:"btn", text:"Continue with synthetic demo" }));
+  return [el("section", { class:"auth-layout" }, form, el("aside", {}, el("h2",{text:"Local convenience, separate from the service"}),el("p",{text:"Profiles can restore small saved UI preferences and drafts on this browser. API access still requires an explicit connection and a server-authorized token."}),el("nav",{class:"trust-links","aria-label":"Trust information"},el("a",{href:new URL('../pages/privacy.html', ASSET_ROOT).href,text:"Privacy"}),el("a",{href:new URL('../pages/terms.html', ASSET_ROOT).href,text:"Terms"}),el("a",{href:new URL('../pages/security-offline.html', ASSET_ROOT).href,text:"Security & offline"}),el("button",{type:"button",class:"btn",text:"Send feedback","data-feedback-open":""})),el("a",{href:"#/",text:"Back to LeaseQ"})))];
+}
+function initLandingControls() {
+  $("landing-profile-logout")?.addEventListener("click", logoutProfile);
+  $("auth-profile-logout")?.addEventListener("click", logoutProfile);
+  const runSimulation = $("run-lease-simulation");
+  if (runSimulation && !runSimulation.dataset.ready) {
+    runSimulation.dataset.ready = "1";
+    const output = $("lease-simulation-output"), continueLink = $("continue-simulation"), textInput=$("hero-sim-text");
+    const renderSimulation = (simulation) => {
+      if (!simulation || !Array.isArray(simulation.events)) return;
+      const summary=simulation.result?`Outcome: ${simulation.state} on attempt ${simulation.attempts}; ${simulation.result.words} words and ${simulation.result.lines} lines.`:`Outcome: ${simulation.state} on attempt ${simulation.attempts}.`;
+      output.replaceChildren(el("h3", { text: summary }),
+        el("p", { text: "Worker B took over after Worker A’s virtual lease expired. The stale completion was rejected by the local fencing check." }),
+        el("ol", {}, ...simulation.events.map((event) => el("li", { text: event }))));
+      continueLink.hidden = false;
+    };
+    try { renderSimulation(app.simulation || JSON.parse(sessionStorage.getItem("leaseq:guest-simulation:v1") || "null")); } catch { /* fresh deterministic task */ }
+    runSimulation.addEventListener("click", () => {
+      output.textContent = "Running the local lease model…";
+      runSimulation.disabled = true;
+      try {
+        app.simulator=LeaseQSimulator.runRecovery(textInput?.value||DEFAULT_SIM_TEXT);
+        app.simulation=LeaseQSimulator.persistable(app.simulator);
+        try { sessionStorage.setItem("leaseq:guest-simulation:v1", JSON.stringify(app.simulation)); }
+        catch { output.textContent = "The simulation ran, but this tab could not preserve it across routes. You can still inspect the result here."; }
+        renderSimulation(app.simulation);
+      } catch(error) { output.replaceChildren(el("p",{class:"field-error",role:"alert",text:error.message||"The local simulation could not run."})); }
+      finally { runSimulation.disabled = false; }
+    });
+  }
+  const form = $("profile-form");
+  if (form && !form.dataset.ready) {
+    form.dataset.ready="1";
+    const pw=$("profile-password"), toggle=$("password-toggle"), error=$("profile-error"), submit=$("profile-submit");
+    toggle.addEventListener("click",()=>{const show=pw.type==="password";pw.type=show?"text":"password";toggle.textContent=show?"Hide password":"Show password";});
+    form.addEventListener("submit", async (e)=>{e.preventDefault();error.textContent="";submit.disabled=true;submit.textContent="Working…";const generation=app.profileAuthGeneration,key=app.routeKey;try{const op=app.route.name==="signup"?LeaseQProfiles.create:LeaseQProfiles.login;const profile=await op($("profile-email").value,pw.value);if(generation!==app.profileAuthGeneration||key!==app.routeKey)return;const savePending=$("save-pending-simulation")?.checked===true;let pending=null;try{const raw=sessionStorage.getItem("leaseq:guest-simulation:v1");if(raw&&new TextEncoder().encode(raw).byteLength<=16000)pending=JSON.parse(raw);}catch{}const previousId=app.profile?.id||null;if(!previousId||previousId!==profile.id){app.simulator=LeaseQSimulator.fresh(DEFAULT_SIM_TEXT);app.simulation=null;if(!savePending)try{sessionStorage.removeItem("leaseq:guest-simulation:v1");}catch{}}activateProfile(profile);if(savePending&&pending){try{const saved=LeaseQProfiles.load(profile.id);LeaseQProfiles.save(profile.id,{...saved,guestSimulation:pending});app.guestSimulation=pending;app.simulation=pending;}catch{showBanner("Your profile is ready, but the guest example could not be saved. It remains in this tab.",false);}}window.location.hash="#/app";}catch(err){if(generation===app.profileAuthGeneration&&key===app.routeKey)error.textContent=err.message||"Could not use local storage. Check browser settings and try again.";}finally{submit.disabled=false;submit.textContent=app.route.name==="signup"?"Create profile":"Log in";}});
+  }
+  const mobileButton=$("mobile-nav-trigger"), mobilePanel=$("mobile-panel");
+  if(mobileButton&&!mobileButton.dataset.ready){mobileButton.dataset.ready="1";mobileButton.addEventListener("click",()=>{const open=mobileButton.getAttribute("aria-expanded")!=="true";mobileButton.setAttribute("aria-expanded",String(open));mobilePanel.hidden=!open;if(open)mobilePanel.querySelector("a").focus();});mobilePanel.addEventListener("keydown",e=>{if(e.key==="Escape"){mobilePanel.hidden=true;mobileButton.setAttribute("aria-expanded","false");mobileButton.focus();}});mobilePanel.addEventListener("click",()=>{mobilePanel.hidden=true;mobileButton.setAttribute("aria-expanded","false");});}
+  const closeMenus=(returnTo)=>{for(const button of document.querySelectorAll("[data-mega-button]")){const panel=$(button.getAttribute("aria-controls"));button.setAttribute("aria-expanded","false");panel.hidden=true;}if(returnTo)returnTo.focus();};
+  for(const button of document.querySelectorAll("[data-mega-button]")) if(!button.dataset.ready){button.dataset.ready="1";const panel=$(button.getAttribute("aria-controls"));const open=()=>{closeMenus();button.setAttribute("aria-expanded","true");panel.hidden=false;};button.addEventListener("click",e=>{if(e.detail>0){if(button.getAttribute("aria-expanded")!=="true")open();}else button.getAttribute("aria-expanded")==="true"?closeMenus():open();});button.addEventListener("pointerenter",open);button.closest("[data-mega]").addEventListener("pointerleave",()=>{if(!button.closest("[data-mega]").contains(document.activeElement))closeMenus();});button.addEventListener("focus",open);}
+  if(!document.body.dataset.megaKeys){document.body.dataset.megaKeys="1";document.addEventListener("keydown",e=>{if(e.key==="Escape"){const active=document.activeElement.closest?.("[data-mega]")?.querySelector("[data-mega-button]");if(active){e.preventDefault();closeMenus(active);}}});document.addEventListener("click",e=>{if(!e.target.closest("[data-mega]"))closeMenus();});}
+  const stage=$("showcase");
+  if(stage){
+    if(app.showcaseTimer!==null)clearInterval(app.showcaseTimer);
+    try{let savedPause=localStorage.getItem("leaseq:showcase:v1:paused");if(savedPause===null){savedPause=localStorage.getItem("leaseq-showcase-paused");if(savedPause!==null){localStorage.setItem("leaseq:showcase:v1:paused",savedPause);localStorage.removeItem("leaseq-showcase-paused");}}app.showcasePaused=savedPause==="1";}catch(e){app.showcasePaused=false;}
+    const tabs=[...stage.querySelectorAll("[data-showcase-index]")], slides=[...stage.querySelectorAll(".showcase-slide")], pause=$("showcase-pause");
+    const show=(i)=>{app.showcaseIndex=i;slides.forEach((slide,n)=>{slide.hidden=n!==i;});tabs.forEach((tab,n)=>tab.setAttribute("aria-pressed",n===i?"true":"false"));};
+    const paused=()=>app.showcasePaused||stage.matches(":hover")||stage.contains(document.activeElement)||matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const sync=()=>{pause.textContent=app.showcasePaused?"Play examples":"Pause examples";pause.setAttribute("aria-pressed",app.showcasePaused?"true":"false");};
+    tabs.forEach((tab,i)=>tab.addEventListener("click",()=>show(i)));
+    pause.addEventListener("click",()=>{app.showcasePaused=!app.showcasePaused;try{localStorage.setItem("leaseq:showcase:v1:paused",app.showcasePaused?"1":"0");}catch(e){}sync();});
+    stage.addEventListener("mouseenter",()=>{});stage.addEventListener("focusin",()=>{});
+    show(app.showcaseIndex%slides.length);sync();
+    if(!matchMedia("(prefers-reduced-motion: reduce)").matches)app.showcaseTimer=window.setInterval(()=>{if(!paused())show((app.showcaseIndex+1)%slides.length);},6000);
+  }else if(app.showcaseTimer!==null){clearInterval(app.showcaseTimer);app.showcaseTimer=null;}
+}
+function saveProfileNow(){if(!app.profile)return true;try{if(app.profileSaveTimer!==null){clearTimeout(app.profileSaveTimer);app.profileSaveTimer=null;}const id=app.profile.id,old=LeaseQProfiles.load(id);LeaseQProfiles.save(id,{...old,theme:document.documentElement.getAttribute("data-theme")==="dark"?"dark":"light",submitDraft:app.submitDraft,submitText:app.submitText,submitFields:app.submitFields});return true;}catch(e){showBanner("Could not save this browser profile.",false);return false;}}
+window.LeaseQFlushProfile = saveProfileNow;
+function cancelProfileSave(){app.profileSaveGeneration+=1;if(app.profileSaveTimer!==null){clearTimeout(app.profileSaveTimer);app.profileSaveTimer=null;}}
+function clearSyncSession(){const provider=app.syncProvider;app.syncProvider=null;app.syncConfig=null;app.syncRemote=null;app.syncEpoch+=1;if(provider)provider.logout();}
+function activateProfile(profile) { if(app.profile){saveProfileNow();cancelProfileSave();if(app.profile.id!==profile.id){clearSyncSession();app.profile=null;app.token=null;clearSensitive();}}else if(app.demo)clearSensitive();app.profile=profile;app.profileSaveGeneration+=1;app.demo=false;try{const saved=LeaseQProfiles.load(profile.id);const theme=saved.theme||"light";document.documentElement.setAttribute("data-theme",theme);app.submitDraft=saved.submitDraft||app.submitDraft;app.submitText=saved.submitText||"";app.submitFields={...app.submitFields,...(saved.submitFields||{})};app.guestSimulation=saved.guestSimulation||null;if(!saved.theme)LeaseQProfiles.save(profile.id,{...saved,theme});}catch(e){showBanner("Could not load saved browser preferences.",false);}try{localStorage.setItem("leaseq:profile-active",profile.id);}catch(e){} }
+function logoutProfile() { saveProfileNow();cancelProfileSave();clearSyncSession();app.profileAuthGeneration+=1;app.profile=null;app.demo=false;app.token=null;app.simulator=LeaseQSimulator.fresh(DEFAULT_SIM_TEXT);app.simulation=null;try{sessionStorage.removeItem("leaseq:guest-simulation:v1");}catch{}stopPolling();clearSensitive();try{localStorage.removeItem("leaseq:profile-active");}catch(e){}window.location.hash="#/"; }
 
 function h1(text) {
   return el("h1", { tabindex: "-1", text });
@@ -479,6 +893,9 @@ function viewJobs() {
   clear.addEventListener("click", clearFilters);
   gotoBtn.addEventListener("click", gotoJob);
   goto.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); gotoJob(); } });
+  const filterDisclosure = el("details", { class: "filter-disclosure", open:
+    window.matchMedia("(min-width: 600px)").matches || activeFilterCount() > 0 },
+    el("summary", {}, "Filters ", el("span", { id: "filter-count", text: activeFilterCount() })), filters);
 
   const pause = el("button", { type: "button", class: "btn", id: "pause",
                                text: app.paused ? "Resume updates" : "Pause updates" });
@@ -487,9 +904,12 @@ function viewJobs() {
   more.addEventListener("click", () => { app.rows = Math.min(MAX_ROWS, app.rows + PAGE); pollNow(); });
 
   return [
-    h1("Jobs"),
+    h1(screenTitle()),
+    app.route.page === 'dead-letter' ? el('p', { class: 'hint', text: 'Open a dead job to inspect its failure and confirm a requeue. Replay requires an accepted API token.' }) : null,
+    app.guestSimulation ? el("section",{class:"panel saved-example","aria-labelledby":"saved-example-title"},el("h2",{id:"saved-example-title",text:"Saved synthetic recovery example"}),el("p",{text:`State: ${app.guestSimulation.state}. Attempts: ${app.guestSimulation.attempts} of ${app.guestSimulation.maxAttempts}. This was saved from a local demonstration, not from your server.`}),el("ol",{},...app.guestSimulation.events.map((event)=>el("li",{text:event})))) : null,
     connectionNotice("Job data cannot be shown."),
-    el("div", { class: "console-bar" }, el("span", { id: "updated", text: "Waiting for the first update" }), pause),
+    el("div", { class: "console-bar" }, el("span", { id: "updated", text: "Waiting for the first update" }),
+      el("button", { type: "button", class: "btn", id: "refresh-jobs", text: "Refresh" }), pause),
     lanes,
     el("p", { id: "expired-note", class: "note", hidden: true }),
     el("p", { id: "demo-note", class: "demo-note", hidden: true },
@@ -498,7 +918,7 @@ function viewJobs() {
     el("section", { class: "panel", "aria-labelledby": "queue-title" },
       el("div", { class: "panel-head" }, el("h2", { id: "queue-title", text: "Job queue" }),
          el("a", { class: "btn primary", href: "#/submit", text: "New job" })),
-      filters,
+      filterDisclosure,
       el("div", { class: "table-wrap", tabindex: "0", role: "region", "aria-label": "Job table, scrolls sideways" },
         el("table", { class: "jobs-table" },
           el("caption", { class: "sr-only", id: "table-caption", text: "Jobs, newest first" }),
@@ -510,6 +930,10 @@ function viewJobs() {
   ];
 }
 
+function activeFilterCount() {
+  return [app.filters.state, app.filters.kind, app.filters.worker].filter(Boolean).length;
+}
+
 function bulkPanel() {
   const action = el("select", { id: "bulk-action", "aria-label": "Bulk action" },
     el("option", { value: "requeue", text: "Requeue dead jobs" }),
@@ -519,8 +943,14 @@ function bulkPanel() {
   button.addEventListener("click", prepareBulk);
   return el("section", { class: "panel", "aria-labelledby": "bulk-title" },
     el("div", { class: "panel-body" }, el("h2", { id: "bulk-title", text: "Bulk actions" }),
+      el("p", { class: "hint", id: "bulk-scope", text: bulkScopeLabel() }),
       el("p", { class: "hint" }, "Uses one snapshot of up to 1,000 matching job IDs; later matches are excluded."),
       el("div", { class: "form-actions" }, action, button), result));
+}
+
+function bulkScopeLabel() {
+  const active = Object.entries(app.filters).filter(([, value]) => value).map(([key, value]) => `${key}: ${value}`);
+  return `Scope: ${active.length ? active.join(", ") : "all jobs"}`;
 }
 
 async function prepareBulk() {
@@ -589,7 +1019,11 @@ async function prepareBulk() {
         const counts = {};
         for (const row of all) counts[row.status] = (counts[row.status] || 0) + 1;
         const summary = `${all.length} outcomes: ${Object.entries(counts).map(([k, v]) => `${v} ${k}`).join(", ")}.`;
-        $("bulk-result").textContent = failure ? `${summary} ${failure}` : summary;
+        const result = $("bulk-result");
+        result.replaceChildren(el("p", { text: failure ? `${summary} ${failure}` : summary }),
+          el("details", {}, el("summary", {}, `${all.length} per-item outcomes`),
+            el("ul", { class: "bulk-outcomes" }, ...all.map((row) => el("li", {},
+              el("span", { class: "mono", text: String(row.id) }), `: ${row.status.replaceAll("_", " ")}`)))));
         announce(`Bulk ${action} stopped with ${all.length} outcomes${failure ? "; no automatic retry was made" : ""}.`);
         pollNow();
       } else if (failure) $("bulk-result").textContent = failure;
@@ -623,6 +1057,8 @@ function resultSummary(job) {
 function renderJobsData() {
   if (!$("rows")) return;
   renderLanes();
+  if ($("filter-count")) $("filter-count").textContent = String(activeFilterCount());
+  if ($("bulk-scope")) $("bulk-scope").textContent = bulkScopeLabel();
   const tbody = $("rows");
   const focusedJob = document.activeElement && document.activeElement.dataset
     ? document.activeElement.dataset.job : undefined;
@@ -756,8 +1192,11 @@ function viewJob() {
   app.lastJob = id;
   return [
     el("a", { class: "back", href: app.lastJobsHash, id: "back-link" }, "← Back to jobs"),
-    el("div", { class: "title-row" }, h1(`Job ${id}`), el("span", { id: "detail-state" })),
+    el("div", { class: "title-row" }, h1(`Job ${id}`), el("span", { id: "detail-state" }), el("button", { type: "button", class: "btn", id: "share-job", text: "Share job link" })),
+    el("p", { id: "share-job-status", role: "status", class: "muted" }),
     connectionNotice(`Job ${id} cannot be shown.`),
+    el("div", { class: "detail-poll" }, el("span", { class: "muted" }, "Job details refresh automatically."),
+      el("button", { type: "button", class: "btn", id: "detail-pause", text: app.paused ? "Resume updates" : "Pause updates" })),
     el("div", { id: "job-body" }),
   ];
 }
@@ -767,24 +1206,26 @@ function renderJobData() {
   if (!box) return;
   const id = app.route.id;
   const d = app.details.get(id);
+  const pause = $("detail-pause");
+  if (pause) {
+    pause.textContent = app.paused ? "Resume updates" : "Pause updates";
+    pause.onclick = togglePause;
+  }
   if (!d) {
-    $("detail-state").replaceChildren();
-    if (app.conn === "needs-token" || app.conn === "offline") box.replaceChildren();
-    else box.replaceChildren(el("p", { class: "muted", text: `Loading job ${id}…` }));
+    reconcileChildren($("detail-state"), []);
+    if (app.conn === "needs-token" || app.conn === "offline") reconcileChildren(box, []);
+    else reconcileChildren(box, [el("p", { class: "muted", text: `Loading job ${id}…` })]);
     return;
   }
   if (d.notfound) {
-    $("detail-state").replaceChildren(el("span", { class: "muted", text: "not found" }));
-    box.replaceChildren(el("section", { class: "notice", "aria-labelledby": "nf-title" },
+    reconcileChildren($("detail-state"), [el("span", { class: "muted", text: "not found" })]);
+    reconcileChildren(box, [el("section", { class: "notice", "aria-labelledby": "nf-title" },
       el("h2", { id: "nf-title", text: `No job ${id} in this queue` }),
-      el("p", {}, el("a", { href: app.lastJobsHash, text: "Back to jobs" }))));
+      el("p", {}, el("a", { href: app.lastJobsHash, text: "Back to jobs" })))]);
     return;
   }
   const { job, events, more } = d;
-  $("detail-state").replaceChildren(stateBadge(job));
-  // Keep focus where it was if a poll redraws the screen.
-  const focusedId = document.activeElement && box.contains(document.activeElement) ? document.activeElement.id : null;
-
+  reconcileChildren($("detail-state"), [stateBadge(job)]);
   const why = whyWaiting(job);
   const fields = el("dl", { class: "fields", id: "detail-fields" });
   const add = (k, v) => fields.append(el("dt", { text: k }), el("dd", {}, v));
@@ -797,7 +1238,7 @@ function renderJobData() {
   add("Created", timeEl(job.created_at, false));
   add("Updated", timeEl(job.updated_at, false));
 
-  box.replaceChildren(
+  const content = [
     el("section", { class: "panel why", "aria-labelledby": "why-title" },
       el("div", { class: "panel-body" }, el("h2", { id: "why-title", text: why.title }),
          el("p", { id: "why" }, ...why.parts))),
@@ -807,7 +1248,7 @@ function renderJobData() {
           el("h2", { id: "life-title", text: "Events" }),
           el("p", { class: "hint", text: "Heartbeats are not logged; expired leases are inferred from claims." }),
           el("h3", { id: "timeline-label", text: "Timeline" }),
-          timeline(job, events),
+          el("div", { id: "timeline" }, timeline(job, events)),
           more ? el("p", { class: "hint", id: "events-more", text: "Showing the first 500 events." }) : null)),
       el("div", {},
         el("section", { class: "panel", "aria-labelledby": "act-title" },
@@ -815,15 +1256,17 @@ function renderJobData() {
              el("div", { class: "actions", id: "detail-actions" }, ...actions(job)))),
         el("section", { class: "panel", "aria-labelledby": "sum-title" },
           el("div", { class: "panel-body" }, el("h2", { id: "sum-title", text: "Summary" }), fields)))),
-    el("section", { class: "panel", "aria-labelledby": "payload-title" },
+    el("div", { class: "panel", role: "group", "aria-labelledby": "payload-title" },
       el("div", { class: "panel-body" },
         el("h2", { id: "payload-title", text: "Payload" }),
-        el("pre", { class: "json", id: "payload", tabindex: "0", "aria-label": "Payload JSON",
-                    text: JSON.stringify(job.payload, null, 2) }),
+        el("div", { class: "code-region", role: "region", "aria-labelledby": "payload-title", tabindex: "0" },
+          el("pre", { class: "json", id: "payload", text: JSON.stringify(job.payload, null, 2) })),
         el("h2", { id: "result-title", class: "spaced", text: "Result" }),
-        el("pre", { class: "json", id: "result", tabindex: "0", "aria-label": "Result JSON",
-                    text: job.result === null ? "none" : JSON.stringify(job.result, null, 2) }))));
-  if (focusedId && $(focusedId)) $(focusedId).focus();
+        el("div", { class: "code-region", role: "region", "aria-labelledby": "result-title", tabindex: "0" },
+          el("pre", { class: "json", id: "result", text: job.result === null ? "none" : JSON.stringify(job.result, null, 2) }))))];
+  reconcileChildren(box, content);
+  const share = $("share-job");
+  if (share) share.onclick = () => window.LeaseQPlatformShareJob?.(id);
 }
 
 function whyWaiting(job) {
@@ -939,12 +1382,12 @@ function actions(job) {
   const out = [];
   if (job.state === "dead") {
     const b = el("button", { type: "button", class: "btn", id: "requeue", text: "Requeue job" });
-    b.addEventListener("click", () => confirmAction("requeue", job, b));
+    b.onclick = () => confirmAction("requeue", job, b);
     out.push(b);
   }
   if (job.state === "queued" || job.state === "leased") {
     const b = el("button", { type: "button", class: "btn danger", id: "cancel", text: "Cancel job" });
-    b.addEventListener("click", () => confirmAction("cancel", job, b));
+    b.onclick = () => confirmAction("cancel", job, b);
     out.push(b);
   }
   if (!out.length) out.push(el("p", { class: "muted", text: "Finished jobs cannot be requeued or cancelled." }));
@@ -1039,6 +1482,11 @@ function viewSubmit() {
       if (!app.submitKeyExplicit) { app.submitKey = `ui-${crypto.randomUUID()}`; key.value = app.submitKey; }
     }
     size.textContent = `${new TextEncoder().encode(content).length.toLocaleString()} of 65,536 request-body bytes`;
+    if (app.profile) {
+      if (app.profileSaveTimer !== null) clearTimeout(app.profileSaveTimer);
+      const profileId=app.profile.id, generation=app.profileSaveGeneration;
+      app.profileSaveTimer=window.setTimeout(()=>{app.profileSaveTimer=null;if(!app.profile||app.profile.id!==profileId||generation!==app.profileSaveGeneration)return;try{const old=LeaseQProfiles.load(profileId);LeaseQProfiles.save(profileId,{...old,submitDraft:app.submitDraft,submitText:app.submitText,submitFields:app.submitFields});}catch(e){showBanner("Could not save this draft on the browser.",false);}},500);
+    }
   };
   for (const c of [kind, payload, priority, attempts, due, delay]) c.addEventListener("input", update);
   word.addEventListener("input", () => { app.submitText = word.value; setCount(); update(); });
@@ -1046,7 +1494,7 @@ function viewSubmit() {
   const wordFields = el("div", { id: "word-fields" },
     el("label", { for: "wc-text", text: "Text to count" }),
     el("p", { class: "hint", id: "wc-hint", text: "The word_count handler accepts up to 10,000 characters. Longer text remains editable and cannot be submitted." }),
-    word, count, el("p", { class: "hint" }, "Sample text: Jane Austen, ", el("cite", { text: "Pride and Prejudice" }), ", chapter 1; see ", el("a", { href: "assets/sample/SOURCE.txt", text: "source and licence note" }), "."));
+    word, count, el("p", { class: "hint" }, "Sample text: Jane Austen, ", el("cite", { text: "Pride and Prejudice" }), ", chapter 1; see ", el("a", { href: new URL('sample/SOURCE.txt', ASSET_ROOT).href, text: "source and licence note" }), "."));
   const jsonFields = el("div", { id: "json-fields" },
     el("label", { for: "job-payload", text: "JSON object payload" }), payload,
     el("p", { class: "hint", id: "payload-hint", text: "No silent truncation. Encoded request bodies are limited to 65,536 bytes." }), size);
@@ -1072,23 +1520,26 @@ function viewSubmit() {
   clear.addEventListener("click", () => { payload.value = ""; update(); payload.focus(); });
   const clearWord = el("button", { type: "button", class: "btn", text: "Clear text" });
   clearWord.addEventListener("click", () => { word.value = ""; app.submitText = ""; setCount(); update(); word.focus(); });
-  const form = el("form", { id: "submit-form", class: "form-stack", novalidate: true },
-    el("label", { for: "job-kind", text: "Job kind" }), kind,
-    el("p", { class: "hint", id: "kind-observed", text: app.ops.workers ? `Worker kinds: ${[...new Set(app.ops.workers.workers.flatMap((w) => w.kinds || []))].join(", ") || "none reported"}. Unhandled kinds may remain queued.` : "Worker kinds not loaded. Unhandled kinds may remain queued." }),
-    el("div", { class: "form-actions" }, preset("word_count", "word_count", { text: "" }), preset("sleep", "sleep", { ms: 1000 }), sample, clear, clearWord),
-    wordFields, jsonFields,
-    el("label", { for: "job-priority", text: "Priority (-100 to 100)" }), priority,
-    el("label", { for: "job-attempts", text: "Maximum attempts (1 to 100)" }), attempts,
-    el("label", { for: "job-due", text: "UTC due time (ISO 8601 ending in Z, optional)" }), due,
-    el("label", { for: "job-delay", text: "Delay seconds (optional)" }), delay,
-    el("label", { for: "job-key", text: "Idempotency key" }), el("div", { class: "form-actions" }, key, generate),
-    el("p", { class: "hint", text: "Reuse this key after an ambiguous request." }),
-    el("p", { class: "field-error", id: "submit-error", "aria-live": "polite" }, el("span", { id: "wc-error" })),
-    el("div", { class: "form-actions" }, el("button", { type: "submit", class: "btn primary", id: "submit-job", text: "Submit job", disabled: app.submitInFlight })));
+  const form = el("form", { id: "submit-form", class: "form-stack submit-form", novalidate: true },
+    el("div", { class: "submit-editor" },
+      el("label", { for: "job-kind", text: "Job kind" }), kind,
+      el("p", { class: "hint", id: "kind-observed", text: app.ops.workers ? `Worker kinds: ${[...new Set(app.ops.workers.workers.flatMap((w) => w.kinds || []))].join(", ") || "none reported"}. Unhandled kinds may remain queued.` : "Worker kinds not loaded. Unhandled kinds may remain queued." }),
+      el("div", { class: "form-actions" }, preset("word_count", "word_count", { text: "" }), preset("sleep", "sleep", { ms: 1000 }), sample, clear, clearWord),
+      wordFields, jsonFields),
+    el("div", { class: "submit-options" },
+      el("label", { for: "job-priority", text: "Priority (-100 to 100)" }), priority,
+      el("label", { for: "job-attempts", text: "Maximum attempts (1 to 100)" }), attempts,
+      el("label", { for: "job-due", text: "UTC due time (ISO 8601 ending in Z, optional)" }), due,
+      el("label", { for: "job-delay", text: "Delay seconds (optional)" }), delay,
+      el("label", { for: "job-key", text: "Idempotency key" }), el("div", { class: "form-actions" }, key, generate),
+      el("p", { class: "hint" }, "Reuse this key after an ambiguous request."),
+      el("p", { class: "field-error", id: "submit-error", "aria-live": "polite" }, el("span", { id: "wc-error" })),
+      el("div", { class: "form-actions" }, el("button", { type: "submit", class: "btn primary", id: "submit-job", text: "Submit job", disabled: app.submitInFlight })),
+      el("div", { id: "submit-result", class: "result-box", "aria-live": "polite" })));
   form.addEventListener("submit", submitJob); mode();
   return [h1("New job"),
     app.token ? null : (connectionNotice("Submitting needs the API token.") || el("p", {}, "Enter an API token in Settings.")),
-    el("section", { class: "panel", "aria-label": "Job composer" }, el("div", { class: "panel-body" }, form, el("div", { id: "submit-result", class: "result-box", "aria-live": "polite" })))];
+    el("section", { class: "panel", "aria-label": "Job composer" }, el("div", { class: "panel-body" }, form))];
 }
 
 async function submitJob(e) {
@@ -1194,8 +1645,113 @@ function renderSubmitResult() {
 
 /* ---------- Connection & API screen ---------- */
 
+function profileBackupPanel() {
+  const status=el("p",{id:"profile-backup-status",role:"status","aria-live":"polite"});
+  const preview=el("p",{id:"profile-backup-preview",class:"hint"});
+  const file=el("input",{id:"profile-backup-file",type:"file",accept:"application/json,.json","aria-describedby":"profile-backup-file-help"});
+  const exportPass=el("input",{id:"profile-backup-export-pass",type:"password",autocomplete:"new-password",minlength:"12",maxlength:"1024",required:true});
+  const importPass=el("input",{id:"profile-backup-import-pass",type:"password",autocomplete:"current-password",minlength:"12",maxlength:"1024",required:true});
+  const panel=el("section",{class:"panel profile-backup","aria-labelledby":"profile-backup-title"},
+    el("div",{class:"panel-body"},el("h2",{id:"profile-backup-title",text:"Encrypted profile backup"}),
+      el("p",{class:"hint",text:"Offline JSON backup uses PBKDF2-HMAC-SHA-256 (600,000 iterations) and AES-256-GCM. The file excludes profile login verifiers and API bearer tokens. Keep the passphrase separate from the file."}),
+      app.profile?el("div",{class:"profile-backup-controls"},
+        el("fieldset",{},el("legend",{},"Choose what to export"),
+          el("label",{},el("input",{type:"checkbox",id:"backup-preferences"})," Saved theme preference"),
+          el("label",{},el("input",{type:"checkbox",id:"backup-drafts"})," Saved submit draft and fields"),
+          el("label",{},el("input",{type:"checkbox",id:"backup-simulation"})," Saved simulator example and selected evidence")),
+        el("label",{for:"profile-backup-export-pass",text:"Backup passphrase (12–1024 characters)"}),exportPass,
+        el("button",{type:"button",class:"btn primary",id:"profile-backup-export",text:"Create encrypted backup"}),
+        el("label",{for:"profile-backup-file",text:"Encrypted JSON backup file"}),file,
+        el("p",{id:"profile-backup-file-help",class:"hint",text:`Maximum ${LeaseQProfiles.backupMaxBytes.toLocaleString()} bytes. Decryption is staged before anything is written.`}),
+        el("label",{for:"profile-backup-import-pass",text:"Backup passphrase"}),importPass,
+        el("div",{class:"form-actions"},el("button",{type:"button",class:"btn",id:"profile-backup-preview-button",text:"Decrypt and preview"}),el("button",{type:"button",class:"btn primary",id:"profile-backup-apply",text:"Restore selected data",disabled:true}),el("button",{type:"button",class:"btn",id:"profile-backup-cancel",text:"Cancel restore",disabled:true})),preview,status):el("p",{},"Create or log in to a local browser profile to export or restore selected settings.")),
+    );
+  if(!app.profile)return panel;
+  let prepared=null;
+  file.addEventListener("change",()=>{prepared=null;panel.querySelector("#profile-backup-apply").disabled=true;panel.querySelector("#profile-backup-cancel").disabled=true;preview.textContent="";status.textContent=file.files?.length?"Backup selection changed. Decrypt and preview it again before restoring.":"";});
+  const exportButton=panel.querySelector("#profile-backup-export");
+  exportButton.addEventListener("click",async()=>{
+    status.textContent="";const generation=app.profileAuthGeneration,id=app.profile.id,pass=exportPass.value;
+    const selection={preferences:$("backup-preferences").checked,drafts:$("backup-drafts").checked,simulation:$("backup-simulation").checked};
+    exportButton.disabled=true;status.textContent="Encrypting the selected local data…";
+    try{const contents=await LeaseQProfiles.exportBackup(id,pass,selection);if(generation!==app.profileAuthGeneration||app.profile?.id!==id)return;
+      const url=URL.createObjectURL(new Blob([contents],{type:"application/json"})),link=document.createElement("a");link.href=url;link.download="leaseq-encrypted-profile-backup.json";link.click();setTimeout(()=>URL.revokeObjectURL(url),0);status.textContent="Encrypted backup downloaded. The passphrase was not saved.";
+    }catch(error){status.textContent=error.message||"Could not create the encrypted backup.";}finally{exportPass.value="";exportButton.disabled=false;}
+  });
+  panel.querySelector("#profile-backup-preview-button").addEventListener("click",async()=>{
+    prepared=null;panel.querySelector("#profile-backup-apply").disabled=true;panel.querySelector("#profile-backup-cancel").disabled=true;preview.textContent="";status.textContent="";
+    const selected=file.files?.[0],pass=importPass.value,generation=app.profileAuthGeneration,id=app.profile.id;
+    if(!selected){status.textContent="Choose an encrypted JSON file first.";return;}
+    if(selected.size>LeaseQProfiles.backupMaxBytes){status.textContent=`The selected file exceeds ${LeaseQProfiles.backupMaxBytes.toLocaleString()} bytes; current profile data is unchanged.`;return;}
+    try{const text=await selected.text();if(generation!==app.profileAuthGeneration||app.profile?.id!==id)return;const candidate=await LeaseQProfiles.prepareBackup(text,pass);if(generation!==app.profileAuthGeneration||app.profile?.id!==id)return;prepared=candidate;
+      preview.textContent=`Preview ready: selected categories ${candidate.categories.join(", ")}. ${candidate.hasSimulation?"A saved local simulator example is included; it will not run automatically.":"No simulator example is included."} Applying this selection merges only these keys into this local profile.`;
+      panel.querySelector("#profile-backup-apply").disabled=false;panel.querySelector("#profile-backup-cancel").disabled=false;status.textContent="Decryption and validation passed. No local data has changed yet.";
+    }catch(error){status.textContent=error.message||"Could not decrypt this backup. Current profile data is unchanged.";}
+    finally{importPass.value="";}
+  });
+  panel.querySelector("#profile-backup-cancel").addEventListener("click",()=>{prepared=null;panel.querySelector("#profile-backup-apply").disabled=true;panel.querySelector("#profile-backup-cancel").disabled=true;file.value="";preview.textContent="";status.textContent="Restore canceled. Current profile data is unchanged.";});
+  panel.querySelector("#profile-backup-apply").addEventListener("click",()=>{
+    if(!prepared){status.textContent="Decrypt and preview a file before restoring.";return;}
+    const generation=app.profileAuthGeneration,id=app.profile.id;
+    try{const saved=LeaseQProfiles.commitBackup(id,prepared);cancelProfileSave();prepared=null;if(generation!==app.profileAuthGeneration||app.profile?.id!==id)return;
+      document.documentElement.setAttribute("data-theme",saved.theme||"light");app.submitDraft=saved.submitDraft||"";app.submitText=saved.submitText||"";app.submitFields={kind:"word_count",priority:"0",attempts:"3",due:"",delay:"",...(saved.submitFields||{})};app.guestSimulation=saved.guestSimulation||null;app.simulator=LeaseQSimulator.fresh(saved.guestSimulation?.text||DEFAULT_SIM_TEXT);app.simulation=null;try{sessionStorage.removeItem("leaseq:guest-simulation:v1");}catch{}
+      panel.querySelector("#profile-backup-apply").disabled=true;panel.querySelector("#profile-backup-cancel").disabled=true;file.value="";preview.textContent="";status.textContent="Selected data restored to this local browser profile. Simulator examples are saved evidence and do not execute.";renderThemeButtons();
+    }catch(error){status.textContent=error.message||"Restore failed. The existing local profile data was preserved.";}
+  });
+  return panel;
+}
+
+function profileCloudSyncPanel(){
+  const status=el("p",{id:"cloud-sync-status",role:"status","aria-live":"polite",text:app.syncStatus||"Not connected. No cloud endpoint or account is configured."});
+  const project=el("input",{id:"cloud-project-origin",type:"url",autocomplete:"url",placeholder:"https://your-project.supabase.co"});
+  const key=el("input",{id:"cloud-publishable-key",type:"password",autocomplete:"off",maxlength:"4096"});
+  const email=el("input",{id:"cloud-email",type:"email",autocomplete:"email",maxlength:"254"});
+  const password=el("input",{id:"cloud-password",type:"password",autocomplete:"current-password",maxlength:"1024"});
+  if(app.syncConfig){project.value=app.syncConfig.origin;key.value=app.syncConfig.key;}
+  const connected=!!app.syncProvider?.session;
+  if(connected){project.disabled=true;key.disabled=true;email.disabled=true;password.disabled=true;}
+  const consent=el("input",{id:"cloud-sync-consent",type:"checkbox"});
+  const includeTheme=el("input",{id:"cloud-include-theme",type:"checkbox"});
+  const includeDrafts=el("input",{id:"cloud-include-drafts",type:"checkbox"});
+  const includeSimulation=el("input",{id:"cloud-include-simulation",type:"checkbox"});
+  const remote=app.syncRemote;
+  const summary=remote?remote.deleted?`Remote deletion marker at revision ${remote.revision}.`: `Remote revision ${remote.revision}; saved categories: ${Object.keys(remote.data).join(", ")||"none"}.`:"No remote workspace has been read in this session.";
+  const panel=el("section",{class:"panel cloud-sync","aria-labelledby":"cloud-sync-title"},el("div",{class:"panel-body"},
+    el("h2",{id:"cloud-sync-title",text:"Optional cloud workspace sync"}),
+    el("p",{class:"hint",text:"Reference connector: Supabase Auth and row-level security. This is unconfigured by default. Cloud identity is separate from LeaseQ API bearer access and does not create user-owned queue jobs."}),
+    el("p",{class:"hint"},"Install the reviewed ",el("a",{href:new URL('../pages/cloud-sync.html', ASSET_ROOT).href,text:"Supabase table and RLS policy"})," in a project you control. Use a publishable or legacy anon key only; never use an sb_secret or service_role key."),
+    app.profile?el("div",{},
+      el("label",{for:"cloud-project-origin",text:"Supabase project origin"}),project,
+      el("label",{for:"cloud-publishable-key",text:"Publishable or legacy anon key"}),key,
+      connected?el("p",{class:"hint",text:`Signed in to Supabase account ${app.syncProvider.session.email||app.syncProvider.session.userId}. Bearer is held in memory only; it is never used for the LeaseQ API.`}):el("div",{},el("label",{for:"cloud-email",text:"Supabase account email"}),email,el("label",{for:"cloud-password",text:"Supabase account password"}),password),
+      el("div",{class:"form-actions"},connected?el("button",{type:"button",class:"btn",id:"cloud-signout",text:"Sign out of cloud sync"}):el("button",{type:"button",class:"btn primary",id:"cloud-signin",text:"Connect to Supabase"})),
+      connected?el("fieldset",{},el("legend",{},"Select saved local data for this action"),el("label",{},consent," I consent to access the configured Supabase project."),el("label",{},includeTheme," Include saved theme preference"),el("label",{},includeDrafts," Include saved submit drafts"),el("label",{},includeSimulation," Include saved simulator example and selected evidence"),el("p",{class:"hint",text:"No live API job, token, password verifier, session or mutation queue is eligible for sync."}),el("div",{class:"form-actions"},el("button",{type:"button",class:"btn",id:"cloud-read",text:"Read remote revision"}),el("button",{type:"button",class:"btn primary",id:"cloud-sync",text:"Sync selected local data"}),el("button",{type:"button",class:"btn",id:"cloud-restore",text:"Restore remote selection locally",disabled:!remote||remote.deleted}),el("button",{type:"button",class:"btn",id:"cloud-replace",text:"Replace remote with selected local data",disabled:!remote}),el("button",{type:"button",class:"btn danger",id:"cloud-delete",text:"Mark remote copy deleted",disabled:!remote||remote.deleted})),el("p",{class:"hint",id:"cloud-remote-preview",text:summary})):null):el("p",{},"Create or log in to a local browser profile before selecting data to sync."),status));
+  if(!app.profile)return panel;
+  if(!connected){panel.querySelector("#cloud-signin").addEventListener("click",async()=>{
+    const button=panel.querySelector("#cloud-signin"),epoch=++app.syncEpoch;app.syncStatus="Connecting to Supabase Auth…";status.textContent=app.syncStatus;button.disabled=true;
+    try{const provider=new LeaseQSync.SupabaseRlsProvider(project.value,key.value);app.syncProvider=provider;app.syncConfig={origin:provider.origin,key:key.value};app.syncRemote=null;const user=await provider.signIn(email.value,password.value);if(epoch!==app.syncEpoch||app.syncProvider!==provider)return;app.syncStatus=`Connected to Supabase account ${user.email||user.userId}. No LeaseQ API authority was granted.`;renderView(false);}
+    catch(error){if(epoch===app.syncEpoch){app.syncStatus=error.message||"Supabase sign-in failed.";status.textContent=app.syncStatus;}}
+    finally{password.value="";button.disabled=false;}
+  });return panel;}
+  const provider=app.syncProvider;
+  const current=()=>{if(!consent.checked)throw Error("Select the consent checkbox before reading or writing the configured cloud workspace.");if(app.syncProvider!==provider)throw Error("Cloud session changed; this operation was canceled.");};
+  const selection=()=>{const saved=LeaseQProfiles.load(app.profile.id),data={};if(includeTheme.checked&&saved.theme)data.theme=saved.theme;if(includeDrafts.checked)for(const field of ["submitDraft","submitText","submitFields"])if(saved[field]!==undefined)data[field]=saved[field];if(includeSimulation.checked){if(!saved.guestSimulation)throw Error("Save a simulator example in this local profile before selecting it for cloud sync.");data.guestSimulation=saved.guestSimulation;}const clean=LeaseQProfiles.validateData(data);if(!Object.keys(clean).length)throw Error("Select at least one saved data category.");return clean;};
+  const run=async(label,operation)=>{const epoch=app.syncEpoch,id=app.profile.id;status.textContent=label;try{const result=await operation();if(epoch!==app.syncEpoch||app.syncProvider!==provider||app.profile?.id!==id)return result;return result;}catch(error){if(epoch===app.syncEpoch){app.syncStatus=error.message||"Cloud sync request failed.";status.textContent=app.syncStatus;}return null;}};
+  panel.querySelector("#cloud-signout").addEventListener("click",()=>{clearSyncSession();app.syncStatus="Cloud session cleared; selected data remains in this local profile.";renderView(false);});
+  panel.querySelector("#cloud-read").addEventListener("click",()=>run("Reading the authenticated user's remote workspace…",async()=>{current();const found=await provider.read();if(app.syncProvider!==provider)return;app.syncRemote=found;app.syncStatus=found?found.deleted?`Remote deletion marker read at revision ${found.revision}.`:`Remote revision ${found.revision} read; local profile is unchanged.`:"No remote workspace exists yet. A later sync may create revision 1.";renderView(false);}));
+  panel.querySelector("#cloud-sync").addEventListener("click",()=>run("Checking remote revision before syncing…",async()=>{current();const data=selection();const result=await provider.sync(data);if(app.syncProvider!==provider)return;if(result.ok){app.syncRemote=result.unchanged?app.syncRemote:{revision:result.revision,deleted:false,data};app.syncStatus=result.unchanged?`Remote revision ${result.revision} already matches the selected local data.`:`Selected local data written as remote revision ${result.revision}.`;}else{app.syncRemote=result.remote;app.syncStatus=`Conflict preserved. ${result.reason||`Remote revision ${result.remote?.revision??"unknown"} differs.`} Review the remote selection or explicitly replace it.`;}renderView(false);}));
+  panel.querySelector("#cloud-restore").addEventListener("click",()=>{try{current();}catch(error){status.textContent=error.message;return;}if(!remote||remote.deleted)return;try{const saved=LeaseQProfiles.load(app.profile.id);LeaseQProfiles.save(app.profile.id,{...saved,...remote.data});cancelProfileSave();const restored=LeaseQProfiles.load(app.profile.id);document.documentElement.setAttribute("data-theme",restored.theme||"light");app.guestSimulation=restored.guestSimulation||null;app.submitDraft=restored.submitDraft||"";app.submitText=restored.submitText||"";app.submitFields={...app.submitFields,...(restored.submitFields||{})};app.simulator=LeaseQSimulator.fresh(restored.guestSimulation?.text||DEFAULT_SIM_TEXT);app.simulation=null;app.syncStatus="Selected remote data restored locally. No job commands were replayed.";status.textContent=app.syncStatus;renderThemeButtons();}catch(error){status.textContent=error.message||"Remote data could not be restored locally.";}});
+  panel.querySelector("#cloud-replace").addEventListener("click",()=>run("Writing against the revision shown in the preview…",async()=>{current();const data=selection();const result=await provider.write(data,remote?.revision??null);if(app.syncProvider!==provider)return;if(result.ok){app.syncRemote={revision:result.revision,deleted:false,data};app.syncStatus=`Selected local data written as remote revision ${result.revision}.`; }else{app.syncRemote=result.remote;app.syncStatus="A newer remote revision arrived. Neither copy was overwritten; review it again.";}renderView(false);}));
+  panel.querySelector("#cloud-delete").addEventListener("click",()=>{try{current();}catch(error){status.textContent=error.message;return;}if(!remote)return;if(!window.confirm(`Create a remote deletion marker at revision ${remote.revision+1}? Local profile data will remain.`))return;run("Creating the explicit remote deletion marker…",async()=>{const result=await provider.deleteRemote(remote.revision);if(app.syncProvider!==provider)return;if(result.ok){app.syncRemote={revision:result.revision,deleted:true,data:{}};app.syncStatus=`Remote data marked deleted at revision ${result.revision}. Local data was preserved.`;}else{app.syncRemote=result.remote;app.syncStatus="Remote revision changed; deletion was not applied.";}renderView(false);});});
+  return panel;
+}
+
+function table(head, rows, label) { return el("div", { class: "table-wrap", tabindex: "0", role: "region", "aria-label": label },
+    el("table", {}, el("thead", {}, el("tr", {}, ...head.map((h) => el("th", { scope: "col", text: h })))),
+       el("tbody", {}, ...rows.map((r) => el("tr", {}, ...r.map((c, i) => el("td", { class: i < 2 && head[0] === "Method" ? "mono" : null, }, c))))))) }
+
 function viewConnection() {
-  const origin = window.location.origin;
+  const origin = app.apiOrigin || window.location.origin;
   const statusText = {
     unknown: "Checking…",
     token: "Connected. The server accepted the token in this page's memory.",
@@ -1208,32 +1764,40 @@ function viewConnection() {
   if (app.token) {
     const forget = el("button", { type: "button", class: "btn", text: "Forget token" });
     forget.addEventListener("click", forgetToken);
-    tokenPart = [el("p", { id: "token-ok" }, app.keepToken
-                    ? "The token is stored in sessionStorage for this tab and sent only in the Authorization header. Forget token or a 401 clears it. "
-                    : "The token is in this page's memory only and is sent only in the Authorization header; reloading forgets it. ",
+    tokenPart = [el("p", { id: "token-ok" }, "The token is in this page's memory only and is sent only in the Authorization header; reloading forgets it. ",
                     el("a", { href: app.lastJobsHash, id: "go-jobs", text: "Go to Jobs" })),
-                 app.storageNotice ? el("p", { class: "field-error", text: app.storageNotice }) : null,
                  el("div", { class: "form-actions" }, forget)];
   } else {
     const input = el("input", { class: "input", id: "token-input", type: "password", autocomplete: "off",
                                 spellcheck: "false", "aria-describedby": "token-hint token-error", required: true });
-    const keep = el("input", { id: "keep-token", type: "checkbox" });
-    keep.checked = app.keepToken;
-    keep.addEventListener("change", () => { app.keepToken = keep.checked; });
     const form = el("form", { id: "token-form", class: "form-stack", novalidate: true },
       el("label", { for: "token-input", text: "API token" }),
       el("p", { class: "hint", id: "token-hint" }, "Use the server's ", el("code", { text: "LEASEQ_API_TOKEN" }),
          ". ", el("code", { text: "scripts/up.sh" }), " writes it to ", el("code", { text: ".env" }),
          ". Stored in this page's memory only."),
       input,
-      el("label", { class: "check-row", for: "keep-token" }, keep, " Keep token until this tab closes"),
-      el("p", { class: "hint", text: "Opt-in session storage lasts until this tab closes. Same-origin scripts can read it. Forget token or a 401 clears it." }),
-      app.storageNotice ? el("p", { class: "field-error", text: app.storageNotice }) : null,
       el("p", { class: "field-error", id: "token-error" }),
       el("div", { class: "form-actions" }, el("button", { type: "submit", class: "btn primary", text: "Use token" })));
     form.addEventListener("submit", submitToken);
     tokenPart = [form];
   }
+
+  const apiOriginInput = el("input", { class:"input", id:"api-origin-input", type:"url", autocomplete:"url", placeholder:STATIC_API_DISABLED?"https://your-api.example":"same origin", "aria-describedby":"api-origin-help api-origin-error" });
+  apiOriginInput.value = app.apiOrigin === location.origin ? "" : app.apiOrigin || "";
+  const apiOriginForm = el("form",{id:"api-origin-form",class:"form-stack",novalidate:true},
+    el("label",{for:"api-origin-input",text:"Live API origin (optional)"}),
+    el("p",{id:"api-origin-help",class:"hint",text:"Leave blank to use this page's same-origin API. On static hosting, configure an HTTPS API origin with CORS enabled. Only the origin is stored; the bearer token stays in page memory and is never sent to the simulator."}),
+    apiOriginInput,el("p",{id:"api-origin-error",class:"field-error",role:"alert"}),
+    el("button",{type:"submit",class:"btn primary",text:"Use Live API origin"}));
+  apiOriginForm.addEventListener("submit", async (event) => {
+    event.preventDefault(); const error=$("api-origin-error"), raw=apiOriginInput.value.trim(); let next=null;
+    try {
+      if(raw){const parsed=new URL(raw);if(parsed.username||parsed.password||parsed.pathname!=="/"||parsed.search||parsed.hash)throw new Error("Enter an origin only: scheme and host, with no path, query, credentials or fragment.");if(parsed.protocol!=="https:"&&!(parsed.protocol==="http:"&&["localhost","127.0.0.1","[::1]"].includes(parsed.hostname)))throw new Error("Use HTTPS for remote APIs; HTTP is allowed only on loopback.");next=parsed.origin;}
+      else next=STATIC_API_DISABLED?null:location.origin;
+      if(next!==app.apiOrigin){app.authGen+=1;app.authPending=null;if(app.token){app.token=null;clearSensitive();setConn("unknown");showBanner("The API target changed; the in-memory bearer token was cleared. Enter a token for the new origin.",false);}try{if(next)localStorage.setItem("leaseq:api-origin:v1",next);else localStorage.removeItem("leaseq:api-origin:v1");}catch{throw new Error("Browser storage is unavailable; the API origin was not changed.");}app.apiOrigin=next;app.apiAvailability=next?"unknown":"unavailable";app.modeUserChoice=true;app.mode=next?"live":"simulator";syncModeChrome();if(next)await loadVersion();else{stopPolling();setConn("offline");renderView(false);}}
+      error.textContent="";
+    }catch(e){error.textContent=e.message||"The Live API origin is invalid.";}
+  });
 
   const ep = [
     ["POST", "/jobs", "Submit a job (Idempotency-Key header)", "yes"],
@@ -1260,23 +1824,25 @@ function viewConnection() {
     ["413", "Request body larger than LEASEQ_MAX_BODY_BYTES (64 KiB by default)."],
     ["422", "Invalid input: says which field and why, without echoing the value."],
   ];
-  const table = (head, rows, label) => el("div", { class: "table-wrap", tabindex: "0", role: "region", "aria-label": label },
-    el("table", {}, el("thead", {}, el("tr", {}, ...head.map((h) => el("th", { scope: "col", text: h })))),
-       el("tbody", {}, ...rows.map((r) => el("tr", {}, ...r.map((c, i) => el("td", { class: i < 2 && head[0] === "Method" ? "mono" : null, text: c })))))));
+
 
   return [
     h1("Settings"),
-    el("section", { class: "panel", "aria-labelledby": "tok-title" },
+    profileBackupPanel(),
+    profileCloudSyncPanel(),
+    el("div", { class: "connection-grid" },
+      el("section", { class: "panel", "aria-labelledby": "tok-title" },
       el("div", { class: "panel-body" }, el("h2", { id: "tok-title", text: "Token" }), ...tokenPart)),
+    el("section",{class:"panel","aria-labelledby":"api-origin-title"},el("div",{class:"panel-body"},el("h2",{id:"api-origin-title",text:"API target"}),apiOriginForm)),
     el("section", { class: "panel", "aria-labelledby": "st-title" },
       el("div", { class: "panel-body" }, el("h2", { id: "st-title", text: "Status" }),
         el("dl", { class: "fields" },
           el("dt", { text: "API address" }), el("dd", {}, el("code", { text: origin })),
           el("dt", { text: "Server version" }), el("dd", { id: "conn-version", text: app.version || "unknown" }),
-          el("dt", { text: "Connection" }), el("dd", { id: "conn-detail", text: statusText })))),
-    el("section", { class: "panel guide", "aria-labelledby": "guide-title" },
+          el("dt", { text: "Connection" }), el("dd", { id: "conn-detail", text: statusText }))))),
+    el("details", { class: "panel guide" },
+      el("summary", { class: "panel-head" }, "API help"),
       el("div", { class: "panel-body" },
-        el("h2", { id: "guide-title", text: "API guide" }),
         el("p", {}, "Every call except ", el("code", { text: "/healthz" }), " needs ",
            el("code", { text: "Authorization: Bearer <token>" }), ". Full reference: ",
            el("a", { href: "/docs", text: "interactive API docs" }), " (needs JavaScript) or the ",
@@ -1305,24 +1871,30 @@ async function submitToken(e) {
     input.focus();
   };
   if (value.length < 16) return fail("Tokens are at least 16 characters long.");
-  const gen = app.authGen;
-  const r = await fetch("/auth/check", {
-    headers: { Authorization: `Bearer ${value}`, Accept: "application/json" },
-    credentials: "omit", cache: "no-store",
-  }).catch(() => null);
-  if (gen !== app.authGen) return;
+  if (!app.apiOrigin) return fail("Configure a Live API origin before entering a token.");
+  const origin = app.apiOrigin;
+  // Invalidate anonymous probes before validating a new token.
+  const gen = ++app.authGen;
+  app.authPending = gen;
+  app.pendingApiRequests += 1;
+  let r = null;
+  try {
+    r = await fetch(new URL("/auth/check", origin).href, {
+      headers: { Authorization: `Bearer ${value}`, Accept: "application/json" },
+      credentials: "omit", cache: "no-store", signal: AbortSignal.timeout(5000),
+    });
+  } catch { /* The same actionable connection error is shown below. */ }
+  finally { app.pendingApiRequests -= 1; }
+  if (app.authPending === gen) app.authPending = null;
+  if (gen !== app.authGen || origin !== app.apiOrigin) return;
   if (!r) return fail("Cannot reach the API to check the token.");
   if (r.status === 401) return fail("The server rejected this token.");
   if (r.status !== 200) return fail(`Unexpected answer from the server (HTTP ${r.status}).`);
   input.value = "";
   clearSensitive();          // nothing read without the token survives into the new session
   app.token = value;
-  app.keepToken = Boolean($("keep-token") && $("keep-token").checked);
-  app.storageNotice = "";
-  try {
-    if (app.keepToken) sessionStorage.setItem("leaseq-api-token", value);
-    else sessionStorage.removeItem("leaseq-api-token");
-  } catch (e) { app.storageNotice = "This browser blocked session storage. The token is active in memory only."; app.keepToken = false; }
+  app.apiAvailability = "available";
+  try { sessionStorage.removeItem("leaseq-api-token"); } catch (e) { /* storage may be blocked */ }
   setConn("token");
   hideBanner();
   renderView(false);
@@ -1367,12 +1939,15 @@ function viewOperations() {
     error, el("button", { class: "btn primary", id: "schedule-submit", type: "submit",
       text: app.scheduleConfirmed ? "Start new schedule" : "Create schedule", disabled: app.scheduleInFlight }));
   form.addEventListener("submit", createSchedule);
-  return [h1("Workers"),
+  return [h1(screenTitle()),
     el("p", { class: "field-error", id: "ops-error", role: "status", "aria-live": "polite" }),
     app.token ? null : connectionNotice("Operator observations and schedule changes need an API token."),
-    el("section", { class: "panel", "aria-labelledby": "workers-title" }, el("div", { class: "panel-body" }, el("h2", { id: "workers-title", text: "Worker status" }), el("p", { class: "hint" }, "Reports and heartbeats are separate observations; neither confirms a process is alive."), el("div", { id: "workers-data" }, el("p", { class: "muted", text: "Loading workers…" })))),
-    el("section", { class: "panel", "aria-labelledby": "metrics-title" }, el("div", { class: "panel-body" }, el("h2", { id: "metrics-title", text: "Metrics" }), el("div", { id: "metrics-data" }, el("p", { class: "muted", text: "Loading metrics…" })))),
-    app.token ? el("section", { class: "panel", "aria-labelledby": "schedules-title" }, el("div", { class: "panel-head" }, el("h2", { id: "schedules-title", text: "Schedules" })), el("div", { class: "panel-body" }, el("div", { id: "schedules-data" }, el("p", { class: "muted", text: "Loading schedules…" })), form)) : null];
+    app.route.page === 'leases' ? el('section', { class: 'panel', 'aria-labelledby': 'leases-title' }, el('div', { class: 'panel-body' }, el('h2', { id: 'leases-title', text: 'Current leases' }), el('p', { class: 'hint', text: 'Queue lease records; an expiry does not prove a worker process has stopped.' }), el('div', { id: 'leases-data' }))) : null,
+    el("div", { class: "operations-grid" },
+      el("section", { class: "panel", "aria-labelledby": "workers-title" }, el("div", { class: "panel-body" }, el("h2", { id: "workers-title", text: "Worker status" }), el("p", { class: "hint" }, "Reports and heartbeats are separate observations; neither confirms a process is alive."), el("div", { id: "workers-data" }, el("p", { class: "muted", text: "Loading workers…" })))),
+      el("div", { class: "operations-side" },
+        el("section", { class: "panel", "aria-labelledby": "metrics-title" }, el("div", { class: "panel-body" }, el("h2", { id: "metrics-title", text: "Metrics" }), el("div", { id: "metrics-data" }, el("p", { class: "muted", text: "Loading metrics…" })))),
+        app.token ? el("section", { class: "panel", "aria-labelledby": "schedules-title" }, el("div", { class: "panel-head" }, el("h2", { id: "schedules-title", text: "Schedules" })), el("div", { class: "panel-body" }, el("div", { id: "schedules-data" }, el("p", { class: "muted", text: "Loading schedules…" })), form)) : null))];
 }
 
 function renderOperations() {
@@ -1389,6 +1964,8 @@ function renderOperations() {
       return el("li", {}, el("strong", { text: w.worker_id }), ` — ${recent ? "seen recently" : "no recent report"} (last report ${fmtAbs(w.last_seen_at)}); active leases ${w.active_jobs}; last actual heartbeat ${w.last_heartbeat_at ? fmtAbs(w.last_heartbeat_at) : "not observed"}; kinds ${(w.kinds || []).join(", ") || "none reported"}`);
     }))
   ] : [el("p", { class: "muted", text: "No worker reports have been observed." })]));
+  const leases = $('leases-data');
+  if (leases) leases.replaceChildren(...(!app.token ? [el('p', { text: 'Connect with an API token to inspect current leases.' })] : !app.ops.leases ? [el('p', { text: app.ops.error || 'Loading leases…' })] : !app.ops.leases.jobs.length ? [el('p', { text: 'No leased jobs were returned.' })] : [table(['Job', 'Worker', 'Lease expiry', 'Attempts'], app.ops.leases.jobs.map((job) => [el('a', { href: `#/jobs/${job.id}`, text: `Job ${job.id}` }), job.leased_by || 'Not reported', job.lease_expires_at ? fmtAbs(job.lease_expires_at) : 'Unavailable', `${job.attempts} of ${job.max_attempts}`]), 'Current leases, scrolls sideways'), el('p', { class: 'hint', text: `At most 100 returned jobs; ${app.ops.leases.next_before_id ? 'more leases exist. Open Jobs and filter Running to continue.' : 'no next page reported.'}` })]));
   const m = app.ops.metrics;
   $("metrics-data").replaceChildren(...(!app.token ? [el("p", { class: "muted", text: "Connect with an API token to read sampled metrics." })] : !m ? [el("p", { class: "muted", text: app.ops.error || "Loading sampled metrics…" })] : [
     el("p", { class: "hint" }, `15-minute window as of ${fmtAbs(m.as_of)}; sample cap ${m.sample_limit}${m.truncated ? " (truncated)" : ""}. No capacity estimate is implied.`),
@@ -1413,13 +1990,13 @@ function renderOperations() {
 async function refreshOperations() {
   if (!app.token) return;
   const gen = app.authGen;
-  const paths = ["/workers?limit=100", "/operations/metrics", "/schedules?limit=100"];
+  const paths = ["/workers?limit=100", "/operations/metrics", "/schedules?limit=100", ...(app.route.page === 'leases' ? ['/jobs?state=leased&limit=100'] : [])];
   const answers = await Promise.all(paths.map((p) => api(p)));
   if (gen !== app.authGen) return;
   if (answers.some((r) => r.status === 401)) { handleUnauthorized(); return; }
   const bad = answers.find((r) => r.status !== 200);
   if (bad) app.ops.error = `Operations request failed (HTTP ${bad.status}).`;
-  else { app.ops.error = ""; [app.ops.workers, app.ops.metrics, app.ops.schedules] = answers.map((r) => r.body); app.workersFetchedAt = Date.now(); }
+  else { app.ops.error = ""; [app.ops.workers, app.ops.metrics, app.ops.schedules, app.ops.leases] = answers.map((r) => r.body); app.workersFetchedAt = Date.now(); }
   if (app.route.name === "operations") renderOperations();
 }
 
@@ -1553,11 +2130,16 @@ function noteReadable() {
   if (app.conn !== next) {
     const wasBlocked = app.conn === "needs-token" || app.conn === "offline";
     setConn(next);
-    if (wasBlocked || app.route.name === "connection") renderView(false);
+    if (app.route.name === "connection" && !app.token && $("token-form")) {
+      // Anonymous probes must not replace a token the user is entering.
+      $("conn-detail").textContent = "Reading without a token (the server runs with LEASEQ_PUBLIC_READ=1). Submit, requeue and cancel still need the token.";
+    } else if (wasBlocked || app.route.name === "connection") renderView(false);
   }
 }
 
 async function refresh() {
+  if (app.authPending || app.mode === "simulator" || app.apiAvailability === "unknown" || !app.apiOrigin) return;
+  if (["landing","signup","login"].includes(app.route.name) || app.demo) return;
   if (app.inflight) return;
   app.inflight = true;
   const gen = app.authGen;
@@ -1567,6 +2149,7 @@ async function refresh() {
     if (r.name === "jobs") await refreshJobs();
     else if (r.name === "job") await refreshJob(r.id);
     else if (r.name === "operations") await refreshOperations();
+    else if (r.name === 'system') await refreshSystem();
     else if (r.name === "submit") { await refreshWorkerObservations(); await probe(); }
     else await probe();
   } catch (e) {
@@ -1593,6 +2176,7 @@ function tick() {
 // No polling at all while the tab is hidden; one refresh as soon as it is
 // visible again, then every REFRESH_MS as before.
 function startPolling() {
+  if (["landing","signup","login"].includes(app.route.name) || app.demo || app.mode === "simulator" || !app.apiOrigin) return;
   if (app.timer === null) app.timer = window.setInterval(tick, REFRESH_MS);
 }
 function stopPolling() {
@@ -1608,7 +2192,12 @@ function onVisibilityChange() {
 function togglePause() {
   app.paused = !app.paused;
   // The label says what the button will do; no aria-pressed as well (one state mechanism).
-  $("pause").textContent = app.paused ? "Resume updates" : "Pause updates";
+  if ($("pause")) {
+    $("pause").textContent = app.paused ? "Resume updates" : "Pause updates";
+  }
+  if ($("detail-pause")) {
+    $("detail-pause").textContent = app.paused ? "Resume updates" : "Pause updates";
+  }
   announce(app.paused ? "Automatic updates paused." : "Automatic updates resumed.");
   if (!app.paused) refresh();
 }
@@ -1619,15 +2208,17 @@ function renderThemeButtons() {
   const dark = document.documentElement.getAttribute("data-theme") === "dark";
   for (const b of document.querySelectorAll("[data-theme-toggle]")) {
     b.textContent = dark ? "Use light theme" : "Use dark theme";
+    b.setAttribute("aria-pressed", dark ? "true" : "false");
   }
 }
 function toggleTheme() {
   const dark = document.documentElement.getAttribute("data-theme") !== "dark";
   document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
   try {
-    if (dark) window.localStorage.setItem("leaseq-theme", "dark");
-    else window.localStorage.removeItem("leaseq-theme");
+    if (dark) window.localStorage.setItem("leaseq:theme:v1", "dark");
+    else window.localStorage.removeItem("leaseq:theme:v1");
   } catch (e) { /* storage unavailable: the choice lasts for this page only */ }
+  if (app.profile) { try { const saved=LeaseQProfiles.load(app.profile.id); LeaseQProfiles.save(app.profile.id,{...saved,theme:dark?"dark":"light"}); } catch(e) { showBanner("Theme changed, but this browser could not save the local profile preference.",false); } }
   renderThemeButtons();
   announce(dark ? "Dark theme on." : "Light theme on.");
 }
@@ -1660,26 +2251,60 @@ function initMenu() {
 /* ---------- start ---------- */
 
 async function loadVersion() {
+  if (!app.apiOrigin) {
+    app.apiAvailability = "unavailable"; app.mode = app.modeUserChoice ? "live" : "simulator";
+    stopPolling();
+    setConn("offline"); syncModeChrome();
+    if (app.route.name !== "landing" && app.route.name !== "signup" && app.route.name !== "login") renderView(false);
+    return;
+  }
   try {
-    const r = await fetch("/healthz", { credentials: "omit", cache: "no-store" });
-    const b = await r.json();
-    if (b && b.version) {
-      app.version = String(b.version);
-      $("version").textContent = `leaseq ${app.version}`;
-      if ($("conn-version")) $("conn-version").textContent = app.version;
+    const response = await api("/healthz", { timeoutMs: 2500 });
+    if (response.status === 200 && response.body?.ok) {
+      app.apiAvailability = "available";
+      if (response.body.version) { app.version = String(response.body.version); $("version").textContent = `leaseq ${app.version}`; if ($("conn-version")) $("conn-version").textContent = app.version; }
+      syncModeChrome();
+      if (app.mode === "live" && !["landing","signup","login"].includes(app.route.name)) pollNow();
+      return;
     }
-  } catch (e) { /* shown as "unknown"; the poll reports the outage */ }
+    if (response.status === 401) {
+      app.apiAvailability = "auth"; app.mode = "live"; setConn("needs-token");
+      showBanner("The Live API answered but requires authorization. Browser Simulator is available from the mode control; no simulated result will replace this response.", true);
+      syncModeChrome(); if (app.route.name !== "connection") renderView(false); return;
+    }
+    app.apiAvailability = response.status === 403 ? "configuration-error" : "unavailable";
+    app.mode = app.modeUserChoice ? "live" : "simulator"; setConn("offline");
+    stopPolling();
+    showBanner(response.status === 403 ? "The API denied this origin. Check server authorization and CORS settings; no local result replaces a Live API response." : `The configured API returned HTTP ${response.status}. Browser Simulator is available, but it does not represent a live queue.`, true);
+    syncModeChrome(); if (!app.modeUserChoice && app.route.name !== "landing") renderView(false);
+  } catch {
+    app.apiAvailability = "unavailable"; app.mode = app.modeUserChoice ? "live" : "simulator";
+    stopPolling();
+    setConn("offline"); showBanner("No Live API answered the bounded health check. Browser Simulator uses only this tab and does not connect to PostgreSQL.", true);
+    syncModeChrome(); if (!app.modeUserChoice && !["landing","signup","login"].includes(app.route.name)) renderView(false);
+  }
 }
 
 function init() {
   migrateOldLink();
   initMenu();
   renderThemeButtons();
+  document.querySelector(".skip").addEventListener("click", (event) => {
+    event.preventDefault();
+    $("main").focus({ preventScroll: false });
+  });
   for (const b of document.querySelectorAll("[data-theme-toggle]")) b.addEventListener("click", toggleTheme);
+  $("mode-toggle").addEventListener("click",()=>changeMode(app.mode==="simulator"?"live":"simulator"));
   $("forget-token").addEventListener("click", forgetToken);
-  try { app.token = sessionStorage.getItem("leaseq-api-token") || null; app.keepToken = Boolean(app.token); }
-  catch { app.token = null; app.storageNotice = "This browser blocks session storage; tokens remain in memory only."; }
+  document.addEventListener("click", (event) => {
+    const link = event.target.closest?.('a[data-product]');
+    if (link && productLocation() && event.button === 0 && !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey) { event.preventDefault(); history.pushState(null, '', link.dataset.product); onLocationChange(); return; }
+    if (event.target && event.target.id === "refresh-jobs") pollNow();
+  });
+  try { sessionStorage.removeItem("leaseq-api-token"); } catch (e) { /* storage may be blocked */ }
+  app.token = null;
   setConn(app.token ? "token" : "unknown");
+  window.addEventListener("storage", (e)=>{if(e.key!=="leaseq:profile-active")return;const current=app.profile?.id||null;if(e.newValue===current)return;app.profileAuthGeneration+=1;if(app.profile){clearSyncSession();cancelProfileSave();app.profile=null;app.demo=false;app.token=null;clearSensitive();stopPolling();window.location.hash="#/";}});
   window.addEventListener("hashchange", onLocationChange);
   window.addEventListener("popstate", onLocationChange);
   document.addEventListener("visibilitychange", onVisibilityChange);
@@ -1692,3 +2317,45 @@ function init() {
 }
 
 document.addEventListener("DOMContentLoaded", init);
+
+/* Read-only service observations; separate from queue outcomes and the simulator. */
+function viewSystem() {
+  const refresh = el('button', { type: 'button', class: 'btn', text: 'Refresh health' });
+  refresh.addEventListener('click', refreshSystem);
+  return [h1('Health and Metrics'),
+    el('section', { class: 'panel', 'aria-labelledby': 'health-title' },
+      el('div', { class: 'panel-head' }, el('h2', { id: 'health-title', text: 'Service checks' }), refresh),
+      el('div', { class: 'panel-body', id: 'system-health' }, el('p', { role: 'status', text: 'Checking this API…' }))),
+    app.token ? null : el('p', { class: 'hint' }, 'Operational counters and metrics need an API token. ', el('a', { href: '#/connection', text: 'Enter the API token' }))];
+}
+function renderSystem() {
+  const target = $('system-health');
+  if (!target) return;
+  if (app.mode !== 'live' || !app.apiOrigin) { target.replaceChildren(el('p', { text: 'Live API health is unavailable in Browser Simulator. Connect to a Live API in Settings.' })); return; }
+  if (!app.system) { target.replaceChildren(el('p', { role: 'status', text: 'Checking this API…' })); return; }
+  const rows = app.system;
+  const system = rows.find((row) => row.path === '/api/system' && row.status === 200)?.body;
+  const metrics = rows.find((row) => row.path === '/metrics' && row.status === 200)?.body;
+  target.replaceChildren(
+    el('dl', { class: 'service-checks' }, ...rows.filter((row) => row.path !== '/metrics').map((row) => el('div', {}, el('dt', {}, el('code', { text: row.path })), el('dd', { text: row.error || `HTTP ${row.status} · ${row.body?.status || (row.body?.ok ? 'Available' : row.status === 200 ? 'Response received' : 'Unavailable')}` })))),
+    ...(system ? [el('dl', { class: 'system-stats' }, ...[['Uptime', Number.isFinite(system.uptime_seconds) ? `${system.uptime_seconds.toFixed(1)} seconds` : 'Unavailable'], ['HTTP requests', system.http?.requests_total ?? 'Unavailable'], ['HTTP errors', system.http?.errors_total ?? 'Unavailable']].map(([label, value]) => el('div', {}, el('dt', { text: label }), el('dd', { text: String(value) })))), el('p', { class: 'hint', text: system.scope || 'HTTP API process only; worker outcomes are measured separately.' })] : []),
+    ...(metrics ? [el('details', {}, el('summary', { text: 'Prometheus metric samples' }), el('pre', { class: 'metrics-samples', tabindex: '0', role: 'region', 'aria-label': 'Prometheus metric samples', text: metrics }))] : app.token ? [el('p', { text: 'Metrics unavailable. Check the serving process and refresh health.' })] : []));
+}
+async function refreshSystem() {
+  if (app.route.name !== 'system') return;
+  if (app.mode !== 'live' || !app.apiOrigin) { renderSystem(); return; }
+  if (app.systemInFlight) return;
+  app.systemInFlight = true;
+  const gen = app.authGen;
+  try {
+    const paths = ['/livez', '/readyz', ...(app.token ? ['/api/system', '/metrics'] : [])];
+    const rows = await Promise.all(paths.map(async (path) => {
+      try { return { path, ...await api(path, { timeoutMs: 5000, text: path === '/metrics' }) }; }
+      catch (error) { return { path, error: 'Request failed or exceeded five seconds. Refresh health to retry.' }; }
+    }));
+    if (gen !== app.authGen) return;
+    if (rows.some((row) => row.status === 401)) { handleUnauthorized(); return; }
+    app.system = rows;
+    renderSystem();
+  } finally { app.systemInFlight = false; }
+}

@@ -19,16 +19,19 @@ let browser;
   const pageErrors = [], consoleErrors = [];
   page.on("pageerror", (e) => pageErrors.push(e.message));
   page.on("console", (m) => { if (m.type() === "error") consoleErrors.push(m.text()); });
+  const go = async (route) => {
+    await page.evaluate((hash) => { location.hash = hash; }, route);
+    await page.waitForFunction((hash) => location.hash === hash, route);
+  };
 
   await page.goto(`${BASE}/dashboard/#/connection`);
   await page.getByLabel("API token", { exact: true }).fill(TOKEN);
-  await page.getByLabel("Keep token until this tab closes").check();
   await page.getByRole("button", { name: "Use token" }).click();
   await page.locator("#forget-token").waitFor();
-  assert.equal(await page.evaluate(() => sessionStorage.getItem("leaseq-api-token")), TOKEN);
+  assert.equal(await page.evaluate(() => sessionStorage.getItem("leaseq-api-token")), null);
   assert.deepEqual(await page.evaluate(() => ({ local: localStorage.length, cookie: document.cookie })), { local: 0, cookie: "" });
 
-  await page.goto(`${BASE}/dashboard/#/submit`);
+  await go("#/submit");
   const kind = `e2e.operator-ui-${Date.now()}`;
   await page.getByLabel("Job kind", { exact: true }).fill(kind);
   await page.getByLabel("JSON object payload", { exact: true }).fill('{"note":"operator UI contract"}');
@@ -56,14 +59,14 @@ let browser;
   await jobLink.waitFor();
   assert.equal((await jobLink.innerText()).match(/\d+/)[0], id, "ambiguous/repeated submission used a new idempotency key");
 
-  await page.goto(`${BASE}/dashboard/#/jobs/job-${id}`);
+  await go(`#/jobs/job-${id}`);
   await page.getByRole("heading", { name: `Job ${id}`, exact: true }).waitFor();
-  await page.goto(`${BASE}/dashboard/#/jobs/job-nope`);
+  await go("#/jobs/job-nope");
   await page.getByRole("heading", { name: "Invalid job ID" }).waitFor();
-  await page.goto(`${BASE}/dashboard/#/jobs/9223372036854775807`);
+  await go("#/jobs/9223372036854775807");
   await page.getByRole("heading", { name: /No job 9223372036854775807/ }).waitFor();
 
-  await page.goto(`${BASE}/dashboard/#/jobs?kind=${kind}`);
+  await go(`#/jobs?kind=${kind}`);
   await page.getByRole("heading", { name: "Jobs" }).waitFor();
   await page.getByRole("button", { name: "Snapshot and review" }).waitFor();
   await page.locator("#bulk-action").selectOption("cancel");
@@ -73,12 +76,12 @@ let browser;
   const cancelled = await (await fetch(`${BASE}/jobs/${id}`, { headers: auth })).json();
   assert.equal(cancelled.state, "dead");
 
-  await page.goto(`${BASE}/dashboard/#/operations`);
+  await go("#/operations");
   await page.getByRole("heading", { level: 1, name: "Workers" }).waitFor();
   await page.getByRole("heading", { level: 2, name: "Worker status" }).waitFor();
   await page.getByRole("heading", { level: 2, name: "Metrics" }).waitFor();
   await page.getByRole("heading", { level: 2, name: "Schedules" }).waitFor();
-  await page.waitForFunction(() => !document.querySelector("#metrics-data")?.textContent.includes("Loading metrics"));
+  await page.locator("#metrics-data").filter({ hasText: /15-minute window/ }).waitFor();
   const metricText = await page.locator("#metrics-data").innerText();
   assert.match(metricText, /15-minute window/);
   assert.match(metricText, /p50 .* p95/);
@@ -126,8 +129,15 @@ let browser;
     const remaining = (await (await fetch(scheduleUrl, { headers: auth })).json()).schedules;
     assert.equal(remaining.some((s) => scheduleNames.includes(s.name) && s.enabled), false, "synthetic schedules remain enabled");
     await page.reload();
+    await go("#/connection");
+    // Tokens are page-memory-only, so reconnect before checking the reloaded
+    // Operations view. This also fetches the schedule list again.
+    await page.getByLabel("API token", { exact: true }).fill(TOKEN);
+    await page.getByRole("button", { name: "Use token" }).click();
+    await page.getByRole("button", { name: "Forget token", exact: true }).first().waitFor();
+    await go("#/operations");
     await page.getByRole("heading", { level: 2, name: "Schedules" }).waitFor();
-    await page.waitForFunction(() => !document.querySelector("#metrics-data")?.textContent.includes("Loading sampled metrics"));
+    await page.locator("#metrics-data").filter({ hasText: /15-minute window/ }).waitFor();
   }
 
   const axeResults = [];
@@ -156,30 +166,13 @@ let browser;
     await page.screenshot({ path: out, fullPage: true });
   }
 
-  // A server 401 invalidates a remembered token and clears all tab storage.
-  await page.route("**/operations/metrics", (route) => route.fulfill({
-    status: 401, contentType: "application/json", body: JSON.stringify({ detail: "missing token" }),
-  }));
+  // Reload forgets the page-memory token; storage remains empty.
   await page.reload();
   await page.waitForFunction(() => sessionStorage.getItem("leaseq-api-token") === null);
   assert.equal(await page.locator("#forget-token").isVisible(), false);
   assert.deepEqual(pageErrors, []);
   await context.close();
 
-  const blocked = await browser.newContext();
-  await blocked.addInitScript(() => {
-    const { getItem, setItem, removeItem } = Storage.prototype;
-    Storage.prototype.getItem = function (key) { if (key === "leaseq-api-token") throw new Error("blocked"); return getItem.call(this, key); };
-    Storage.prototype.setItem = function (key, value) { if (key === "leaseq-api-token") throw new Error("blocked"); return setItem.call(this, key, value); };
-    Storage.prototype.removeItem = function (key) { if (key === "leaseq-api-token") throw new Error("blocked"); return removeItem.call(this, key); };
-  });
-  const blockedPage = await blocked.newPage();
-  await blockedPage.goto(`${BASE}/dashboard/#/connection`);
-  await blockedPage.getByLabel("API token", { exact: true }).fill(TOKEN);
-  await blockedPage.getByLabel("Keep token until this tab closes").check();
-  await blockedPage.getByRole("button", { name: "Use token" }).click();
-  await blockedPage.getByText(/browser blocked session storage/i).waitFor();
-  await blocked.close();
   await browser.close();
   process.stdout.write(`${JSON.stringify({ ok: true, axe: axeResults, screenshots: [320, 768, 1440].map((w) => path.join(ARTIFACT_DIR, `leaseq-operations-${w}.png`)), job_id: id, live_schedule_evidence: liveScheduleEvidence, page_errors: pageErrors, console_errors: consoleErrors })}\n`);
 })().catch(async (e) => { console.error(e); if (browser) await browser.close(); process.exitCode = 1; });

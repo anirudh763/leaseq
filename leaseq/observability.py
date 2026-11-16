@@ -1,6 +1,8 @@
 """Bounded HTTP telemetry and per-process admission control."""
 
 import json
+import sys
+from datetime import datetime, timezone
 import logging
 import math
 import re
@@ -18,6 +20,10 @@ _JOBS = re.compile(
 _CORRELATION = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 _ROUTES = {
     "/",
+    "/leases",
+    "/dead-letter",
+    "/system",
+    "/api/system",
     "/jobs",
     "/jobs/claim",
     "/demo/jobs",
@@ -35,9 +41,9 @@ _BUCKETS = (0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10)
 
 
 def configure_logging():
-    """Emit JSON to stderr even when the host has not configured a root handler."""
+    """Emit JSON to stdout even when the host has not configured a root handler."""
     if not log.handlers:
-        handler = logging.StreamHandler()
+        handler = logging.StreamHandler(sys.stdout)
         handler.setFormatter(logging.Formatter("%(message)s"))
         log.addHandler(handler)
     log.setLevel(logging.INFO)
@@ -238,6 +244,11 @@ class RequestTelemetry:
                 json.dumps(
                     {
                         "event": "http_request",
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "level": "error" if status >= 500 else "info",
+                        "service": "leaseq",
+                        "trace_id": correlation,
+                        "latency_ms": round(seconds * 1000, 3),
                         "correlation_id": correlation,
                         "method": method,
                         "route": route,

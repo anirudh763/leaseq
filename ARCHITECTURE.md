@@ -29,10 +29,10 @@ Queue effects written through the worker's `finish()` helper and the fenced comp
 
 The authenticated core accepts JSON bodies up to 64 KiB (the operator may lower the cap), with a ten-second total body-read deadline. Job rows are read fresh; `/jobs`, `/stats` and `/metrics` share aggregate state counts cached per API process for up to five seconds. `/stats` publishes snapshot time and maximum age in response headers. Token buckets bound authenticated requests to 60,000/minute/address and public requests to 120/minute/address by default. Operators may configure the budgets. Health probes have a separate bounded 120/minute/address admission map. These are per-process controls, not global tenant or spending quotas.
 
-The dashboard keeps the bearer token in page memory by default. An explicit
-session-storage option retains it until the tab closes; same-origin script can
-read it while stored. Forget and any 401 clear the token and sensitive state.
-The token is not stored in cookies, localStorage or the URL.
+The dashboard keeps the bearer token only in page memory and sends it only in
+Authorization headers. Reloading forgets it. Startup clears any legacy
+sessionStorage token without loading it. Forget and any 401 clear the token and
+sensitive state. The token is not stored in browser storage, cookies or URLs.
 
 Operator endpoints expose bounded observations: up to 100 worker reports,
 including claim-time last-seen, actual valid heartbeat time and current
@@ -86,3 +86,50 @@ The diagram is a deployment concept only. SQS visibility timeout/redelivery does
 Use database time for lease expiry; worker wall clocks are not the lease authority. A single local PostgreSQL data directory on one disk has no synchronous Multi-AZ replica. A backup/restore procedure exists in `docs/backup-restore.md`, but its prior successful verification is historical evidence, not a current restore guarantee. Proposed service recovery targets must be confirmed by repeated restore and failover drills.
 
 For a future persistent single-region deployment, initial planning targets are RPO at most 24 hours with daily backups and RTO at most 60 minutes after restore begins. Neither target has been validated for a deployed service. The disposable lab intentionally retains no run after reset; its data has no recovery guarantee.
+
+
+## Direct operator UI (2026-11-15)
+
+The vanilla HTML/CSS/JS dashboard is reused for the exact local paths `/`, `/leases`, `/dead-letter`
+and `/system`. The backend serves the same shell on those four routes and on `/dashboard/`; it does
+not expose job data through the shell. Other API routes retain their authorization. Source assets
+use `/dashboard/assets/`; JavaScript file/help references resolve from the captured script URL so
+the same code works on the generated static Pages copy. CSP retains `base-uri 'none'`.
+
+```mermaid
+flowchart LR
+  A[Tab A: URL filters + memory-only token] --> UI[Vanilla dashboard]
+  B[Tab B: independent URL and token] --> UI
+  UI -->|authorized job reads and confirmed actions| API[Existing FastAPI API]
+  UI -->|read-only service observations| Health[livez / readyz / api/system / metrics]
+  API --> DB[(PostgreSQL jobs / leases / events)]
+  Worker[Registered workers] --> API
+  UI -. explicitly selected synthetic mode .-> Simulator[Tab-local deterministic model]
+```
+
+`/leases` reads `/workers`, `/operations/metrics`, `/schedules` and a bounded
+`/jobs?state=leased&limit=100` list. Worker reports and heartbeat times are observations, not proof
+that a process is alive. A lease expiry does not prove execution has stopped. The inspector exposes
+queue records and existing job-event details; it does not invent PostgreSQL lock-introspection data.
+The dead-letter route forces the dead-state filter at entry, then reuses the normal detail view and
+server-protected requeue confirmation. Changing the state lane returns to the corresponding general
+queue filter rather than relabeling non-dead jobs as dead letters.
+
+The system route reads `/livez` and `/readyz` plus authenticated `/api/system` and `/metrics`, with
+five-second request deadlines. Health does not stand in for queue outcomes. The `/api/system` scope
+identifies HTTP-process observations and bounded database readiness; worker samples remain in
+`/operations/metrics`. Raw Prometheus text is in a labeled, keyboard-accessible scroll region.
+No historical graph or unmeasured throughput is added. Tokens, job payloads and results are not
+included in this frontend's logs or metric labels.
+
+Route titles, focused headings, navigation state and URL filters follow History API/popstate as well
+as existing hash links. Sensitive job and system state is cleared by the existing auth-generation
+boundary on token removal/rejection; stale responses from the previous generation are discarded.
+Tabs share intended server mutations, while route/filter/token state remains in each page. Existing
+local-profile synchronization behavior remains explicit and separate from API authority.
+
+The generated static build has no API configured. The existing PWA remains scoped to `/dashboard/`
+locally (or its static hosting directory); use its install/start link for prepared offline simulator
+access. The four top-level live paths require the serving process and do not imply offline live
+queue operations. Existing font assets/licenses remain; Plus Jakarta Sans and its SIL OFL are added
+as local digest-pinned shell resources. No AWS service or queue algorithm is added by this UI work.

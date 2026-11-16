@@ -10,7 +10,7 @@
 # them (payloads included) to anyone who can reach the port, add
 # LEASEQ_PUBLIC_READ: "1" to the app service.
 x-leaseq-env: &leaseq-env
-  LEASEQ_DATABASE_URL: postgresql://leaseq:leaseq@postgres:5432/leaseq
+  LEASEQ_DATABASE_URL: postgresql://leaseq_app:${LEASEQ_APP_PASSWORD:?run scripts/up.sh to create a private app-role password}@postgres:5432/leaseq
   LEASEQ_API_TOKEN: ${LEASEQ_API_TOKEN:?set LEASEQ_API_TOKEN to a random value of 16+ characters, for example the output of openssl rand -hex 24}
 
 services:
@@ -28,14 +28,29 @@ services:
       timeout: 3s
       retries: 30
 
+  # This short-lived local migration step provisions the application owner role
+  # and transfers any objects from the original Compose bootstrap role. It does
+  # not drop or recreate the database or its data.
+  db-bootstrap:
+    image: postgres:16
+    command: ["psql", "-X", "--quiet", "--set=ON_ERROR_STOP=1", "--dbname=postgresql://leaseq:leaseq@postgres:5432/leaseq", "--file=/compose_db_bootstrap.sql"]
+    environment:
+      PGOPTIONS: -c leaseq.app_password=${LEASEQ_APP_PASSWORD:?run scripts/up.sh to create a private app-role password}
+    volumes:
+      - ./scripts/compose_db_bootstrap.sql:/compose_db_bootstrap.sql:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
   app:
     build: .
     environment: *leaseq-env
     ports:
       - "127.0.0.1:8000:8000"
     depends_on:
-      postgres:
-        condition: service_healthy
+      db-bootstrap:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=2)"]
       interval: 2s
@@ -46,6 +61,13 @@ services:
     build: .
     command: ["python", "-m", "leaseq.worker", "--api", "http://app:8000", "--worker-id", "compose-worker"]
     environment: *leaseq-env
+    # Consumer dependency readiness; process exit controls liveness. Job progress is tested separately.
+    healthcheck: &consumer-readiness
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://app:8000/readyz', timeout=2)"]
+      interval: 15s
+      timeout: 3s
+      start_period: 10s
+      retries: 3
     depends_on:
       app:
         condition: service_healthy
@@ -57,6 +79,7 @@ services:
     build: .
     command: ["python", "-m", "leaseq.demo", "--api", "http://app:8000", "--trickle-minutes", "10"]
     environment: *leaseq-env
+    healthcheck: *consumer-readiness
     depends_on:
       app:
         condition: service_healthy

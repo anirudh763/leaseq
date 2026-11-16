@@ -51,8 +51,9 @@ async function confirmButtonStyle(page) {
   });
 }
 
+// Only the exact non-secret offline-notice bit is permitted; all other stored state fails.
 async function storage(page) {
-  return page.evaluate(() => ({ local: localStorage.length, session: sessionStorage.length,
+  return page.evaluate(() => ({ local: localStorage.length, session: Object.keys(sessionStorage).filter(key => key !== "leaseq:pwa:v1:ready-notice" || sessionStorage.getItem(key) !== "1").length,
                                 cookie: document.cookie }));
 }
 
@@ -159,17 +160,21 @@ async function enterToken(page, token) {
       assert.equal(await page.getByLabel("Kind").getAttribute("aria-invalid"), "true");
       step("lane and kind filter are kept in the URL; a lane toggles from the keyboard; bad filter text is flagged");
 
-      // One state mechanism only: the label changes, so no aria-pressed as well.
-      const pause = page.getByRole("button", { name: "Pause updates" });
+      // Changing action labels communicate Pause/Resume without toggle-button semantics.
+      const pause = page.getByRole("button", { name: "Pause updates", exact: true });
       assert.equal(await pause.getAttribute("aria-pressed"), null);
       await pause.click();
-      const resume = page.getByRole("button", { name: "Resume updates" });
+      const resume = page.getByRole("button", { name: "Resume updates", exact: true });
       assert.equal(await resume.getAttribute("aria-pressed"), null);
       let pausedPolls = 0;
       page.on("request", (r) => { if (/\/jobs\?/.test(r.url())) pausedPolls += 1; });
       await page.waitForTimeout(2600);
       assert.equal(pausedPolls, 0, `${pausedPolls} list requests while paused`);
-      step("pause stops automatic updates; the button changes its label and has no aria-pressed");
+      const resumedRefresh = page.waitForResponse((r) => /\/jobs\?/.test(r.url()) && r.status() === 200);
+      await resume.click();
+      await resumedRefresh;
+      assert.equal(await page.getByRole("button", { name: "Pause updates", exact: true }).getAttribute("aria-pressed"), null);
+      step("pause stops automatic updates; resume refreshes; action labels have no conflicting toggle state");
       await page.context().close();
     }
 

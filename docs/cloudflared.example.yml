@@ -1,0 +1,8 @@
+# Credential-free template for an operator-managed Cloudflare named tunnel.
+# Replace the placeholders after creating a tunnel and hostname in a domain you control.
+tunnel: YOUR_TUNNEL_UUID
+credentials-file: /etc/cloudflared/YOUR_TUNNEL_UUID.json
+ingress:
+  - hostname: queue.example.com
+    service: http://127.0.0.1:8000
+  - service: http_status:404
