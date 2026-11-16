@@ -154,7 +154,14 @@ def run(api_url: str, worker_id: str, lease_seconds: float, poll_seconds: float,
             except Exception as exc:    # the job failed, not the worker: report it
                 report_failure(api, job, exc)
                 continue
-            finish(conn, job, result, worker_id, unfenced)
+            try:
+                finish(conn, job, result, worker_id, unfenced)
+            except psycopg.OperationalError:
+                if unfenced:
+                    raise
+                conn.close()
+                conn = db.connect()
+                finish(conn, job, result, worker_id, unfenced)
         except httpx.HTTPError:
             time.sleep(poll_seconds)    # API unreachable; whatever we held will expire
         except psycopg.OperationalError:

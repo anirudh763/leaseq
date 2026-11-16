@@ -291,7 +291,7 @@ def test_workstation_exact_viewport_matrix(monkeypatch):
             p.wait()
 
 
-@pytest.mark.parametrize("script", ["operator_upgrade.e2e.js", "operator_review_regressions.e2e.js"])
+@pytest.mark.parametrize("script", ["operator_upgrade.e2e.js", "operator_review_regressions.e2e.js", "update_security.e2e.js"])
 def test_operator_workflows(monkeypatch, script, tmp_path):
     db_url = harness.scratch_database("leaseq_e2e_operator")
     monkeypatch.setenv("LEASEQ_API_TOKEN", TOKEN)

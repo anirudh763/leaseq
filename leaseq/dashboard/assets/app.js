@@ -102,11 +102,12 @@ const app = {
   bulkIds: [],
   paused: false,
   inflight: false,
+  pendingApiRequests: 0,
   timer: null,
   lastJobsHash: "#/jobs",
   version: null,
 };
-window.LeaseQGetUpdateState = () => ({ inFlight: app.inflight, submitInFlight: app.submitInFlight,
+window.LeaseQGetUpdateState = () => ({ inFlight: app.inflight || app.pendingApiRequests > 0 || !!app.authPending, submitInFlight: app.submitInFlight,
   submitIntent: !!app.submitIntent, scheduleInFlight: app.scheduleInFlight,
   profileDraftCanPersist: !!app.profile && app.route.name === "submit" });
 
@@ -212,29 +213,34 @@ async function api(path, options = {}) {
   const headers = { Accept: "application/json", ...(options.headers || {}) };
   if (app.token) headers.Authorization = `Bearer ${app.token}`;
   if (options.body !== undefined) headers["Content-Type"] = "application/json";
-  let res; const controller = new AbortController();
-  const timeout = options.timeoutMs ? window.setTimeout(() => controller.abort(), options.timeoutMs) : null;
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), options.timeoutMs ?? 10000);
+  app.pendingApiRequests += 1;
   try {
-    res = await fetch(new URL(path, app.apiOrigin).href, {
-      method: options.method || "GET",
-      headers,
-      body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
-      credentials: "omit",
-      cache: "no-store",
-      signal: controller.signal,
-    });
-  } catch (e) {
-    const failure = new Error("Cannot reach the API");
-    failure.path = path.split("?")[0];
-    throw failure;
+    let res;
+    try {
+      res = await fetch(new URL(path, app.apiOrigin).href, {
+        method: options.method || "GET",
+        headers,
+        body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
+        credentials: "omit",
+        cache: "no-store",
+        signal: controller.signal,
+      });
+    } catch (e) {
+      const failure = new Error("Cannot reach the API");
+      failure.path = path.split("?")[0];
+      throw failure;
+    }
+    let body = null;
+    if (res.status !== 204) {
+      try { body = options.text ? await res.text() : await res.json(); } catch (e) { body = null; }
+    }
+    return { status: res.status, body };
   } finally {
-    if (timeout !== null) clearTimeout(timeout);
+    clearTimeout(timeout);
+    app.pendingApiRequests -= 1;
   }
-  let body = null;
-  if (res.status !== 204) {
-    try { body = options.text ? await res.text() : await res.json(); } catch (e) { body = null; }
-  }
-  return { status: res.status, body };
 }
 
 function detailText(body) {
@@ -1788,7 +1794,7 @@ function viewConnection() {
     try {
       if(raw){const parsed=new URL(raw);if(parsed.username||parsed.password||parsed.pathname!=="/"||parsed.search||parsed.hash)throw new Error("Enter an origin only: scheme and host, with no path, query, credentials or fragment.");if(parsed.protocol!=="https:"&&!(parsed.protocol==="http:"&&["localhost","127.0.0.1","[::1]"].includes(parsed.hostname)))throw new Error("Use HTTPS for remote APIs; HTTP is allowed only on loopback.");next=parsed.origin;}
       else next=STATIC_API_DISABLED?null:location.origin;
-      if(next!==app.apiOrigin){if(app.token){app.token=null;clearSensitive();setConn("unknown");showBanner("The API target changed; the in-memory bearer token was cleared. Enter a token for the new origin.",false);}try{if(next)localStorage.setItem("leaseq:api-origin:v1",next);else localStorage.removeItem("leaseq:api-origin:v1");}catch{throw new Error("Browser storage is unavailable; the API origin was not changed.");}app.apiOrigin=next;app.apiAvailability=next?"unknown":"unavailable";app.modeUserChoice=true;app.mode=next?"live":"simulator";syncModeChrome();if(next)await loadVersion();else{stopPolling();setConn("offline");renderView(false);}}
+      if(next!==app.apiOrigin){app.authGen+=1;app.authPending=null;if(app.token){app.token=null;clearSensitive();setConn("unknown");showBanner("The API target changed; the in-memory bearer token was cleared. Enter a token for the new origin.",false);}try{if(next)localStorage.setItem("leaseq:api-origin:v1",next);else localStorage.removeItem("leaseq:api-origin:v1");}catch{throw new Error("Browser storage is unavailable; the API origin was not changed.");}app.apiOrigin=next;app.apiAvailability=next?"unknown":"unavailable";app.modeUserChoice=true;app.mode=next?"live":"simulator";syncModeChrome();if(next)await loadVersion();else{stopPolling();setConn("offline");renderView(false);}}
       error.textContent="";
     }catch(e){error.textContent=e.message||"The Live API origin is invalid.";}
   });
@@ -1865,15 +1871,22 @@ async function submitToken(e) {
     input.focus();
   };
   if (value.length < 16) return fail("Tokens are at least 16 characters long.");
+  if (!app.apiOrigin) return fail("Configure a Live API origin before entering a token.");
+  const origin = app.apiOrigin;
   // Invalidate anonymous probes before validating a new token.
   const gen = ++app.authGen;
   app.authPending = gen;
-  const r = await fetch("/auth/check", {
-    headers: { Authorization: `Bearer ${value}`, Accept: "application/json" },
-    credentials: "omit", cache: "no-store", signal: AbortSignal.timeout(5000),
-  }).catch(() => null);
+  app.pendingApiRequests += 1;
+  let r = null;
+  try {
+    r = await fetch(new URL("/auth/check", origin).href, {
+      headers: { Authorization: `Bearer ${value}`, Accept: "application/json" },
+      credentials: "omit", cache: "no-store", signal: AbortSignal.timeout(5000),
+    });
+  } catch { /* The same actionable connection error is shown below. */ }
+  finally { app.pendingApiRequests -= 1; }
   if (app.authPending === gen) app.authPending = null;
-  if (gen !== app.authGen) return;
+  if (gen !== app.authGen || origin !== app.apiOrigin) return;
   if (!r) return fail("Cannot reach the API to check the token.");
   if (r.status === 401) return fail("The server rejected this token.");
   if (r.status !== 200) return fail(`Unexpected answer from the server (HTTP ${r.status}).`);

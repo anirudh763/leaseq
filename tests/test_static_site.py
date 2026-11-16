@@ -68,3 +68,34 @@ assert.equal(vm.runInContext('REQUIRED.every(key => EXPECTED_TYPES.has(extension
 })().catch(error => { console.error(error); process.exitCode = 1; });
 """, str(dashboard)], cwd=ROOT, text=True, capture_output=True, timeout=30)
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_worker_update_requires_every_client_to_reply_safely():
+    result = subprocess.run(["node", "-e", r"""
+const assert = require('node:assert/strict');
+const fs = require('node:fs'), vm = require('node:vm');
+const source = fs.readFileSync(process.argv[1] + '/sw.js', 'utf8');
+(async () => {
+  for (const [name, replies, expected] of [
+    ['all consent', [{safe:true}, {safe:true}], true],
+    ['silent peer', [{safe:true}, null], false],
+    ['dirty peer', [{safe:true}, {safe:false,reason:'Unsaved draft'}], false],
+    ['invalid peer reply', [{safe:true}, {}], false]]) {
+    const handlers = {}; let activated = 0, answer, pending;
+    const context = vm.createContext({ URL, fixtureClients: replies.map(reply => ({reply})),
+      self: {registration:{scope:'http://localhost/dashboard/'},
+        addEventListener: (type, handler) => {handlers[type] = handler;},
+        skipWaiting: async () => {activated++;}} });
+    vm.runInContext(source, context);
+    // Isolate admission logic; the separate browser regression exercises real worker/client transport.
+    vm.runInContext('checkCache=async()=>({ready:true}); inScopeClients=async()=>fixtureClients; askClient=async client=>client.reply;', context);
+    handlers.message({data:{type:'LEASEQ_APPLY_UPDATE'}, ports:[{postMessage:value=>{answer=value;}}],
+      waitUntil:promise=>{pending=promise;}});
+    await pending;
+    assert.equal(answer.updated, expected, name);
+    assert.equal(activated, Number(expected), name + ': activation');
+    if (name === 'dirty peer') assert.equal(answer.reason, 'Unsaved draft');
+  }
+})().catch(error => {console.error(error); process.exitCode=1;});
+""", str(ROOT / "leaseq" / "dashboard")], cwd=ROOT, text=True, capture_output=True, timeout=30)
+    assert result.returncode == 0, result.stdout + result.stderr

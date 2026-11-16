@@ -109,7 +109,7 @@ procedure, not a migration that has been applied to any user volume here.
 |---|---|---|
 | `/livez` | The HTTP process answers | None |
 | `/readyz` | A pooled connection can execute a small query | Yes; returns a generic 503 on failure |
-| `/healthz` | Existing database-backed health and version check | Unchanged |
+| `/healthz` | Compatibility alias for process liveness (`/livez`) | None; use `/readyz` for database readiness |
 
 The probes expose no jobs or credentials. Readiness has a two-second pool wait
 and statement timeout; these do not promise a bound for every network-partition

@@ -1,6 +1,6 @@
 'use strict';
 (() => {
-  const SHELL_BUILD = 'r9';
+  const SHELL_BUILD = 'r10';
   const script = document.currentScript;
   const appRoot = new URL('../', script?.src || location.href);
   const swUrl = new URL('sw.js', appRoot);

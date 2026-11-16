@@ -7,7 +7,7 @@
 const POLICY_VERSION = 'p3';
 // Bump with policy/client changes. Unlike CACHE_NAME, this compact tab signal
 // intentionally avoids a circular dependency on the assets it identifies.
-const CLIENT_RELEASE = 'r9';
+const CLIENT_RELEASE = 'r10';
 const CACHE_PREFIX = 'leaseq-dashboard-shell-';
 const REQUIRED = [
   './', './manifest.webmanifest',
@@ -36,9 +36,9 @@ const SHA256 = Object.freeze({
   './assets/trust.css': '8f6befaaf972d1caea2452351a2593d3c877475b9a8828ea0a57223d8ace6425',
   './assets/theme.js': '7fa908f0b4424acecda8c602ff1afbf09eba1ba410d2a2c78c1a0f74043bcb69',
   './assets/profiles.js': '979b7af49e179d9cf513cf1aeefb0d66cf271d7705f949b54e6b87b6af9c1dff',
-  './assets/platform.js': 'f936d466d675017921fd96599f2bc2b6fc949b6242afe0c660fe03bd5dea580c',
+  './assets/platform.js': '2dcd54a7867d42f1dbee88566aac7d3f127ac7fa996d3a28ba5bbc017834e041',
   './assets/trust.js': 'bd099c20a38bdf4d6657118dd52d1184199d67f1c1aee7d2b228b7e82513b488',
-  './assets/app.js': 'd6ab50a5796e202ca9f950882179dbc836f6b68aef8d939ef95f4c58de7b55bc',
+  './assets/app.js': '9c61a6c7eed55a1e741fd59aeac816adca4d4b88a9fafb39954153782d8290bb',
   './assets/simulator.js': '1e49fbdeac6bec639ff8006c491e51348aa447969938755431c551aeea7576b3',
   './assets/interest.js': '6419e62966b9d7960a335249172a2a39da6d8efd7ca622c43622810d1fb7db8b',
   './assets/sync.js': '9e3aa3a04443ca4768f51283c48aa2f08d97aa0d7ea120e90c78b125a84d2308',
@@ -191,7 +191,7 @@ self.addEventListener('message', (event) => {
       const clients = await inScopeClients();
       const checks = await Promise.all(clients.map((client) => askClient(client, { type: 'LEASEQ_CHECK_UPDATE_SAFE' })));
       const blocked = checks.find((result) => !result?.safe);
-      if (blocked || checks.length !== clients.length) {
+      if (checks.some((result) => !result?.safe) || checks.length !== clients.length) {
         event.ports[0]?.postMessage({ updated: false, reason: blocked?.reason || 'A LeaseQ tab did not confirm it is safe to reload.' });
         return;
       }
