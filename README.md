@@ -740,3 +740,18 @@ SIL Open Font License 1.1; the license text is in
 `leaseq/dashboard/assets/OFL.txt`.
 
 Local verification: [2026-11-15/16 checks and limits](docs/verification/release-2026-11-15.md).
+
+### Isolated local PostgreSQL demonstration
+
+The optional `LEASEQ_DEMO_DATABASE_URL` must name a **different database ending in `_demo`** owned by a dedicated demo role. Leave it unset in ordinary deployments. The local Compose setup provisions it separately; it never seeds the live queue. Run one API process for this local-only demonstration; it is not a public multi-tenant service.
+
+Open `/`, `/leases`, or `/dead-letter` on the loopback host. The API advertises demo availability through `/healthz`. The demo starts with four idempotent sample jobs (queued, recoverable, completed, failed). **Run Interactive Demo** starts a task-owned Python worker. **Complete Active Lease** demonstrates the normal path. **Simulate Worker Crash** sends SIGKILL only to that process, waits for the real six-second PostgreSQL lease to expire, starts a replacement worker, and attempts the stale completion. Ownership history shows the real rejection; token fingerprints identify the old and replacement authority without exposing the tokens. No production timeout or ordinary worker is changed.
+
+**Enqueue Sample Job** creates another recoverable sample (maximum 12 records; history is retained until an explicit reset). **Replay Dead-Letter Job** requeues the failed sample once per reset. **Reset demo** asks for confirmation, stops its owned worker, and recreates only the dedicated demo database’s sample schema with the original four jobs. It deletes demo history; live queue records and audit logs remain untouched. Refresh and other tabs read the same demo backend while navigation remains independent. The local endpoints require a loopback Host and same-origin POST, have a separate action limit, and inherit request-body limits. Browser Simulator remains a distinct synthetic option on static hosting.
+
+Focused verification: `pytest -q tests/test_local_demo.py tests/test_security.py tests/test_api.py` passed 89 tests against PostgreSQL on 2026-11-16. This covers isolated seeding, actual worker kill/recovery, changed fencing-token fingerprints, stale completion rejection, normal completion, replay, host/origin denial, action validation and rate limiting. Browser and container results are recorded in the coordinator's product repair report.
+
+
+### Canonical browser workspaces
+
+The local app exposes `/overview`, `/workbench`, `/reports` and `/settings`; `/` opens Overview. Workbench retains the isolated PostgreSQL demo and authorized queue tools through contextual links. Reports exports actual selected job/event evidence as JSON or Markdown, without storing a run archive. Settings holds the existing API, profile, offline and diagnostics controls. Existing `/leases`, `/dead-letter`, `/system` and dashboard hash links remain supported.

@@ -1,14 +1,19 @@
-/* LeaseQ dashboard shell. Digest-pinned public assets only; API paths stay outside this worker's scope. */
+/* Digest-pinned public shell. Only explicit frontend paths are intercepted; private requests stay network-only. */
 'use strict';
 
 // Increment the policy tag when changing worker behavior. Asset identity is
 // derived from every pinned digest so an omitted manual release bump cannot
 // overwrite a still-active shell cache.
-const POLICY_VERSION = 'p3';
+const POLICY_VERSION = 'p6';
 // Bump with policy/client changes. Unlike CACHE_NAME, this compact tab signal
 // intentionally avoids a circular dependency on the assets it identifies.
-const CLIENT_RELEASE = 'r10';
-const CACHE_PREFIX = 'leaseq-dashboard-shell-';
+const CLIENT_RELEASE = 'r15';
+// Asset-base identity isolates same-origin mounted copies. The new stem also
+// keeps older workers' global-prefix cleanup away from these scoped caches.
+const assetBase = new URL('./', self.location.href);
+// ':' cannot occur literally in encodeURIComponent output, including when a
+// nested deployment starts with '-' or another unescaped path character.
+const CACHE_PREFIX = `leaseq-shell-${encodeURIComponent(assetBase.pathname)}:`;
 const REQUIRED = [
   './', './manifest.webmanifest',
   './pages/privacy.html', './pages/terms.html', './pages/security-offline.html', './pages/cloud-sync.html',
@@ -25,20 +30,20 @@ const REQUIRED = [
 ];
 // Generated from the packaged files during release preparation.
 const SHA256 = Object.freeze({
-  './': '0ebcd42ece963f6d7cc2293830677c11459aaca161655a14ec78fd7d930a758b',
-  './manifest.webmanifest': '237030fc793ba3b663020f629531cecd89d9cffb7389009360e08e71181c5e70',
+  './': '7844c59d8dc596b88f2bfec4d9463b834eb0ac0bb44f1480c53afc92c53d2396',
+  './manifest.webmanifest': '945090bbf5d4e6baec19e4d1b9939adcfce819fc874604eade88db746b7f8bea',
   './pages/privacy.html': 'fcf24b03133cc9c98da6865c6ea94fa8397f29c8b347e328a1f6ed247f9b4e68',
   './pages/terms.html': 'd71e9bff0e8c2b5163f4b8a8a87500b06818894688e8634dbf74c7e1c51ca266',
   './pages/security-offline.html': '78b22dfd6180c08cd51b3ef1933af8c0a48e20ba60c43b648ccb5709a35d8dbb',
   './pages/cloud-sync.html': 'fbb11cd212911f36b7ef5fb71e8a1cf86897d00047d5d24bf91f4e2808a4d36e',
   './assets/ui.css': 'ee952cd91bc2ccdedccb46d5354064bef4971f9bfc143d339233f66c6c53b826',
-  './assets/app.css': 'f5cd0eba1a676054a7139d797467318092d7c45b73387923e180c3968490aa19',
+  './assets/app.css': '8f2e1203d4ed80115aa091248ceba1ed31713fd5352b8b01568c33f5273d051d',
   './assets/trust.css': '8f6befaaf972d1caea2452351a2593d3c877475b9a8828ea0a57223d8ace6425',
   './assets/theme.js': '7fa908f0b4424acecda8c602ff1afbf09eba1ba410d2a2c78c1a0f74043bcb69',
   './assets/profiles.js': '979b7af49e179d9cf513cf1aeefb0d66cf271d7705f949b54e6b87b6af9c1dff',
-  './assets/platform.js': '2dcd54a7867d42f1dbee88566aac7d3f127ac7fa996d3a28ba5bbc017834e041',
+  './assets/platform.js': 'eada16922390ce40c6053565df375d5710bdb120c2785525ddc04fa5351e376d',
   './assets/trust.js': 'bd099c20a38bdf4d6657118dd52d1184199d67f1c1aee7d2b228b7e82513b488',
-  './assets/app.js': 'fc3d79843edf76130326d88c92b41d9c61c8173283bbeffb0f397242dbe1c0ae',
+  './assets/app.js': '85bdb8664cf6984a3bbb1c246e37d661ec753f2125f1b1b99453852f31716840',
   './assets/simulator.js': '1e49fbdeac6bec639ff8006c491e51348aa447969938755431c551aeea7576b3',
   './assets/interest.js': '6419e62966b9d7960a335249172a2a39da6d8efd7ca622c43622810d1fb7db8b',
   './assets/sync.js': '9e3aa3a04443ca4768f51283c48aa2f08d97aa0d7ea120e90c78b125a84d2308',
@@ -64,11 +69,19 @@ const EXPECTED_TYPES = new Map([
   ['.png', 'image/png'], ['.woff2', 'font/woff2'], ['.ttf', 'font/ttf'], ['.txt', 'text/plain'],
 ]);
 const scope = new URL(self.registration.scope);
+const canonicalPaths = new Set(assetBase.pathname === '/dashboard/' && scope.pathname === '/'
+  ? ['/', '/overview', '/workbench', '/reports', '/settings', '/leases', '/dead-letter', '/system'] : []);
 
-function isInsideScope(url) { return url.origin === scope.origin && url.pathname.startsWith(scope.pathname); }
 function keyFor(url) {
-  if (url.pathname === scope.pathname) return './';
-  return `./${url.pathname.slice(scope.pathname.length)}`;
+  if (url.origin !== assetBase.origin || !url.pathname.startsWith(assetBase.pathname)) return null;
+  if (url.pathname === `${assetBase.pathname}index.html`) return './';
+  const key = `./${url.pathname.slice(assetBase.pathname.length)}`;
+  return Object.hasOwn(SHA256, key) ? key : null;
+}
+function isFrontendPath(url) {
+  if (url.origin !== assetBase.origin) return false;
+  const key = keyFor(url);
+  return canonicalPaths.has(url.pathname) || key === './' || (key !== null && key.endsWith('.html'));
 }
 function extension(path) { return path === './' ? '.' : path.slice(path.lastIndexOf('.')).toLowerCase(); }
 async function validShellResponse(response, key) {
@@ -81,7 +94,7 @@ async function validShellResponse(response, key) {
   return actual === SHA256[key];
 }
 async function fetchPinned(key) {
-  const url = new URL(key, scope);
+  const url = new URL(key, assetBase);
   const response = await fetch(url.href, { cache: 'reload', credentials: 'omit' });
   return await validShellResponse(response, key) ? response : null;
 }
@@ -92,7 +105,7 @@ self.addEventListener('install', (event) => {
     for (const key of REQUIRED) {
       const response = await fetchPinned(key);
       if (!response) throw new Error(`Required offline asset unavailable or does not match ${BUILD}: ${key}`);
-      pinned.push([new URL(key, scope), response]);
+      pinned.push([new URL(key, assetBase), response]);
     }
     const existed = await caches.has(CACHE_NAME);
     try {
@@ -123,7 +136,7 @@ function askClient(client, message, timeoutMs = 2500) {
 }
 async function inScopeClients() {
   const clients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
-  return clients.filter((client) => { try { return isInsideScope(new URL(client.url)); } catch { return false; } });
+  return clients.filter((client) => { try { return isFrontendPath(new URL(client.url)); } catch { return false; } });
 }
 async function pruneOldCachesIfAllClientsCurrent() {
   const clients = await inScopeClients();
@@ -138,7 +151,7 @@ async function checkCache() {
   const cache = await caches.open(CACHE_NAME);
   const missing = [];
   for (const key of REQUIRED) {
-    const cached = await cache.match(new URL(key, scope));
+    const cached = await cache.match(new URL(key, assetBase));
     if (!await validShellResponse(cached, key)) missing.push(key);
   }
   return { ready: missing.length === 0, missing };
@@ -147,11 +160,11 @@ async function repairCache() {
   const cache = await caches.open(CACHE_NAME);
   const missing = [];
   for (const key of REQUIRED) {
-    const cached = await cache.match(new URL(key, scope));
+    const cached = await cache.match(new URL(key, assetBase));
     if (await validShellResponse(cached, key)) continue;
     const response = await fetchPinned(key);
     if (!response) { missing.push(key); continue; }
-    try { await cache.put(new URL(key, scope), response); } catch { missing.push(key); }
+    try { await cache.put(new URL(key, assetBase), response); } catch { missing.push(key); }
   }
   return { ready: missing.length === 0, missing };
 }
@@ -204,20 +217,26 @@ self.addEventListener('message', (event) => {
 self.addEventListener('fetch', (event) => {
   const request = event.request;
   const url = new URL(request.url);
-  if (request.method !== 'GET' || request.headers.has('authorization') || !isInsideScope(url)) return;
+  if (request.method !== 'GET' || request.headers.has('authorization')) return;
   const isNavigation = request.mode === 'navigate';
-  const isShellAsset = url.pathname.startsWith(new URL('assets/', scope).pathname) || url.pathname.startsWith(new URL('pages/', scope).pathname) || url.pathname === new URL('manifest.webmanifest', scope).pathname;
-  if (!isNavigation && !isShellAsset) return;
+  if (isNavigation && url.origin === assetBase.origin && url.pathname === `${assetBase.pathname}index.html`) {
+    // Canonicalize the real document alias online and offline. The native
+    // navigation redirect preserves an original fragment when Location omits it.
+    const destination = new URL(assetBase.href);
+    destination.search = url.search;
+    event.respondWith(Promise.resolve(Response.redirect(destination.href, 307)));
+    return;
+  }
+  const key = isNavigation && isFrontendPath(url) ? (keyFor(url) || './') : keyFor(url);
+  if (!key || (isNavigation && !isFrontendPath(url))) return;
   event.respondWith((async () => {
-    const key = isNavigation && url.pathname === scope.pathname ? './' : keyFor(url);
-    if (!Object.hasOwn(SHA256, key)) return new Response('This LeaseQ page is not part of the offline shell. Reconnect and reload.', { status: 503, headers: { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' } });
     const cache = await caches.open(CACHE_NAME);
-    const pinned = await cache.match(new URL(key, scope));
+    const pinned = await cache.match(new URL(key, assetBase));
     if (await validShellResponse(pinned, key)) return pinned;
     try {
       const response = await fetchPinned(key);
       if (!response) throw new Error('The network asset does not match the active shell.');
-      await cache.put(new URL(key, scope), response.clone());
+      await cache.put(new URL(key, assetBase), response.clone());
       return response;
     } catch {
       return new Response('This LeaseQ resource is missing or does not match the prepared offline version. Reconnect and reload to repair the shell.', { status: 503, headers: { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' } });

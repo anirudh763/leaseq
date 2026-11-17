@@ -11,7 +11,7 @@ vm.createContext(context);
 vm.runInContext(fs.readFileSync(path.join(__dirname, '../../leaseq/dashboard/assets/app.js'), 'utf8'), context);
 
 test('direct queue routes preserve isolated URL filters and legacy hash interpretation', () => {
-  for (const [pathname, name, page] of [['/', 'jobs', 'overview'], ['/leases', 'operations', 'leases'], ['/dead-letter', 'jobs', 'dead-letter'], ['/system', 'system', 'system']]) {
+  for (const [pathname, name, page] of [['/', 'overview', 'overview'], ['/overview', 'overview', 'overview'], ['/workbench', 'jobs', 'workbench'], ['/reports', 'reports', 'reports'], ['/settings', 'connection', 'settings'], ['/leases', 'operations', 'leases'], ['/dead-letter', 'jobs', 'dead-letter'], ['/system', 'system', 'system']]) {
     const route = context.parseLocation({ pathname, search: '?kind=email.send&worker=a', hash: '' });
     assert.equal(route.name, name);
     assert.equal(route.page, page);

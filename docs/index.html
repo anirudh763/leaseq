@@ -54,52 +54,39 @@
 </div>
 
 <div class="shell">
-  <section class="rail" aria-label="LeaseQ commands">
+  <aside class="rail" id="rail" aria-label="LeaseQ commands">
     <div class="dispatch-brand">
-      <p class="wordmark"><a href="#/jobs">LeaseQ</a></p>
+      <p class="wordmark"><a href="/overview" data-canonical="overview">LeaseQ</a></p>
     </div>
     <nav aria-label="Main" class="nav" data-nav>
-      <p class="nav-group" id="rail-work">Queue</p>
-      <ul aria-labelledby="rail-work">
-        <li><a href="#/jobs" data-route="jobs" data-product="/" data-legacy="#/jobs">Jobs</a></li>
-        <li><a href="#/submit" data-route="submit">New job</a></li>
-        <li><a href="#/operations" data-route="operations" data-product="/leases" data-legacy="#/operations">Workers</a></li>
-      </ul>
-      <ul>
-        <li><a href="#/dead-letter" data-route="deadletter" data-product="/dead-letter" data-legacy="#/dead-letter">Dead letter</a></li>
-        <li><a href="#/system" data-route="system" data-product="/system" data-legacy="#/system">System</a></li>
-        <li><a href="#/connection" data-route="connection">Settings</a></li>
+      <ul class="canonical-links">
+        <li><a href="/overview" data-canonical="overview">Overview</a></li>
+        <li><a href="/workbench" data-canonical="workbench">Workbench</a></li>
+        <li><a href="/reports" data-canonical="reports">Reports</a></li>
+        <li><a href="/settings" data-canonical="settings">Settings</a></li>
       </ul>
     </nav>
     <div class="rail-foot">
       <button type="button" class="btn quiet" data-theme-toggle>Use dark theme</button>
     </div>
-  </section>
+  </aside>
 
   <div class="frame">
     <header class="loc">
       <button type="button" class="btn menu-btn" id="menu-button" aria-haspopup="dialog"
               aria-controls="menu-sheet">Menu</button>
       <nav aria-label="Breadcrumb" class="crumbs"><ol id="crumbs"><li><a href="#/jobs">LeaseQ</a></li></ol></nav>
-      <details class="suite-menu"><summary>More tools</summary><nav aria-label="Connected tools">
-        <a href="https://anirudh763.github.io/flightseal/console/">FlightSeal · HashWing</a>
-        <a href="https://anirudh763.github.io/mavframe/">Mavframe</a>
-        <a href="https://anirudh763.github.io/talkback-triage-pilot/">CueReport</a>
-        <a href="https://anirudh763.github.io/a11y-issue-warehouse/">Issue Warehouse</a>
-        <a href="https://anirudh763.github.io/leaseq/" aria-current="page">LeaseQ</a>
-        <a href="https://anirudh763.github.io/portfolio/">Portfolio</a>
-      </nav></details>
+
       <div class="loc-right">
-        <div class="mode-indicator" aria-live="polite"><span id="mode-label">Live API · checking availability</span><button type="button" class="btn" id="mode-toggle">Use Browser Simulator</button></div>
-        <nav class="persistent-actions" aria-label="Account and workspace">
-          <a href="#/login">Log in</a><a href="#/signup">Create account</a><a class="btn primary" href="#/app">Launch Workspace</a>
-        </nav>
-        <button type="button" class="btn" data-pwa-install hidden>Install LeaseQ</button>
-        <button type="button" class="btn" data-pwa-ios-guide hidden>Add to Home Screen</button>
+
+
+
         <span id="conn-status" class="conn">Not connected</span>
         <button type="button" class="btn" id="forget-token" hidden>Forget token</button>
       </div>
     </header>
+
+
 
     <main id="main" tabindex="-1">
       <noscript><p class="noscript">This dashboard needs JavaScript to load and show jobs.
@@ -108,6 +95,25 @@
         and see the <a href="/openapi.json">OpenAPI description (JSON)</a> for every endpoint.</p></noscript>
       <div id="banner" class="banner" role="alert" hidden></div>
       <div id="view"></div>
+      <section id="settings-utilities" aria-label="Workspace settings" hidden>
+        <div class="mode-indicator" aria-live="polite"><span id="mode-label">Live API · checking availability</span><button type="button" class="btn" id="mode-toggle">Use Browser Simulator</button></div>
+        <div id="account-session"></div>
+    <section class="workspace-utilities" aria-label="Workspace utilities">
+        <nav class="persistent-actions" aria-label="Account and workspace">
+          <a href="#/login">Log in</a><a href="#/signup">Create account</a><a class="btn primary" href="#/app">Launch Workspace</a>
+        </nav>
+      <details class="suite-menu"><summary>Other apps</summary><nav aria-label="Connected tools">
+        <a href="https://anirudh763.github.io/flightseal/console/">FlightSeal · HashWing</a>
+        <a href="https://anirudh763.github.io/mavframe/">Mavframe</a>
+        <a href="https://anirudh763.github.io/talkback-triage-pilot/">CueReport</a>
+        <a href="https://anirudh763.github.io/a11y-issue-warehouse/">Issue Warehouse</a>
+        <a href="https://anirudh763.github.io/leaseq/" aria-current="page">LeaseQ</a>
+        <a href="https://anirudh763.github.io/portfolio/">Portfolio</a>
+      </nav></details>
+        <button type="button" class="btn" data-pwa-install hidden>Install LeaseQ</button>
+        <button type="button" class="btn" data-pwa-ios-guide hidden>Add to Home Screen</button>
+    </section>
+      </section>
     </main>
 
     <footer class="app-footer muted">
@@ -128,35 +134,15 @@
     <p class="wordmark">LeaseQ</p>
     <button type="button" class="btn" id="menu-close">Close menu</button>
   </div>
-  <nav aria-label="Menu links" class="nav" data-nav>
-    <p class="nav-group" id="sheet-work">Queue</p>
-    <ul aria-labelledby="sheet-work">
-      <li><a href="#/jobs" data-route="jobs" data-product="/" data-legacy="#/jobs">Jobs</a></li>
-      <li><a href="#/submit" data-route="submit">New job</a></li>
-        <li><a href="#/operations" data-route="operations" data-product="/leases" data-legacy="#/operations">Workers</a></li>
-    </ul>
-    <ul>
-      <li><a href="#/dead-letter" data-route="deadletter" data-product="/dead-letter" data-legacy="#/dead-letter">Dead letter</a></li>
-        <li><a href="#/system" data-route="system" data-product="/system" data-legacy="#/system">System</a></li>
-        <li><a href="#/connection" data-route="connection">Settings</a></li>
-    </ul>
-  </nav>
-  <details class="suite-menu"><summary>More tools</summary><nav aria-label="Menu tools">
-    <a href="https://anirudh763.github.io/flightseal/console/">FlightSeal · HashWing</a>
-    <a href="https://anirudh763.github.io/mavframe/">Mavframe</a>
-    <a href="https://anirudh763.github.io/talkback-triage-pilot/">CueReport</a>
-    <a href="https://anirudh763.github.io/a11y-issue-warehouse/">Issue Warehouse</a>
-    <a href="https://anirudh763.github.io/leaseq/" aria-current="page">LeaseQ</a>
-    <a href="https://anirudh763.github.io/portfolio/">Portfolio</a>
-  </nav></details>
+    <nav aria-label="Menu links" class="nav" data-nav>
+      <ul class="canonical-links">
+        <li><a href="/overview" data-canonical="overview">Overview</a></li>
+        <li><a href="/workbench" data-canonical="workbench">Workbench</a></li>
+        <li><a href="/reports" data-canonical="reports">Reports</a></li>
+        <li><a href="/settings" data-canonical="settings">Settings</a></li>
+      </ul>
+    </nav>
   <button type="button" class="btn quiet" data-theme-toggle>Use dark theme</button>
-  <div class="trust-links" aria-label="App help">
-    <button type="button" class="btn" data-pwa-install hidden>Install LeaseQ</button>
-    <button type="button" class="btn" data-pwa-ios-guide hidden>Add to Home Screen help</button>
-    <button type="button" class="btn" data-feedback-open>Send feedback</button>
-    <a href="./pages/privacy.html">Privacy</a><a href="./pages/terms.html">Terms</a>
-    <a href="./pages/security-offline.html">Security &amp; offline</a>
-  </div>
 </dialog>
 
 <dialog id="confirm-dialog" aria-labelledby="confirm-title" aria-describedby="confirm-text">

@@ -15,7 +15,7 @@ const AXE = process.env.AXE_PATH;
 const EXP = JSON.parse(process.env.EXPECTED);
 const DASH = `${BASE}/dashboard/`;
 const CSP = "default-src 'none'; script-src 'self' 'sha256-9PQI/5CckZC1YQ+tNlURtpHwVLgEKrQYDjOS6PjobY4='; style-src 'self'; font-src 'self'; " +
-  "img-src 'self'; connect-src 'self' https: http://localhost http://127.0.0.1; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
+  "img-src 'self'; manifest-src 'self'; connect-src 'self' https: http://localhost http://127.0.0.1; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 
 const EXPECTED_401 = /^Failed to load resource: the server responded with a status of 401 \(Unauthorized\)$/;
 const results = [];
@@ -136,7 +136,7 @@ function contrastRatio(foreground, background) {
       await menu.click();
       const sheet = page.getByRole("dialog", { name: "Menu" });
       await sheet.waitFor({ state: "visible" });
-      assert.ok(await sheet.getByRole("link", { name: "New job" }).isVisible());
+      assert.ok(await sheet.getByRole("link", { name: "Workbench", exact: true }).isVisible());
       assert.ok(await page.evaluate(() => document.activeElement.closest("dialog") !== null),
                 "focus is not inside the open sheet");
       await page.keyboard.press("Escape");
@@ -150,7 +150,7 @@ function contrastRatio(foreground, background) {
       await sheet.waitFor({ state: "hidden" });
       await page.context().close();
     });
-    await check("desktop shows the compact command header above the workspace", async () => {
+    await check("desktop shows the four-link sidebar beside the workspace", async () => {
       const page = await newPage(browser, { viewport: { width: 1440, height: 900 } });
       await page.goto(`${DASH}#/jobs`);
       await waitH1(page, /^Jobs$/);
@@ -158,13 +158,13 @@ function contrastRatio(foreground, background) {
       assert.ok(await rail.isVisible());
       const header = await page.locator(".rail").boundingBox();
       const workspace = await page.locator("main").boundingBox();
-      assert.equal(Math.round(header.width), 1440);
-      assert.ok(header.height >= 44 && header.height < 120);
-      assert.ok(workspace.y >= header.y + header.height);
+      assert.equal(Math.round(header.width), 220);
+      assert.equal(Math.round(header.height), 900);
+      assert.ok(workspace.x >= header.x + header.width);
       assert.equal(await page.getByRole("banner").count(), 1, "one page banner landmark");
-      assert.equal(await page.getByRole("region", { name: "LeaseQ commands" }).count(), 1);
+      assert.equal(await page.getByRole("complementary", { name: "LeaseQ commands" }).count(), 1);
       assert.equal(await page.getByRole("button", { name: "Menu", exact: true }).isVisible(), false);
-      assert.equal(await rail.getByRole("link", { name: "Jobs" }).getAttribute("aria-current"), "page");
+      assert.equal(await rail.getByRole("link", { name: "Workbench" }).getAttribute("aria-current"), "page");
       await page.context().close();
     });
 
@@ -173,7 +173,7 @@ function contrastRatio(foreground, background) {
       const page = await newPage(browser);
       await connect(page);
       await go(page, "#/jobs", /^Jobs$/);
-      await page.getByRole("navigation", { name: "Main" }).first().getByRole("link", { name: "New job" }).click();
+      await page.getByRole("navigation", { name: "Queue workflow" }).getByRole("link", { name: "New job", exact: true }).click();
       await waitH1(page, /^New job$/);
       const f = await page.evaluate(() => ({ tag: document.activeElement.tagName, text: document.activeElement.textContent.trim() }));
       assert.deepEqual(f, { tag: "H1", text: "New job" });
@@ -210,7 +210,7 @@ function contrastRatio(foreground, background) {
       await connect(page);
       await go(page, "#/submit", /^New job$/);
       await page.getByLabel("Text to count").fill("draft kept across routes");
-      await page.getByRole("navigation", { name: "Main" }).first().getByRole("link", { name: "Jobs" }).click();
+      await page.getByRole("navigation", { name: "Queue workflow" }).getByRole("link", { name: "Jobs", exact: true }).click();
       await waitH1(page, /^Jobs$/);
       await page.goBack();
       await waitH1(page, /^New job$/);
@@ -274,12 +274,12 @@ function contrastRatio(foreground, background) {
       await waitH1(page, /^Jobs$/);
       const bg = () => page.evaluate(() => getComputedStyle(document.body).backgroundColor);
       assert.equal(await bg(), "rgb(250, 248, 242)");
-      await page.getByRole("button", { name: "Use dark theme" }).first().click();
+      await (await themeButton(page, "Use dark theme")).click();
       assert.equal(await bg(), "rgb(23, 33, 27)");
       await page.reload();
       await waitH1(page, /^Jobs$/);
       assert.equal(await bg(), "rgb(23, 33, 27)", "dark choice not remembered");
-      await page.getByRole("button", { name: "Use light theme" }).first().click();
+      await (await themeButton(page, "Use light theme")).click();
       assert.equal(await bg(), "rgb(250, 248, 242)");
       await page.context().close();
     });
@@ -351,7 +351,7 @@ function contrastRatio(foreground, background) {
       await connect(page);
       await go(page, `#/jobs/${EXP.dead}`, new RegExp(`^Job ${EXP.dead}$`));
       await page.locator("#payload").filter({ hasText: EXP.marker }).waitFor();
-      await page.getByRole("navigation", { name: "Main" }).first().getByRole("link", { name: "Jobs" }).click();
+      await page.getByRole("navigation", { name: "Queue workflow" }).getByRole("link", { name: "Jobs", exact: true }).click();
       await waitH1(page, /^Jobs$/);
       await page.getByRole("button", { name: "Forget token" }).first().click();
       await page.goBack();

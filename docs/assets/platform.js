@@ -1,9 +1,11 @@
 'use strict';
 (() => {
-  const SHELL_BUILD = 'r10';
+  const SHELL_BUILD = 'r15';
   const script = document.currentScript;
   const appRoot = new URL('../', script?.src || location.href);
   const swUrl = new URL('sw.js', appRoot);
+  const backendRoot = appRoot.pathname === '/dashboard/' && document.querySelector('meta[name="leaseq-api-base"]')?.content !== 'none';
+  const registrationRoot = backendRoot ? new URL('/', appRoot) : appRoot;
   const standalone = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
   const iosDevice = () => /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
   const iosSafari = () => iosDevice() && /Safari/i.test(navigator.userAgent) && !/(CriOS|FxiOS|EdgiOS|OPiOS|DuckDuckGo)/i.test(navigator.userAgent);
@@ -245,7 +247,7 @@
       catch { result = { safe: false, reason: 'This tab could not verify its unsaved work.' }; }
       event.ports[0]?.postMessage(result);
     });
-    navigator.serviceWorker.register(swUrl.href, { scope: appRoot.pathname, updateViaCache: 'none' })
+    navigator.serviceWorker.register(swUrl.href, { scope: registrationRoot.pathname, updateViaCache: 'none' })
       .then((reg) => { watchRegistration(reg); return navigator.serviceWorker.ready; })
       .then((reg) => { registration = reg || registration; announceClientReady(); return checkOfflineReadiness(); })
       .then((result) => { if (!result.ready && navigator.onLine) setStatus('The shell needs repair. Use Check offline readiness to verify and restore the exact current files.', { check: true }); })

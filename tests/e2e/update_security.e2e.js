@@ -109,6 +109,25 @@ async function setOrigin(page, origin) {
     await page.waitForFunction(() => !!navigator.serviceWorker.controller);
     await pause(page);
     assert.deepEqual(await message(page, "LEASEQ_CHECK_CACHE"), { ready: true, missing: [] });
+    const canonical = await context.newPage();
+    canonical.setDefaultTimeout(8000);
+    await canonical.goto(`${BASE}/settings`, { waitUntil: "networkidle" });
+    await canonical.waitForFunction(() => !!navigator.serviceWorker.controller);
+    check("canonical Settings has a ready root registration", await canonical.evaluate(async () =>
+      new URL((await navigator.serviceWorker.ready).scope).pathname), "/");
+    assert.deepEqual(await message(canonical, "LEASEQ_CHECK_CACHE"), { ready: true, missing: [] });
+    for (const [path, expected] of [["/healthz",200],["/readyz",200],["/jobs",401],
+      ["/auth/missing",401],["/missing-leaseq-pwa-page",401],
+      ["/dashboard/assets/missing-leaseq.js",404],["/dashboard/pages/missing-leaseq.html",404]]) {
+      const responseEvent = canonical.waitForResponse(response => response.url() === `${BASE}${path}` && response.request().method() === "GET");
+      await canonical.evaluate(path => fetch(path).then(response => response.text()), path);
+      const response = await responseEvent;
+      check(`network-only ${path}`, {status:response.status(), worker:response.fromServiceWorker()}, {status:expected,worker:false});
+    }
+    const probe = await context.newPage();
+    const unknown = await probe.goto(`${BASE}/missing-leaseq-pwa-navigation`);
+    check("unknown navigation keeps the server authorization denial", {status:unknown.status(),worker:unknown.fromServiceWorker()}, {status:401,worker:false});
+    await canonical.close();
     const peer = await context.newPage();
     peer.setDefaultTimeout(8000);
     await peer.goto(`${BASE}/dashboard/#/jobs`, { waitUntil: "networkidle" });
@@ -126,7 +145,8 @@ async function setOrigin(page, origin) {
     check("silent-peer denial explains missing consent", /did not confirm/.test(silent.reason || ""), true);
     await peer.evaluate(() => { window.__ignoreUpdateCheck = false; });
     const consenting = await message(page, "LEASEQ_APPLY_UPDATE");
-    check("actual worker accepts when every tab consents", consenting.updated, true);
+    check("actual worker accepts when every frontend tab consents and unknown navigation does not vote", consenting.updated, true);
+    await probe.close();
     await peer.close();
 
     const mutationArrived = deferred();
@@ -206,6 +226,59 @@ async function setOrigin(page, origin) {
     check("only expected fixture writes were intercepted", writes, [{ method: "POST", path: "/jobs/123/cancel" }, { method: "PATCH", path: "/jobs/123" }]);
     check("updates become safe after all requests settle", (await snapshot(page)).safety.safe, true);
     await context.close();
+    // Model a retained narrower registration without unregistering it or forcing activation.
+    const migration = await browser.newContext();
+    await migration.addInitScript(() => {
+      if (location.pathname !== '/dashboard/') return;
+      const register = navigator.serviceWorker.register.bind(navigator.serviceWorker);
+      navigator.serviceWorker.register = (url, options) => register(url, {...options,scope:'/dashboard/'});
+      navigator.serviceWorker.addEventListener('message', event => {
+        if (window.__ignoreUpdateCheck && event.data?.type === 'LEASEQ_CHECK_UPDATE_SAFE') event.stopImmediatePropagation();
+      }, {capture:true});
+    });
+    const legacy = await migration.newPage();
+    await legacy.goto(`${BASE}/dashboard/#/jobs`, {waitUntil:'networkidle'});
+    await legacy.waitForFunction(() => !!navigator.serviceWorker.controller);
+    await pause(legacy);
+    const rootTab = await migration.newPage();
+    await rootTab.goto(`${BASE}/settings`, {waitUntil:'networkidle'});
+    await rootTab.waitForFunction(() => !!navigator.serviceWorker.controller);
+    check('legacy registration remains alongside root registration', await rootTab.evaluate(async () =>
+      (await navigator.serviceWorker.getRegistrations()).map(reg=>new URL(reg.scope).pathname).sort()), ['/', '/dashboard/']);
+    await legacy.evaluate(() => {location.hash='#/connection';});
+    await legacy.locator('#token-input').fill(DUMMY);
+    check('root worker respects edited old-registration tab', (await message(rootTab,'LEASEQ_APPLY_UPDATE')).updated, false);
+    await legacy.locator('#token-input').fill('');
+    await legacy.evaluate(() => {window.__ignoreUpdateCheck=true;});
+    check('root worker respects silent old-registration tab', (await message(rootTab,'LEASEQ_APPLY_UPDATE')).updated, false);
+    await legacy.evaluate(() => {window.__ignoreUpdateCheck=false;});
+    check('root worker admits consenting old-registration tab', (await message(rootTab,'LEASEQ_APPLY_UPDATE')).updated, true);
+    await migration.setOffline(true);
+    await rootTab.reload({waitUntil:'domcontentloaded'});
+    await rootTab.getByRole('heading',{level:1,name:'Settings',exact:true}).waitFor();
+    check('canonical Settings works offline with exact pins', (await message(rootTab,'LEASEQ_CHECK_CACHE')).ready, true);
+    const cacheInspection = await rootTab.evaluate(async () => {
+      const prefix='leaseq-shell-'+encodeURIComponent('/dashboard/')+':';
+      const names=(await caches.keys()).filter(name=>name.startsWith(prefix));
+      const paths=[];
+      for (const name of names) {
+        for (const request of await (await caches.open(name)).keys()) paths.push(new URL(request.url).pathname);
+      }
+      return {names,paths};
+    });
+    const cachePaths=cacheInspection.paths;
+    const packagedAssets=['/dashboard/','/dashboard/manifest.webmanifest','/dashboard/assets/app.js',
+      '/dashboard/assets/platform.js','/dashboard/pages/privacy.html'];
+    const hasPackagedAssets=packagedAssets.every(path=>cachePaths.includes(path));
+    check('own scoped dashboard cache exists', cacheInspection.names.length>0, true);
+    check('own scoped cache has all 30 distinct packaged paths', new Set(cachePaths).size, 30);
+    check('own scoped cache contains expected packaged assets', hasPackagedAssets, true);
+    assert.ok(cacheInspection.names.length>0, 'The scoped dashboard cache must exist before checking private entries.');
+    assert.equal(new Set(cachePaths).size,30, 'The actual packaged cache must be inspected.');
+    assert.ok(hasPackagedAssets, 'Known packaged assets must be present before checking private entries.');
+    check('cache contains only packaged dashboard resources', cachePaths.every(path=>path.startsWith('/dashboard/')), true);
+    check('private API cache entries absent', cachePaths.some(path=>/^\/(jobs|auth|healthz|readyz)(\/|$)/.test(path)), false);
+    await migration.close();
     const report = { ok: results.every((result) => result.ok), results,
       transport: "dummy credentials and all mutation HTTP intercepted before server; response JSON consumption explicitly held; actual packaged service worker installed" };
     if (process.env.ARTIFACT_DIR) {

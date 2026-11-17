@@ -19,7 +19,8 @@ const staticServer = http.createServer((req, res) => {
   if(pathname==='/auth/check'){res.writeHead(200,{'Content-Type':'application/json'}).end(JSON.stringify({ok:true}));return;}
   if(pathname==='/jobs'&&req.method==='POST'){let raw='';req.on('data',chunk=>{raw+=chunk;if(raw.length>65536)req.destroy();});req.on('end',()=>{try{rejectedLiveJobs.push(JSON.parse(raw));}catch{}res.writeHead(503,{'Content-Type':'application/json'}).end(JSON.stringify({detail:'fixture intentionally unavailable'}));});return;}
   if(['/jobs','/workers'].includes(pathname)){res.writeHead(200,{'Content-Type':'application/json'}).end(JSON.stringify({ok:true,counts:{total:0,queued:0,leased:0,done:0,dead:0},items:[],workers:[]}));return;}
-  const file = path.resolve(root, `.${pathname === '/' ? '/index.html' : pathname}`);
+  const staticPath = pathname.startsWith('/leaseq/') ? pathname.slice('/leaseq'.length) : pathname;
+  const file = path.resolve(root, `.${staticPath === '/' ? '/index.html' : staticPath}`);
   if (!file.startsWith(root + path.sep) && file !== path.join(root, 'index.html')) { res.writeHead(403).end(); return; }
   fs.readFile(file, (err, body) => { if (err) { res.writeHead(404).end(); return; }
     if(pathname==='/'&&requestUrl.searchParams.has('interest-test')) body=Buffer.from(body.toString().replace('<meta name="leaseq-waitlist-endpoint" content="">',`<meta name="leaseq-waitlist-endpoint" content="${interestEndpoint}">`));
@@ -147,6 +148,24 @@ const close = (server) => new Promise((resolve) => server.close(resolve));
     await page.getByRole('button',{name:'Run complete recovery sequence'}).click();
     await page.locator('#simulator-state').getByText('5 words, 2 lines',{exact:true}).waitFor();
     report.pwa={manifest:true,workerControlled:true,allPinnedAssetsReady:true,offlineSimulator:'usable from cache'};
+    await context.setOffline(false);
+    const prefixContext=await browser.newContext({serviceWorkers:'allow'});
+    const prefixPage=await prefixContext.newPage();
+    await prefixPage.goto(base+'leaseq/#/app?mode=simulator',{waitUntil:'networkidle'});
+    await prefixPage.waitForFunction(()=>!!navigator.serviceWorker.controller);
+    assert.equal(await prefixPage.evaluate(async()=>new URL((await navigator.serviceWorker.ready).scope).pathname),'/leaseq/');
+    assert.equal(await prefixPage.evaluate(()=>LeaseQPlatform.appRoot.pathname),'/leaseq/');
+    const prefixManifest=await (await prefixPage.request.get(base+'leaseq/manifest.webmanifest')).json();
+    assert.deepEqual([prefixManifest.id,prefixManifest.scope,prefixManifest.start_url],['./','./','./#/']);
+    assert.equal((await prefixPage.evaluate(()=>LeaseQPlatform.checkOfflineReadiness())).ready,true);
+    await prefixContext.setOffline(true);
+    await prefixPage.reload({waitUntil:'domcontentloaded'});
+    await prefixPage.getByRole('heading',{name:'Browser Simulator'}).waitFor();
+    await prefixPage.getByRole('button',{name:'Run complete recovery sequence'}).click();
+    await prefixPage.locator('#simulator-state').getByText('5 words, 2 lines',{exact:true}).waitFor();
+    report.pwa.pagesPrefix='/leaseq/ registration, relative manifest, complete pins and real offline simulator';
+    await prefixContext.close();
+
 
     // Exercise the iOS install guide and share fallbacks with a mobile Safari
     // user-agent fixture. This is browser automation, not native-device proof.
@@ -235,6 +254,7 @@ const close = (server) => new Promise((resolve) => server.close(resolve));
     try {
       await latePage.goto(base+'#/app?mode=live',{waitUntil:'domcontentloaded'});
       await healthRequest;
+      await latePage.evaluate(() => { location.hash = '#/connection'; });
       await latePage.locator('#mode-toggle').click();
       await latePage.getByRole('heading',{name:'Browser Simulator'}).waitFor();
       const lateResponse=latePage.waitForResponse(response=>response.status()===503&&new URL(response.url()).pathname==='/healthz',{timeout:10000});

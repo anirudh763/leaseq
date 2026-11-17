@@ -1,10 +1,10 @@
 {
-  "id": "./",
+  "id": "/dashboard/",
   "name": "LeaseQ queue operations",
   "short_name": "LeaseQ",
   "description": "Inspect an authorized LeaseQ queue and review safe recovery actions.",
-  "start_url": "./#/",
-  "scope": "./",
+  "start_url": "/overview",
+  "scope": "/",
   "display": "standalone",
   "orientation": "any",
   "background_color": "#faf8f2",

@@ -192,14 +192,36 @@ def test_healthz_and_dashboard_files_need_no_token(make_client):
     manifest = client.get("/dashboard/manifest.webmanifest")
     assert manifest.status_code == 200
     assert "application/manifest+json" in manifest.headers["content-type"]
-    assert manifest.json()["scope"] == "./" and manifest.json()["start_url"].startswith("./#/")
+    assert manifest.json()["id"] == "/dashboard/"
+    assert manifest.json()["scope"] == "/" and manifest.json()["start_url"] == "/overview"
     worker = client.get("/dashboard/sw.js")
     assert worker.status_code == 200
     assert "javascript" in worker.headers["content-type"]
-    assert worker.headers["service-worker-allowed"] == "/dashboard/"
-    assert "authorization" in worker.text.lower() and "leaseq-dashboard-shell-" in worker.text
+    assert worker.headers["service-worker-allowed"] == "/"
+    assert "authorization" in worker.text.lower() and "leaseq-shell-" in worker.text
     for page in ("privacy.html", "terms.html", "security-offline.html"):
         assert client.get(f"/dashboard/pages/{page}").status_code == 200
+
+
+def test_dashboard_exact_document_alias_is_public_with_security_headers(make_client):
+    client = make_client(auth=False)
+    canonical = client.get("/dashboard/")
+    redirect = client.get("/dashboard/index.html?entry=alias", follow_redirects=False)
+    assert redirect.status_code == 307
+    assert redirect.headers["location"] == "/dashboard/?entry=alias"
+    alias = client.get("/dashboard/index.html")
+    assert alias.status_code == 200
+    assert alias.content == canonical.content
+    assert alias.headers["content-type"].startswith("text/html")
+    assert alias.headers["content-security-policy"] == canonical.headers["content-security-policy"]
+    assert "default-src 'none'" in alias.headers["content-security-policy"]
+    assert "script-src 'self'" in alias.headers["content-security-policy"]
+    assert "manifest-src 'self'" in alias.headers["content-security-policy"]
+    assert alias.headers["x-content-type-options"] == "nosniff"
+    for path in ("/dashboard/index.html/private", "/dashboard/missing.html", "/auth/missing", "/jobs"):
+        response = client.get(path)
+        assert response.status_code in (401, 404)
+        assert response.content != alias.content
 
 
 # --- request size and input validation ----------------------------------------
@@ -492,6 +514,7 @@ def test_dashboard_has_a_strict_csp_and_loads_nothing_external(make_client):
     client = make_client()
     r = client.get("/dashboard/")
     csp = r.headers["content-security-policy"]
+    assert "manifest-src 'self'" in (part.strip() for part in csp.split(";"))
     assert "script-src 'self'" in csp and "frame-ancestors 'none'" in csp
     assert r.headers["x-content-type-options"] == "nosniff"
     files = [p for p in (Path(api.DASHBOARD)).rglob("*") if p.suffix in (".html", ".js", ".css")]

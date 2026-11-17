@@ -34,7 +34,7 @@ const ASSET_ROOT = new URL(".", document.currentScript?.src || new URL("assets/a
 const SAMPLE_TEXT = new URL("sample/pride-and-prejudice-ch1.txt", ASSET_ROOT).href;
 const DEFAULT_SIM_TEXT = "audit one two\nthree four";
 const SUITE_LINKS = [["FlightSeal · HashWing","https://anirudh763.github.io/flightseal/console/"],["Mavframe","https://anirudh763.github.io/mavframe/"],["CueReport","https://anirudh763.github.io/talkback-triage-pilot/"],["Issue Warehouse","https://anirudh763.github.io/a11y-issue-warehouse/"],["LeaseQ","https://anirudh763.github.io/leaseq/"],["Portfolio","https://anirudh763.github.io/portfolio/"]];
-function suiteNavigation(label="Connected tools") { return el("details",{class:"suite-menu"},el("summary",{},"More tools"),el("nav",{"aria-label":label},...SUITE_LINKS.map(([name,href])=>el("a",{href,...(name==="LeaseQ"?{"aria-current":"page"}:{}),text:name})))); }
+function suiteNavigation(label="Connected tools") { return el("details",{class:"suite-menu"},el("summary",{},"Other apps"),el("nav",{"aria-label":label},...SUITE_LINKS.map(([name,href])=>el("a",{href,...(name==="LeaseQ"?{"aria-current":"page"}:{}),text:name})))); }
 function initialApiOrigin() {
   try {
     const saved = localStorage.getItem("leaseq:api-origin:v1");
@@ -261,6 +261,8 @@ function hasSensitive() {
 function clearSensitive() {
   app.authGen += 1;
   app.list = null;
+  app.reportJobId = null;
+  app.reportSource = null;
   app.system = null;
   app.guestSimulation = null;
   app.details.clear();
@@ -272,6 +274,7 @@ function clearSensitive() {
   app.submitKeyExplicit = false;
   app.scheduleKey = null;
   app.scheduleConfirmed = false;
+  app.scheduleDraft = null;
   app.scheduleInFlight = false;
   app.submitIntent = null;
   app.submitInFlight = false;
@@ -286,17 +289,22 @@ function clearSensitive() {
 
 function setConn(state) {
   app.conn = state;
-  const s = $("conn-status");
-  const text = { unknown: "Checking connection", token: "Connected with token", public: "Reading without token",
-                 "needs-token": "Not connected", offline: "API unreachable" }[state];
-  s.className = `conn ${state === "token" || state === "public" ? "ok" : state === "unknown" ? "" : "warn"}`;
-  s.replaceChildren(icon(state === "token" || state === "public" ? "done" : state === "unknown" ? "queued" : "dead"),
-                    el("span", { text }));
-  $("forget-token").hidden = !app.token;
   syncModeChrome();
 }
 
 function syncModeChrome() {
+  const state = app.conn;
+  const localDemo = app.localDemo && (demoWorkspace() || app.route.name === 'overview' || app.route.name === 'reports' && reportSource() === 'demo');
+  const s = $("conn-status");
+  const text = localDemo ? (app.localDemoError ? "Demo disconnected" : "Demo connected") : { unknown: "Checking connection", token: "Connected with token", public: "Reading without token",
+                 "needs-token": "Not connected", offline: "API unreachable" }[state];
+  const connected = localDemo ? !app.localDemoError : state === "token" || state === "public";
+  const checking = !localDemo && state === "unknown";
+  s.className = `conn ${connected ? "ok" : checking ? "" : "warn"}`;
+  s.replaceChildren(icon(connected ? "done" : checking ? "queued" : "dead"),
+                    el("span", { text }));
+  $("forget-token").hidden = !app.token;
+
   const label = $("mode-label"), toggle = $("mode-toggle");
   if (!label || !toggle) return;
   if (app.mode === "simulator") {
@@ -305,7 +313,7 @@ function syncModeChrome() {
     toggle.setAttribute("aria-label", app.apiOrigin ? "Switch to Live API" : "Configure Live API origin");
   } else {
     const status = app.apiAvailability === "unknown" ? "checking availability" : app.apiAvailability === "available" ? "connected endpoint" : app.apiAvailability === "auth" ? "authorization required" : app.apiAvailability === "unavailable" ? "unavailable" : "configuration needs review";
-    label.textContent = `Live API · ${status}`;
+    label.textContent = localDemo ? "Isolated PostgreSQL demo" : `Live API · ${status}`;
     toggle.textContent = "Switch to Browser Simulator";
     toggle.setAttribute("aria-label", "Switch to Browser Simulator");
   }
@@ -387,12 +395,23 @@ function hideBanner() {
 
 /* ---------- routing ---------- */
 
-const PRODUCT_PATHS = { '/': ['jobs', 'overview'], '/leases': ['operations', 'leases'], '/dead-letter': ['jobs', 'dead-letter'], '/system': ['system', 'system'] };
+const PRODUCT_PATHS = { '/': ['overview', 'overview'], '/overview': ['overview', 'overview'], '/workbench': ['jobs', 'workbench'], '/reports': ['reports', 'reports'], '/settings': ['connection', 'settings'], '/leases': ['operations', 'leases'], '/dead-letter': ['jobs', 'dead-letter'], '/system': ['system', 'system'] };
+const WORKBENCH_TOOLS = new Set(['demo', 'jobs', 'leases', 'new', 'dead-letter']);
+function canonicalRoute(path, params) {
+  const page = path === '/' ? 'overview' : path.slice(1);
+  if (!['overview', 'workbench', 'reports', 'settings'].includes(page)) return null;
+  const tool = page === 'workbench' && WORKBENCH_TOOLS.has(params.get('tool')) ? params.get('tool') : 'demo';
+  const name = page === 'workbench' ? ({ leases: 'operations', new: 'submit' }[tool] || 'jobs') : page === 'settings' ? 'connection' : page;
+  return { name, page: tool === 'dead-letter' && page === 'workbench' ? 'dead-letter' : tool === 'leases' && page === 'workbench' ? 'leases' : page, canonical: page, tool, id: null, params };
+}
+const workspaceHref = (page, params = {}) => `${STATIC_API_DISABLED ? '#/' : '/'}${page}${new URLSearchParams(params).size ? '?' + new URLSearchParams(params) : ''}`;
 function parseLocation({ pathname = '/', search = '', hash = '' }) {
   if (hash || STATIC_API_DISABLED) return parseHash(hash || '#/');
   const product = PRODUCT_PATHS[pathname];
   if (!product) return parseHash(pathname.endsWith('/dashboard/') || STATIC_API_DISABLED ? '#/' : '#/not-found');
   const params = new URLSearchParams(search);
+  const canonical = canonicalRoute(pathname, params);
+  if (canonical) return { ...canonical, direct: true };
   if (pathname === '/dead-letter') params.set('state', 'dead');
   return { name: product[0], page: product[1], id: null, params, direct: true };
 }
@@ -403,6 +422,10 @@ function parseHash(hash) {
   const raw = (hash || "").replace(/^#/, "") || "/jobs";
   const [path, query = ""] = raw.split("?");
   const p = new URLSearchParams(query);
+  if (path !== '/') {
+    const canonical = canonicalRoute(path, p);
+    if (canonical) return canonical;
+  }
   if (path === "/" || path === "") return { name: "landing", id: null, params: p };
   if (path === "/signup") return { name: "signup", id: null, params: p };
   if (path === "/login") return { name: "login", id: null, params: p };
@@ -432,7 +455,8 @@ function jobsHash(f) {
   if (f.worker) p.set("worker", f.worker);
   const qs = p.toString();
   if (productLocation()) {
-    const path = app.route.page === 'dead-letter' && f.state === 'dead' ? '/dead-letter' : '/';
+    const path = app.route.canonical === 'workbench' ? '/workbench' : app.route.page === 'dead-letter' && f.state === 'dead' ? '/dead-letter' : '/workbench';
+    if (path === '/workbench') p.set('tool', app.route.page === 'dead-letter' && f.state === 'dead' ? 'dead-letter' : 'jobs');
     if (path === '/dead-letter') p.delete('state');
     return `${path}${p.size ? `?${p}` : ''}`;
   }
@@ -466,6 +490,7 @@ function onLocationChange() {
   const prev = app.route;
   app.routeKey = key;
   app.route = parseLocation(window.location);
+  if (app.route.canonical === 'workbench') app.lastWorkbenchHref = window.location.pathname + window.location.search + window.location.hash;
   if (app.route.direct) { app.mode = 'live'; app.modeUserChoice = true; }
   app.demo = app.route.name === "jobs" && app.route.params.get("demo") === "1";
   const requestedMode = app.route.params.get("mode");
@@ -478,6 +503,7 @@ function onLocationChange() {
   else if (!document.hidden) startPolling();
   if (app.route.name === "jobs") {
     readFilters(app.route.params);
+    if (app.route.page === 'dead-letter') app.filters.state = 'dead';
     app.lastJobsHash = key;
   }
   const sheet = $("menu-sheet");
@@ -496,6 +522,7 @@ function pushJobsFilters() {
   app.routeKey = hash;
   app.route = parseLocation(window.location);
   if (previousPage !== app.route.page) renderView(true);
+  if (app.route.canonical === 'workbench') app.lastWorkbenchHref = hash;
   app.lastJobsHash = hash;
   app.rows = PAGE;
   renderLanes();
@@ -505,6 +532,8 @@ function pushJobsFilters() {
 const TITLES = { landing: "LeaseQ", signup: "Create local profile", login: "Log in", jobs: "Jobs", submit: "New job", operations: "Workers", connection: "Settings", notfound: "Not found", invalidid: "Invalid job ID" };
 
 function screenTitle() {
+  if (app.route.canonical) return { overview: 'Overview', workbench: 'Workbench', reports: 'Reports', settings: 'Settings' }[app.route.canonical];
+  if (app.localDemo && app.route.direct && !app.token) return {overview:'Queue operations', leases:'Lease ownership', 'dead-letter':'Failed jobs', system:'Health and Metrics'}[app.route.page];
   if (app.route.direct) return { overview: 'Live Queue Overview', leases: 'Active Workers and Lease/Lock Inspector', 'dead-letter': 'Failed Job Replay and Triage', system: 'Health and Metrics' }[app.route.page];
   if (app.route.page === 'dead-letter') return 'Failed Job Replay and Triage';
   if (app.route.name === 'system') return 'Health and Metrics';
@@ -519,17 +548,18 @@ function focusH1() {
 function renderChrome() {
   const title = screenTitle();
   const inPublic = ["landing","signup","login"].includes(app.route.name);
-  const right=document.querySelector(".loc-right"); if (!inPublic && app.route.name !== "notfound" && !document.querySelector(".profile-badge")) { const user=el("span",{class:"profile-badge",text:app.demo?"Synthetic demo":app.profile?`Local profile: ${app.profile.email}`:"Local tools"}); right.prepend(user); if(app.profile||app.demo){const b=el("button",{id:"profile-logout",class:"btn",type:"button",text:"Log out"});b.addEventListener("click",logoutProfile);right.append(b);} } else if(inPublic) { $("profile-logout")?.remove();document.querySelector(".profile-badge")?.remove(); }
+  document.body.classList.toggle('canonical-shell', !inPublic);
+  const right = $("account-session");
+  right.replaceChildren(el("span", { class: "profile-badge", text: app.profile ? `Local profile: ${app.profile.email}` : app.demo ? "Synthetic demo session" : "No local profile" }));
+  if (app.profile || app.demo) { const logout = el("button", { id: "profile-logout", class: "btn", type: "button", text: "Log out" }); logout.addEventListener("click", logoutProfile); right.append(logout); }
+  $("settings-utilities").hidden = app.route.name !== 'connection';
   document.title = `${title} – LeaseQ`;
-  for (const a of document.querySelectorAll("[data-nav] a[data-route]")) {
-    const r = a.dataset.route;
-    if (a.dataset.product) {
-      a.href = productLocation() ? a.dataset.product : a.dataset.legacy;
-      if (a.dataset.product === '/leases') a.textContent = productLocation() ? 'Leases' : 'Workers';
-    }
-    if (app.route.page === 'dead-letter' ? r === 'deadletter' : r === app.route.name) a.setAttribute("aria-current", "page");
-    else if (r === "jobs" && app.route.name === "job") a.setAttribute("aria-current", "true");
-    else a.removeAttribute("aria-current");
+  const active = app.route.canonical || (app.route.name === 'connection' || app.route.name === 'system' ? 'settings' : 'workbench');
+  for (const a of document.querySelectorAll('[data-canonical]')) {
+    const page = a.dataset.canonical;
+    a.href = page === 'workbench' && app.lastWorkbenchHref ? app.lastWorkbenchHref : workspaceHref(page);
+    if (a.closest('[data-nav]') && page === active) a.setAttribute('aria-current', 'page');
+    else a.removeAttribute('aria-current');
   }
   const crumbs = $("crumbs");
   const items = [el("li", {}, el("a", { href: "#/jobs", text: "LeaseQ" }))];
@@ -576,9 +606,17 @@ function renderView(moveFocus) {
   const view = $("view");
   document.querySelector(".shell").classList.toggle("public-page", ["landing","signup","login"].includes(app.route.name));
   const simulatorRoute = app.mode === "simulator" && !["landing","signup","login","connection","system","notfound","invalidid"].includes(app.route.name);
-  const build = { landing: viewLanding, signup: viewAuth, login: viewAuth, jobs: simulatorRoute || app.demo ? viewDemo : viewJobs, job: simulatorRoute ? viewDemo : viewJob, submit: simulatorRoute ? viewDemo : viewSubmit, operations: simulatorRoute ? viewDemo : viewOperations, connection: viewConnection, system: viewSystem,
+  const build = { overview: viewOverview, reports: viewReports, landing: viewLanding, signup: viewAuth, login: viewAuth, jobs: simulatorRoute || app.demo ? viewDemo : viewJobs, job: simulatorRoute ? viewDemo : viewJob, submit: simulatorRoute ? viewDemo : viewSubmit, operations: simulatorRoute ? viewDemo : viewOperations, connection: viewConnection, system: viewSystem,
                   notfound: viewNotFound, invalidid: viewInvalidId }[app.route.name];
-  view.replaceChildren(...build().filter((n) => n !== null && n !== undefined && n !== ""));
+  const demo = demoWorkspace();
+  const content = demo ? app.localDemo ? viewLocalPostgresDemo() : [h1(screenTitle()), el('p', { id: 'demo-unavailable', role: 'status', text: app.apiAvailability === 'unknown' ? 'Checking availability of the isolated PostgreSQL demo…' : 'The isolated PostgreSQL demo is unavailable here. Connect to an authorized API in Settings, or use the browser simulator.' }), el('a', { href: '#/app?mode=simulator', text: 'Open browser simulator' })] : build();
+  view.replaceChildren(...content.filter((n) => n !== null && n !== undefined && n !== ""));
+  if (app.route.canonical) view.querySelector('h1').textContent = screenTitle();
+  if (app.route.canonical === 'workbench' || (!app.route.canonical && ['jobs','job','operations','submit'].includes(app.route.name))) view.querySelector('h1').after(workbenchTabs());
+  if (demo) renderLocalPostgresDemo();
+  if (app.route.name === 'overview') renderOverviewStatus();
+  if (app.route.name === 'reports') renderReports();
+  if (app.route.canonical === 'settings') { view.append(...viewSystem().slice(1)); renderSystem(); }
   app.view = app.route.name;
   if (app.route.name === "jobs" && !app.demo) renderJobsData();
   if (app.route.name === "job") renderJobData();
@@ -590,6 +628,100 @@ function renderView(moveFocus) {
     window.scrollTo(0, 0);
     focusH1();
   }
+}
+
+function demoWorkspace() {
+  return app.route.canonical === 'workbench' ? app.route.tool === 'demo' : !app.route.canonical && app.localDemo && app.route.direct && !app.token && ['jobs', 'operations'].includes(app.route.name);
+}
+
+function workbenchTabs() {
+  const nav = el('nav', { class: 'workbench-tabs', 'aria-label': 'Queue workflow' });
+  const current = app.route.tool || (app.route.name === 'submit' ? 'new' : app.route.name === 'operations' ? 'leases' : app.route.page === 'dead-letter' ? 'dead-letter' : 'jobs');
+  for (const [tool, label] of [['demo', 'Isolated demo'], ['jobs', 'Jobs'], ['leases', 'Leases'], ['new', 'New job'], ['dead-letter', 'Dead letter']]) {
+    const params = { tool };
+    if (['jobs', 'dead-letter'].includes(tool)) for (const [key, value] of Object.entries(app.filters)) if (value && !(tool === 'dead-letter' && key === 'state')) params[key] = value;
+    const legacy = !app.route.canonical && !app.route.direct;
+    const href = legacy ? ({ demo: '#/app?mode=simulator', jobs: '#/jobs', leases: '#/operations', new: '#/submit', 'dead-letter': '#/dead-letter' })[tool] : workspaceHref('workbench', params);
+    nav.append(el('a', { href, 'aria-current': current === tool ? 'page' : null, text: label }));
+  }
+  return nav;
+}
+
+function viewOverview() {
+  return [h1('Overview'), el('p', { class: 'page-purpose', text: 'Inspect jobs, lease ownership and recovery in a PostgreSQL queue.' }),
+    el('section', { class: 'panel', 'aria-labelledby': 'overview-status-title' }, el('div', { class: 'panel-body' },
+      el('h2', { id: 'overview-status-title', text: 'Available on this instance' }), el('div', { id: 'overview-status', role: 'status' }))),
+    el('section', { class: 'panel quick-start', 'aria-labelledby': 'quick-start-title' }, el('div', { class: 'panel-body' },
+      el('h2', { id: 'quick-start-title', text: 'Try lease recovery' }),
+      el('p', { text: 'Run a sample job, crash its worker, then inspect the replacement lease and rejected stale completion.' }),
+      el('a', { class: 'btn primary', href: workspaceHref('workbench'), text: 'Open isolated PostgreSQL demo' }),
+      el('p', { class: 'hint', text: 'The demo uses a separate database and process-owned worker. Your live queue is untouched.' }))),
+    el('nav', { class: 'workspace-next', 'aria-label': 'Next workspace' }, el('a', { href: workspaceHref('reports'), text: 'Review job evidence' }), el('a', { href: workspaceHref('settings'), text: 'Configure an authorized API' }))];
+}
+
+function renderOverviewStatus() {
+  const target = $('overview-status'); if (!target) return;
+  const demo = app.localDemo;
+  target.replaceChildren(el('p', { text: demo ? app.localDemoError ? `Isolated demo unavailable: ${app.localDemoError}` : 'Isolated PostgreSQL demo available.' : app.apiAvailability === 'unknown' ? 'Checking this instance…' : 'Isolated PostgreSQL demo unavailable on this instance.' }),
+    ...(demo ? [el('dl', { class: 'overview-facts' }, ...[['Sample jobs', demo.jobs.length], ['Active leases', demo.jobs.filter(job => job.state === 'leased').length], ['Database observation', fmtAbs(demo.as_of)]].map(([label, value]) => el('div', {}, el('dt', { text: label }), el('dd', { text: String(value) }))))] : []),
+    el('p', { class: 'hint', text: app.token ? 'Authorized API token accepted in this tab.' : 'Live queue data requires an authorized API token in Settings.' }));
+}
+
+function reportSource() { return app.reportSource || (app.token ? 'queue' : 'demo'); }
+function reportJobs() { return reportSource() === 'demo' ? app.localDemo?.jobs || [] : app.list?.jobs || []; }
+function selectedEvidence() {
+  const jobs = reportJobs();
+  const job = jobs.find(job => String(job.id) === app.reportJobId) || jobs[0];
+  if (!job) return null;
+  if (reportSource() === 'demo') return { job, events: job.events, more: job.events.length >= 30, observed: app.localDemo.as_of };
+  const detail = app.details.get(String(job.id));
+  return detail?.job ? detail : null;
+}
+
+function viewReports() {
+  const source = el('select', { id: 'report-source' }, el('option', { value: 'demo', text: 'Isolated PostgreSQL demo' }), el('option', { value: 'queue', text: 'Authorized queue' })); source.value = reportSource();
+  source.addEventListener('change', () => { app.reportSource = source.value; app.reportJobId = null; renderReports(); pollNow(); });
+  const jobs = el('select', { id: 'report-job' });
+  jobs.addEventListener('change', () => { app.reportJobId = jobs.value; renderReports(); pollNow(); });
+  const json = el('button', { class: 'btn primary', type: 'button', id: 'report-json', text: 'Download JSON evidence', disabled: true });
+  const markdown = el('button', { class: 'btn', type: 'button', id: 'report-markdown', text: 'Download Markdown evidence', disabled: true });
+  json.addEventListener('click', () => downloadJobEvidence('json')); markdown.addEventListener('click', () => downloadJobEvidence('md'));
+  return [h1('Reports'), el('p', { class: 'page-purpose', text: 'Read observed jobs and audit events. Downloads contain the selected evidence; no run archive is created.' }),
+    el('section', { class: 'panel' }, el('div', { class: 'panel-body report-controls' }, el('label', { for: 'report-source', text: 'Evidence source' }), source, el('label', { for: 'report-job', text: 'Job' }), jobs, el('div', { class: 'form-actions' }, json, markdown))),
+    el('p', { id: 'report-status', role: 'status' }), el('div', { id: 'report-evidence' })];
+}
+
+function renderReports() {
+  const target = $('report-evidence'); if (!target) return;
+  const jobs = reportJobs(), select = $('report-job');
+  if (!jobs.some(job => String(job.id) === app.reportJobId)) app.reportJobId = jobs[0] ? String(jobs[0].id) : null;
+  reconcileChildren(select, jobs.map(job => el('option', { value: String(job.id), text: `Job ${job.id} · ${job.kind}` })));
+  select.value = app.reportJobId || ''; select.disabled = !jobs.length;
+  const evidence = selectedEvidence();
+  $('report-json').disabled = $('report-markdown').disabled = !evidence;
+  $('report-status').textContent = reportSource() === 'demo' ? app.localDemoError || (app.localDemo ? `Observed ${fmtAbs(app.localDemo.as_of)}. Up to 12 demo jobs and 30 events per job.` : 'No isolated demo evidence is available. Open Workbench to check availability.') : app.token || app.conn === 'public' ? 'Authorized queue observations from this tab; up to 200 jobs and the first 500 events per selected job.' : 'Enter an authorized API token in Settings to read queue evidence.';
+  if (!evidence) { target.replaceChildren(el('p', { text: jobs.length ? 'Reading selected job events…' : 'No job evidence available.' })); return; }
+  const { job, events, more } = evidence;
+  reconcileChildren(target, [el('section', { class: 'panel' }, el('div', { class: 'panel-body' }, el('h2', { text: `Job ${job.id}` }),
+    el('dl', { class: 'fields' }, ...[['Kind', job.kind], ['State', displayState(job)], ['Worker', job.leased_by || 'Unassigned'], ['Attempts', `${job.attempts} of ${job.max_attempts}`]].flatMap(([label, value]) => [el('dt', { text: label }), el('dd', { text: value })])),
+    el('h3', { id: 'timeline-label', text: 'Audit events' }), el('p', { class: 'hint', text: 'Heartbeats are not audit events; inferred lease expiry is labelled Derived.' }), timeline(job, events), more ? el('p', { class: 'hint', text: 'This bounded event history may be incomplete.' }) : null))]);
+}
+
+function downloadJobEvidence(format) {
+  const evidence = selectedEvidence(); if (!evidence) return;
+  const { job, events } = evidence;
+  const fields = ['id', 'kind', 'state', 'attempts', 'max_attempts', 'leased_by', 'lease_expires_at', 'created_at', 'updated_at'];
+  const report = { source: reportSource() === 'demo' ? 'Isolated local PostgreSQL demo' : 'Authorized LeaseQ API', observed_at: evidence.observed, history_may_be_incomplete: !!evidence.more,
+    job: Object.fromEntries(fields.map(key => [key, job[key] ?? null])), events: events.map(event => ({ id: event.id, event: event.event, attempt: event.attempt, worker_id: event.worker_id, created_at: event.created_at, detail: { error: event.detail?.error || null, lease_seconds: event.detail?.lease_seconds || null } })) };
+  const text = format === 'json' ? JSON.stringify(report, null, 2) : [`# LeaseQ job ${job.id} evidence`, '', `Source: ${report.source}`, `Observed: ${report.observed_at}`, `State: ${job.state}`, `History may be incomplete: ${report.history_may_be_incomplete}`, '', '## Audit events', ...report.events.map(event => `- ${event.created_at}: ${event.event}; attempt ${event.attempt}; worker ${event.worker_id || 'queue'}${event.detail.error ? '; ' + event.detail.error : ''}`), '', 'Payloads, results, lease tokens and API credentials are excluded.'].join('\n');
+  const url = URL.createObjectURL(new Blob([text], { type: format === 'json' ? 'application/json' : 'text/markdown;charset=utf-8' }));
+  const link = el('a', { href: url, download: `leaseq-job-${job.id}-evidence.${format}` }); link.click(); setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
+async function refreshReports() {
+  if (reportSource() === 'demo') { if (app.localDemo) await readLocalDemo(); }
+  else if (app.token || app.conn === 'public') { await refreshJobs(); const job = reportJobs().find(job => String(job.id) === app.reportJobId) || reportJobs()[0]; if (job) await refreshJob(String(job.id)); }
+  renderReports();
 }
 
 function viewLanding() {
@@ -1939,6 +2071,10 @@ function viewOperations() {
     error, el("button", { class: "btn primary", id: "schedule-submit", type: "submit",
       text: app.scheduleConfirmed ? "Start new schedule" : "Create schedule", disabled: app.scheduleInFlight }));
   form.addEventListener("submit", createSchedule);
+  for (const input of form.querySelectorAll('input,textarea')) {
+    if (app.scheduleDraft && Object.hasOwn(app.scheduleDraft, input.id)) input.value = app.scheduleDraft[input.id];
+    input.addEventListener('input', () => { (app.scheduleDraft ||= {})[input.id] = input.value; });
+  }
   return [h1(screenTitle()),
     el("p", { class: "field-error", id: "ops-error", role: "status", "aria-live": "polite" }),
     app.token ? null : connectionNotice("Operator observations and schedule changes need an API token."),
@@ -2099,7 +2235,7 @@ async function refreshJob(id) {
   if (gen !== app.authGen) return;
   if (jr.status === 401 || er.status === 401) { handleUnauthorized(); return; }
   if (jr.status === 200 && er.status === 200) {
-    app.details.set(id, { job: jr.body, events: er.body.events, more: er.body.next_after_id !== null });
+    app.details.set(id, { job: jr.body, events: er.body.events, more: er.body.next_after_id !== null, observed: new Date().toISOString() });
   } else if (jr.status === 404) {
     app.details.set(id, { notfound: true });
   } else {
@@ -2138,6 +2274,13 @@ function noteReadable() {
 }
 
 async function refresh() {
+  if (app.route.name === 'overview') { if (app.localDemo) await readLocalDemo(); renderOverviewStatus(); return; }
+  if (app.route.name === 'reports') { await refreshReports(); return; }
+  if (app.localDemo && demoWorkspace()) {
+    await readLocalDemo(); renderLocalPostgresDemo(); return;
+  }
+  // An unauthenticated canonical editor must not discard its draft on repeated 401 probes.
+  if (app.route.canonical === 'workbench' && !app.token && app.conn !== 'public') { setConn('needs-token'); return; }
   if (app.authPending || app.mode === "simulator" || app.apiAvailability === "unknown" || !app.apiOrigin) return;
   if (["landing","signup","login"].includes(app.route.name) || app.demo) return;
   if (app.inflight) return;
@@ -2150,6 +2293,7 @@ async function refresh() {
     else if (r.name === "job") await refreshJob(r.id);
     else if (r.name === "operations") await refreshOperations();
     else if (r.name === 'system') await refreshSystem();
+    else if (r.canonical === 'settings') { await refreshSystem(); if (app.token || app.conn === 'public') await probe(); }
     else if (r.name === "submit") { await refreshWorkerObservations(); await probe(); }
     else await probe();
   } catch (e) {
@@ -2224,6 +2368,14 @@ function toggleTheme() {
 }
 
 function initMenu() {
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") return;
+    const disclosure = event.target.closest?.("details[open]");
+    if (!disclosure) return;
+    event.preventDefault(); event.stopPropagation();
+    disclosure.open = false; disclosure.querySelector("summary")?.focus();
+  });
+
   const sheet = $("menu-sheet");
   const button = $("menu-button");
   button.addEventListener("click", () => {
@@ -2240,6 +2392,13 @@ function initMenu() {
     else if (window.getComputedStyle(button).display !== "none") button.focus();
   });
   $("menu-close").addEventListener("click", () => sheet.close());
+  sheet.addEventListener('keydown', event => {
+    if (event.key !== 'Tab') return;
+    const items = [...sheet.querySelectorAll('a[href], button:not([disabled]), summary')].filter(node => node.getClientRects().length && !node.closest('details:not([open]) > :not(summary)'));
+    const first = items[0], last = items.at(-1);
+    if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+    else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+  });
   for (const a of sheet.querySelectorAll("a")) a.addEventListener("click", () => {
     sheet.close("navigate");
   });
@@ -2261,6 +2420,7 @@ async function loadVersion() {
   try {
     const response = await api("/healthz", { timeoutMs: 2500 });
     if (response.status === 200 && response.body?.ok) {
+      if (response.body.local_demo_available && ['127.0.0.1','localhost','[::1]'].includes(location.hostname)) { await readLocalDemo(); if (app.localDemo && app.route.direct) renderView(false); }
       app.apiAvailability = "available";
       if (response.body.version) { app.version = String(response.body.version); $("version").textContent = `leaseq ${app.version}`; if ($("conn-version")) $("conn-version").textContent = app.version; }
       syncModeChrome();
@@ -2297,8 +2457,13 @@ function init() {
   $("mode-toggle").addEventListener("click",()=>changeMode(app.mode==="simulator"?"live":"simulator"));
   $("forget-token").addEventListener("click", forgetToken);
   document.addEventListener("click", (event) => {
-    const link = event.target.closest?.('a[data-product]');
-    if (link && productLocation() && event.button === 0 && !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey) { event.preventDefault(); history.pushState(null, '', link.dataset.product); onLocationChange(); return; }
+    const link = event.target.closest?.('a[href]');
+    if (link && event.button === 0 && !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey && !link.target && !link.hasAttribute('download')) {
+      const target = new URL(link.href, location.href);
+      if (target.origin === location.origin && !target.hash && Object.hasOwn(PRODUCT_PATHS, target.pathname)) {
+        event.preventDefault(); history.pushState(null, '', target.pathname + target.search); onLocationChange(); return;
+      }
+    }
     if (event.target && event.target.id === "refresh-jobs") pollNow();
   });
   try { sessionStorage.removeItem("leaseq-api-token"); } catch (e) { /* storage may be blocked */ }
@@ -2342,7 +2507,7 @@ function renderSystem() {
     ...(metrics ? [el('details', {}, el('summary', { text: 'Prometheus metric samples' }), el('pre', { class: 'metrics-samples', tabindex: '0', role: 'region', 'aria-label': 'Prometheus metric samples', text: metrics }))] : app.token ? [el('p', { text: 'Metrics unavailable. Check the serving process and refresh health.' })] : []));
 }
 async function refreshSystem() {
-  if (app.route.name !== 'system') return;
+  if (app.route.name !== 'system' && app.route.canonical !== 'settings') return;
   if (app.mode !== 'live' || !app.apiOrigin) { renderSystem(); return; }
   if (app.systemInFlight) return;
   app.systemInFlight = true;
@@ -2358,4 +2523,63 @@ async function refreshSystem() {
     app.system = rows;
     renderSystem();
   } finally { app.systemInFlight = false; }
+}
+
+
+/* The optional local PostgreSQL demo has its own database and process-owned worker. */
+async function readLocalDemo(action) {
+  try {
+    const response = await fetch('/local-demo', {method: action ? 'POST' : 'GET',
+      headers: action ? {'Content-Type':'application/json'} : {},
+      body: action ? JSON.stringify({action}) : undefined, signal: AbortSignal.timeout(8000)});
+    if (!response.ok) { const body = await response.json(); throw new Error(body.detail || `Demo HTTP ${response.status}`); }
+    const data = await response.json();
+    if (data.available) { app.localDemo = data; app.localDemoError = data.error || ''; }
+  } catch (error) { if (app.localDemo) app.localDemoError = error.message; }
+  syncModeChrome();
+}
+function viewLocalPostgresDemo() {
+  const button = (label, action) => {
+    const node = el('button', {type:'button', class:'btn', text:label});
+    node.onclick = async () => {
+      if (app.localDemoBusy) return;
+      if (action === 'reset' && !window.confirm('Delete only the isolated local demo jobs and their history, stop its demo worker, and restore four samples? Your live queue is untouched.')) return;
+      app.localDemoBusy = true;
+      document.querySelectorAll('[data-demo-action]').forEach(n => n.disabled = true);
+      try { await readLocalDemo(action); renderLocalPostgresDemo(); }
+      finally { app.localDemoBusy = false; document.querySelectorAll('[data-demo-action]').forEach(n => n.disabled = false); }
+    };
+    node.dataset.demoAction = action; return node;
+  };
+  return [el('h1', {tabindex:'-1', text:screenTitle()}), el('section', {class:'panel', 'aria-labelledby':'local-demo-title'},
+    el('div', {class:'panel-head'}, el('h2', {id:'local-demo-title', text:'Isolated local PostgreSQL demo'})),
+    el('div', {class:'panel-body'},
+      el('p', {text:'Starts with four sample jobs in a separate database. Your live queue is untouched.'}),
+      el('details', {open:true}, el('summary', {text:'Demo workflow'}), el('ol', {}, el('li', {text:'Run the demo to lease a sample job.'}), el('li', {text:'Complete it normally, or crash its worker and wait for recovery.'}), el('li', {text:'Inspect ownership history; enqueue another sample to repeat.'}))),
+      el('div', {class:'actions'}, button('Run Interactive Demo','start'), button('Enqueue Sample Job','enqueue'), button('Simulate Worker Crash','crash'), button('Complete Active Lease','complete'), button('Replay Dead-Letter Job','replay'), button('Reset demo','reset')),
+      el('p', {id:'local-demo-status', role:'status', 'aria-live':'polite'}),
+      el('div', {id:'local-demo-jobs'}),
+      el('p', {class:'hint', text:'Up to 12 sample jobs. Enqueue another sample to repeat; Reset demo deletes only these sample jobs and their history.'}),
+      el('details', {}, el('summary', {text:'Jobs, workers and recovery'}), el('p', {text:'A job is one task. A worker owns it for a short lease, renewed by heartbeats. A crash kills only this demo worker. PostgreSQL must let the real lease expire before a recovery worker claims it. The old token is then tested and rejected. Failed jobs can be replayed once.'})),
+      el('a', {href:'#/connection', text:'Connect to your Live API'})))];
+}
+function renderLocalPostgresDemo() {
+  const target = $('local-demo-jobs'); if (!target || !app.localDemo) return;
+  const demo = app.localDemo;
+  const status = app.localDemoError || (demo.stale_rejected ? 'Recovered: lease recovery verified; stale completion rejected.' : demo.worker_alive ? 'Demo worker is running and renewing its lease.' : 'Run the demo to acquire a lease. A crashed worker must wait for actual lease expiry.');
+  if ($('local-demo-status').textContent !== status) $('local-demo-status').textContent = status;
+  let jobs = demo.jobs;
+  if (app.route.page === 'dead-letter') jobs = jobs.filter(j => j.state === 'dead');
+  const openHistory = new Set([...target.querySelectorAll('article')].filter(n => n.querySelector('details')?.open).map(n => n.id));
+  reconcileChildren(target, [...jobs.map(job => {
+    const seconds = Math.max(0, Math.ceil((new Date(job.lease_expires_at) - new Date(demo.as_of)) / 1000));
+    return el('article', {class:'panel', id:`demo-job-${job.id}`}, el('h3', {text:`Job ${job.id}: ${job.kind.replace('localdemo.','')}`}),
+      el('p', {text:`${({queued:'Queued', leased:'Running', dead:'Failed', done:'Completed'})[job.state]} · Worker: ${job.leased_by || 'Unassigned'} · Attempt ${job.attempts} of ${job.max_attempts}`}),
+      job.state === 'leased' ? el('p', {text:`Lease remaining at database observation: ${seconds} seconds`}) : null,
+      job.state === 'leased' ? el('progress', {value:Math.min(6, seconds), max:6, 'aria-label':'Remaining lease time'}) : null,
+      el('details', {open:openHistory.has(`demo-job-${job.id}`)}, el('summary', {text:'Ownership and retry history'}),
+        el('p', {text:`Lease epoch (attempt): ${job.attempts}. Opaque fencing tokens remain server-side.`}),
+        demo.token_fingerprints && job.id === demo.token_fingerprints.job_id ? el('dl', {class:'fields'}, el('dt', {text:'Previous token SHA-256'}), el('dd', {text:demo.token_fingerprints.previous}), el('dt', {text:'Replacement token SHA-256'}), el('dd', {text:demo.token_fingerprints.current})) : null,
+        el('ol', {}, ...job.events.map(event => el('li', {text:`${event.event}: ${event.worker_id || 'queue'}${event.detail?.error ? ' — ' + event.detail.error : ''}`})))));
+  }), !jobs.length ? el('p', {text:'No failed sample jobs. Replayed jobs are queued on the overview.'}) : null].filter(Boolean));
 }

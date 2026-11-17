@@ -129,3 +129,17 @@ operators can pause updates while reading.
 - A manual screen-reader pass has not been run; checks are automated (axe-core)
   plus keyboard-only Playwright flows.
 - The timeline cannot show heartbeats, because the queue does not log them.
+
+
+## November 16 navigation review
+
+UI/UX Pro Max matches an automation operations dashboard with Minimalism & Swiss Style: keep the existing warm #faf8f2 canvas, emerald #17613e actions, charcoal #242c27 text, locally bundled Plus Jakarta Sans, tabular job/time values, and 4/8/16/24/32 spacing. Keep actual lease state, expiry and crash recovery primary. Account, cross-app and installation actions have a separate labelled utility strip rather than competing with the connection row. Job submission and Settings remain available with unchanged routes. The existing native mobile dialog still traps focus; Escape within a disclosure closes it first and returns focus to its summary. Global overflow clipping was removed so responsive checks measure the actual layout. Tests cover real queue recovery and five widths including 375 and 1024, in addition to the 320px gate.
+
+
+## Canonical workspaces — November 16
+
+The owner's canonical navigation brief supersedes the horizontal dispatch shell: a dense 220px emerald desktop sidebar contains Overview, Workbench, Reports and Settings. Below 1000px the existing native modal drawer provides these same four links, with expanded state, keyboard containment, Escape and focus return. Warm canvas, emerald actions, local Plus Jakarta Sans and tabular queue values remain.
+
+`/` and `/overview` share observed instance/demo status and a short quick start. `/workbench` uses contextual tabs for the isolated real PostgreSQL demo, authorized jobs, leases, submission and dead letter. `/reports` reads the selected actual demo/API job and bounded audit events; JSON and Markdown evidence omit payloads, results and credentials, and make no persisted-run claim. `/settings` collects API/token configuration, local profiles/backups/sync, browser simulation access, installation and real service diagnostics. Meaningful legacy hash paths and `/leases`, `/dead-letter`, `/system` remain available. Only exact HTML paths are public; API authorization remains unchanged.
+
+Canonical navigation uses browser history within the tab. Workbench draft state stays in page memory, and unauthorized editor tabs do not run repeated 401 probes that would clear unsent drafts. Server-rejected or forgotten tokens retain the existing sensitive-state clearing behavior.

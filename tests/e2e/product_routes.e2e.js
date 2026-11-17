@@ -10,7 +10,7 @@ if (!TOKEN) throw new Error('Set API_TOKEN or provide the task-owned launch envi
 const OUT = path.resolve(__dirname, '../../artifacts/verification/post-restart/product-browser');
 fs.mkdirSync(OUT, { recursive: true });
 const AXE = require.resolve('axe-core/axe.min.js');
-const routes = [['/', 'Live Queue Overview'], ['/leases', 'Active Workers and Lease/Lock Inspector'], ['/dead-letter', 'Failed Job Replay and Triage'], ['/system', 'Health and Metrics']];
+const routes = [['/workbench?tool=jobs', 'Workbench'], ['/leases', 'Active Workers and Lease/Lock Inspector'], ['/dead-letter', 'Failed Job Replay and Triage'], ['/system', 'Health and Metrics']];
 const checks = [], axeReports = [], errors = [], failedAssets = [], consoleErrors = [], expectedConsole = [];
 let controlledReadiness = false;
 function captureConsole(message) {
@@ -67,7 +67,7 @@ async function connect(page) {
     assert.ok((await page.title()).includes(heading));
     assert.equal(await page.locator('.profile-badge').count(),1);
     assert.ok(!(await page.locator('#mode-label').innerText()).includes('authorization required'));
-    if(route==='/') await page.locator('#updated').filter({hasText:'Counts as of'}).waitFor();
+    if(route.startsWith('/workbench')) await page.locator('#updated').filter({hasText:'Counts as of'}).waitFor();
     if(route==='/leases') await page.getByRole('link',{name:`Job ${active.id}`,exact:true}).waitFor();
     if(route==='/dead-letter') await page.getByRole('link',{name:`Job ${dead.id}`,exact:true}).waitFor();
     if(route==='/system') await page.getByText('HTTP requests',{exact:true}).waitFor();
@@ -86,8 +86,8 @@ async function connect(page) {
     pass(`${route} direct/refresh/title/live data/axe/overflow ${width}px`);
    }
   }
-  await localNavigate(page,'/');
-  await page.getByRole('navigation',{name:'Main',exact:true}).getByRole('link',{name:'Leases',exact:true}).click();
+  await localNavigate(page,'/workbench?tool=jobs');
+  await localNavigate(page,'/leases');
   assert.equal(new URL(page.url()).pathname,'/leases');
   await page.goBack(); await page.getByRole('heading',{name:routes[0][1],exact:true}).waitFor();
   await page.goForward(); await page.getByRole('heading',{name:routes[1][1],exact:true}).waitFor();

@@ -7,6 +7,7 @@ it does not publish anything.
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import shutil
 from pathlib import Path
@@ -60,12 +61,19 @@ def main() -> None:
     if replaced != 1:
         raise SystemExit("Expected exactly one LeaseQ API-origin meta setting in static output.")
     index.write_text(html)
+    manifest = OUTPUT / "manifest.webmanifest"
+    metadata = json.loads(manifest.read_text())
+    metadata.update(id="./", scope="./", start_url="./#/")
+    manifest.write_text(json.dumps(metadata, indent=2) + "\n")
     digest = hashlib.sha256(index.read_bytes()).hexdigest()
     worker = OUTPUT / "sw.js"
     source_text = worker.read_text()
-    source_text, changed = re.subn(r"('./':\s*')[a-f0-9]{64}(')", rf"\g<1>{digest}\2", source_text, count=1)
-    if changed != 1:
-        raise SystemExit("Could not update the static root document digest in the service worker.")
+    for key, path in (("./", index), ("./manifest.webmanifest", manifest)):
+        pin = hashlib.sha256(path.read_bytes()).hexdigest()
+        pattern = r"(" + re.escape(json_quote(key)) + r":\s*')[a-f0-9]{64}(')"
+        source_text, changed = re.subn(pattern, lambda match: match[1] + pin + match[2], source_text, count=1)
+        if changed != 1:
+            raise SystemExit(f"Could not update the static {key} digest in the service worker.")
     worker.write_text(source_text)
     print(f"Prepared {index.relative_to(ROOT)} ({digest}); API disabled; nothing published.")
 

@@ -82,7 +82,7 @@ def authenticated(scope, settings):
 
 # Paths that hold no job data and are served without a token. Everything else
 # is denied by default, so a route added later is protected unless listed here.
-PRODUCT_PATHS = frozenset({"/", "/leases", "/dead-letter", "/system"})
+PRODUCT_PATHS = frozenset({"/", "/overview", "/workbench", "/reports", "/settings", "/leases", "/dead-letter", "/system"})
 OPEN_PATHS = PRODUCT_PATHS | { "/healthz", "/livez", "/readyz", "/dashboard", "/docs", "/docs/oauth2-redirect", "/openapi.json"}
 OPEN_PREFIXES = ("/dashboard",)
 # GET endpoints that LEASEQ_PUBLIC_READ=1 opens. /auth/check is not among them.
@@ -97,7 +97,9 @@ def _under(path: str, prefixes: tuple[str, ...]) -> bool:
 
 def access(method: str, path: str, public_read: bool) -> str:
     """-> 'open' or 'token' for a request."""
-    if path in OPEN_PATHS or _under(path, OPEN_PREFIXES):
+    if path in PRODUCT_PATHS:
+        return "open" if method in ("GET", "HEAD") else "token"
+    if path == "/local-demo" or path in OPEN_PATHS or _under(path, OPEN_PREFIXES):
         return "open"
     if public_read and method in ("GET", "HEAD") and _under(path, PUBLIC_READ_PREFIXES):
         return "open"
@@ -187,7 +189,7 @@ async def _reply(send, status: int, body: bytes, extra_headers=()) -> None:
 # be framed. The API docs page (/docs) loads Swagger UI from a CDN, so the
 # policy is applied to the dashboard paths only.
 DASHBOARD_CSP = ("default-src 'none'; script-src 'self' 'sha256-9PQI/5CckZC1YQ+tNlURtpHwVLgEKrQYDjOS6PjobY4='; style-src 'self'; font-src 'self'; "
-                 "img-src 'self'; connect-src 'self' https: http://localhost http://127.0.0.1; base-uri 'none'; form-action 'none'; "
+                 "img-src 'self'; manifest-src 'self'; connect-src 'self' https: http://localhost http://127.0.0.1; base-uri 'none'; form-action 'none'; "
                  "frame-ancestors 'none'")
 
 

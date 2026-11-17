@@ -25,7 +25,8 @@ from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Red
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, StrictBool, StrictInt, field_validator, model_validator
 
-from . import __version__, db, demo, queue, security, observability, operations, scheduling
+from . import __version__, db, demo, queue, security, observability, operations, scheduling, local_demo
+import os
 
 log = logging.getLogger("leaseq.api")
 
@@ -63,8 +64,12 @@ async def lifespan(app: FastAPI):
             except Exception:
                 log.warning("schedule dispatch failed")
             await asyncio.sleep(1)
+    demo_url = os.environ.get("LEASEQ_DEMO_DATABASE_URL")
+    app.state.local_demo = await asyncio.to_thread(local_demo.Demo, demo_url) if demo_url else None
     scheduler_task = asyncio.create_task(scheduler_loop())
     yield
+    if app.state.local_demo:
+        await asyncio.to_thread(app.state.local_demo.close)
     scheduler_task.cancel()
     try:
         await scheduler_task
@@ -79,6 +84,7 @@ def _dispatch_schedules(pool):
 
 
 app = FastAPI(title="leaseq", version=__version__, lifespan=lifespan)
+app.include_router(local_demo.router)
 # The last middleware added runs first: telemetry and headers wrap admission,
 # auth and the body cap. Unauthorized bodies are never parsed.
 app.add_middleware(security.BodyLimit)
@@ -370,7 +376,10 @@ def readyz(request: Request):
 @app.get("/healthz")
 def healthz(request: Request):
     """Process liveness; dependency readiness belongs to /readyz."""
-    return livez()
+    body = livez()
+    if getattr(request.app.state, "local_demo", None):
+        body["local_demo_available"] = True
+    return body
 
 
 @app.get("/stats")
@@ -499,6 +508,10 @@ def get_job(job_id: int, request: Request):
 # --- dashboard (static files; no job data, so security.OPEN_PATHS lists them) --
 
 @app.get("/", include_in_schema=False)
+@app.get("/overview", include_in_schema=False)
+@app.get("/workbench", include_in_schema=False)
+@app.get("/reports", include_in_schema=False)
+@app.get("/settings", include_in_schema=False)
 @app.get("/leases", include_in_schema=False)
 @app.get("/dead-letter", include_in_schema=False)
 @app.get("/system", include_in_schema=False)
@@ -508,8 +521,10 @@ def root():
 
 
 @app.get("/dashboard", include_in_schema=False)
-def dashboard_redirect():
-    return RedirectResponse("/dashboard/")
+@app.get("/dashboard/index.html", include_in_schema=False)
+def dashboard_redirect(request: Request):
+    query = f"?{request.url.query}" if request.url.query else ""
+    return RedirectResponse(f"/dashboard/{query}")
 
 
 @app.get("/dashboard/", include_in_schema=False)
@@ -526,7 +541,7 @@ def dashboard_manifest():
 @app.get("/dashboard/sw.js", include_in_schema=False)
 def dashboard_service_worker():
     return FileResponse(DASHBOARD / "sw.js", media_type="application/javascript",
-                        headers={"Cache-Control": "no-cache", "Service-Worker-Allowed": "/dashboard/"})
+                        headers={"Cache-Control": "no-cache", "Service-Worker-Allowed": "/"})
 
 
 app.mount("/dashboard/pages", StaticFiles(directory=DASHBOARD / "pages"), name="dashboard-pages")

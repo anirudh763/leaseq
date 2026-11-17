@@ -63,6 +63,10 @@ async function newPage(browser, opts = {}) {
   const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 }, bypassCSP: true, ...opts });
   const page = await ctx.newPage();
   page.errors = [];
+  page.requestFailures = [];
+  page.on("requestfailed", (request) => page.requestFailures.push({
+    path: new URL(request.url()).pathname, error: request.failure()?.errorText || "failed"
+  }));
   page.on("pageerror", (e) => page.errors.push(String(e)));
   page.on("console", (m) => { if (m.type() === "error") page.errors.push(m.text()); });
   return page;
@@ -70,7 +74,22 @@ async function newPage(browser, opts = {}) {
 
 async function openDashboard(page, route = "#/jobs") {
   await page.goto(`${BASE}/dashboard/${route}`);
-  await page.waitForFunction(() => /^[1-9][0-9]*$/.test((document.querySelector('[data-count="all"]') || {}).textContent || ""));
+  try {
+    await page.waitForFunction(() => /^[1-9][0-9]*$/.test((document.querySelector('[data-count="all"]') || {}).textContent || ""));
+  } catch (error) {
+    const screen = await page.evaluate(() => ({
+      title: document.title, heading: document.querySelector("h1")?.textContent || "",
+      banner: document.querySelector("#banner")?.textContent || "",
+      readyState: document.readyState, visibility: document.visibilityState,
+      initializer: typeof init, appLoaded: typeof app !== 'undefined',
+      counts: [...document.querySelectorAll('[data-count]')].map(node => [node.dataset.count, node.textContent]),
+      scripts: [...document.scripts].filter(node => node.src).map(node => new URL(node.src).pathname)
+    }));
+    const diagnostics = JSON.stringify({screen, errors: page.errors, requestFailures: page.requestFailures})
+      .split(TOKEN).join("[REDACTED]");
+    console.error("Dashboard first-load diagnostic: " + diagnostics);
+    throw error;
+  }
 }
 
 async function openJob(page, id) {

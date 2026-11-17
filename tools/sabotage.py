@@ -117,10 +117,17 @@ SABOTAGE = [
     ('version missing from /healthz', [('leaseq/api.py',
       'def healthz(request: Request):\n'
       '    """Process liveness; dependency readiness belongs to /readyz."""\n'
-      '    return livez()',
+      '    body = livez()\n'
+      '    if getattr(request.app.state, "local_demo", None):\n'
+      '        body["local_demo_available"] = True\n'
+      '    return body',
       'def healthz(request: Request):\n'
       '    """Process liveness; dependency readiness belongs to /readyz."""\n'
-      '    return {"ok": True}')], FAST),
+      '    body = livez()\n'
+      '    body.pop("version", None)\n'
+      '    if getattr(request.app.state, "local_demo", None):\n'
+      '        body["local_demo_available"] = True\n'
+      '    return body')], FAST),
     # Not listed: dropping FastAPI(version=...) cannot be caught while the
     # version is 0.1.0, because that is FastAPI's own default version.
     ("up.sh overwrites an existing token", [("scripts/up.sh", 'if [ "$count" = 1 ] && ! blank "$current"; then', "if false; then")], FAST),

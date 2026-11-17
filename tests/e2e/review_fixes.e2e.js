@@ -264,6 +264,14 @@ async function connect(page) {
       await page.goto(`${BASE}/dashboard/#/jobs`);
       const menu = page.getByRole("button", { name: "Menu", exact: true });
       const heading = page.locator("main h1");
+      const observeMenuClose = () => page.evaluate(() => {
+        window.__reviewMenuClosed = new Promise(resolve => document.querySelector('#menu-sheet').addEventListener('close', () => resolve(), { once: true }));
+      });
+      const settleMenuClose = () => page.evaluate(async () => {
+        await window.__reviewMenuClosed;
+        await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        delete window.__reviewMenuClosed;
+      });
       const assertFocused = async (expected) => assert.deepEqual(await page.evaluate(() => ({
         tag: document.activeElement.tagName, text: document.activeElement.textContent.trim(),
       })), expected);
@@ -277,30 +285,33 @@ async function connect(page) {
       await page.mouse.click(1, 1);
       await page.waitForFunction(() => !document.querySelector("#menu-sheet").open);
       await assertFocused({ tag: "BUTTON", text: "Menu" });
-      for (const [route, title] of [["jobs", "Jobs"], ["jobs", "Jobs"],
-        ["submit", "New job"], ["connection", "Settings"]]) {
+      for (const [route, title] of [["overview", "Overview"], ["reports", "Reports"],
+        ["settings", "Settings"], ["workbench", "Workbench"]]) {
         await menu.click();
-        await page.locator(`#menu-sheet a[data-route="${route}"]`).click();
+        await observeMenuClose();
+        await page.locator(`#menu-sheet a[data-canonical="${route}"]`).click();
         await page.waitForFunction((expected) => !document.querySelector("#menu-sheet").open &&
           document.activeElement.tagName === "H1" && document.activeElement.textContent.trim() === expected, title);
-        await page.waitForTimeout(100);
+        await settleMenuClose();
         await assertFocused({ tag: "H1", text: title });
         assert.equal(await heading.innerText(), title);
       }
       await page.goto(`${BASE}/dashboard/#/jobs`);
       await menu.click();
-      await page.locator('#menu-sheet a[data-route="submit"]').click();
-      await page.waitForFunction(() => location.hash === "#/submit");
+      await page.locator('#menu-sheet a[data-canonical="workbench"]').click();
+      await page.waitForFunction(() => location.pathname === "/workbench");
       await menu.click();
+      await observeMenuClose();
       await page.goBack();
       await page.waitForFunction(() => location.hash === "#/jobs" && !document.querySelector("#menu-sheet").open);
-      await page.waitForTimeout(100);
+      await settleMenuClose();
       await assertFocused({ tag: "H1", text: "Jobs" });
       await menu.click();
+      await observeMenuClose();
       await page.goForward();
-      await page.waitForFunction(() => location.hash === "#/submit" && !document.querySelector("#menu-sheet").open);
-      await page.waitForTimeout(100);
-      await assertFocused({ tag: "H1", text: "New job" });
+      await page.waitForFunction(() => location.pathname === "/workbench" && !document.querySelector("#menu-sheet").open);
+      await settleMenuClose();
+      await assertFocused({ tag: "H1", text: "Workbench" });
     }, 320);
     for (const state of ["queued", "leased"]) {
       await check(`Cancel ${state} explains lease revocation without promising to stop work`, async (page) => {

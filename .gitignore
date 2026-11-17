@@ -15,3 +15,9 @@ build/
 *.egg-info/
 # Local verification logs, browser profiles and generated test evidence.
 /artifacts/verification/post-restart/
+
+# Verification logs can contain task-only credentials.
+*.private.log
+
+# Local QA output stays on this machine; curated acceptance reports are added explicitly.
+/artifacts/verification/canonical-persistence-20261116/
